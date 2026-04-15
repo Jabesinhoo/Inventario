@@ -1,0 +1,33 @@
+{
+  "name": "inventario-backend",
+  "version": "1.0.0",
+  "description": "Backend sistema de inventario",
+  "main": "server.js",
+  "scripts": {
+    "dev": "nodemon server.js",
+    "start": "node server.js",
+    "db:migrate": "sequelize-cli db:migrate --config config/sequelize-cli.js --migrations-path migrations",
+    "db:migrate:undo": "sequelize-cli db:migrate:undo --config config/sequelize-cli.js --migrations-path migrations",
+    "db:migrate:undo:all": "sequelize-cli db:migrate:undo:all --config config/sequelize-cli.js --migrations-path migrations",
+    "db:seed:all": "sequelize-cli db:seed:all --config config/sequelize-cli.js --seeders-path seeders",
+    "db:seed:undo:all": "sequelize-cli db:seed:undo:all --config config/sequelize-cli.js --seeders-path seeders",
+    "create:admin": "node scripts/createAdmin.js"
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "exceljs": "^4.4.0",
+    "express": "^4.21.2",
+    "joi": "^17.13.3",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^2.1.1",
+    "pg": "^8.13.1",
+    "pg-hstore": "^2.3.4",
+    "sequelize": "^6.37.5"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14",
+    "sequelize-cli": "^6.6.5"
+  }
+}
