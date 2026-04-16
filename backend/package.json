@@ -11,7 +11,13 @@
     "db:migrate:undo:all": "sequelize-cli db:migrate:undo:all --config config/sequelize-cli.js --migrations-path migrations",
     "db:seed:all": "sequelize-cli db:seed:all --config config/sequelize-cli.js --seeders-path seeders",
     "db:seed:undo:all": "sequelize-cli db:seed:undo:all --config config/sequelize-cli.js --seeders-path seeders",
-    "create:admin": "node scripts/createAdmin.js"
+    "create:admin": "node scripts/createAdmin.js",
+    "sqlserver:list-dbs": "node scripts/sqlserver-list-databases.js",
+    "sqlserver:describe-table": "node scripts/sqlserver-describe-table.js",
+    "sqlserver:find-product-columns": "node scripts/sqlserver-find-product-columns.js",
+    "sqlserver:find-product-tables": "node scripts/sqlserver-find-product-tables.js",
+    "sqlserver:preview-table": "node scripts/sqlserver-preview-table.js",
+    "sqlserver:find-stock-tables": "node scripts/sqlserver-find-stock-tables.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
@@ -21,6 +27,7 @@
     "express": "^4.21.2",
     "joi": "^17.13.3",
     "jsonwebtoken": "^9.0.2",
+    "mssql": "^12.3.0",
     "multer": "^2.1.1",
     "pg": "^8.13.1",
     "pg-hstore": "^2.3.4",

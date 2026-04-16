@@ -25,7 +25,9 @@ module.exports = {
   },
 
   cors: {
-    origin: process.env.CORS_ORIGIN || 'http://localhost:5173'
+    origins: (process.env.CORS_ORIGIN || 'http://localhost:5173')
+      .split(',')
+      .map((item) => item.trim())
   },
 
   rateLimit: {

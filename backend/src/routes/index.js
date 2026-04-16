@@ -11,5 +11,8 @@ router.use('/lecturas', require('./lecturas.routes'));
 router.use('/dashboard', require('./dashboard.routes'));
 router.use('/conteo-inicial', require('./conteoInicial.routes'));
 router.use('/diferencias', require('./diferencias.routes'));
-
+router.use('/tercer-conteo', require('./tercerConteo.routes'));
+router.use('/rondas', require('./rondas.routes'));
+router.use('/asignaciones-ronda', require('./asignacionesRonda.routes'));
+router.use('/sqlserver-inventarios', require('./sqlserverInventarios.routes'));
 module.exports = router;

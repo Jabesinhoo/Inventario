@@ -1,6 +1,5 @@
 const { Sequelize, DataTypes, Op } = require('sequelize');
 const config = require('../../config/config');
-const ConteoInicialDetalle = require('./conteoInicialDetalle.model')(sequelize, DataTypes);
 
 const sequelize = new Sequelize(
   config.db.database,
@@ -14,6 +13,7 @@ const sequelize = new Sequelize(
   }
 );
 
+const ConteoInicialDetalle = require('./conteoInicialDetalle.model')(sequelize, DataTypes);
 const Rol = require('./rol.model')(sequelize, DataTypes);
 const Usuario = require('./usuario.model')(sequelize, DataTypes);
 const Zona = require('./zona.model')(sequelize, DataTypes);
@@ -22,6 +22,9 @@ const Grupo = require('./grupo.model')(sequelize, DataTypes);
 const Producto = require('./producto.model')(sequelize, DataTypes);
 const AsignacionConteo = require('./asignacionConteo.model')(sequelize, DataTypes);
 const Lectura = require('./lectura.model')(sequelize, DataTypes);
+const RondaConteo = require('./rondaConteo.model')(sequelize, DataTypes);
+const AsignacionRonda = require('./asignacionRonda.model')(sequelize, DataTypes);
+const DiscrepanciaConteo = require('./discrepanciaConteo.model')(sequelize, DataTypes);
 
 Rol.hasMany(Usuario, { foreignKey: 'rolId' });
 Usuario.belongsTo(Rol, { foreignKey: 'rolId', as: 'rol' });
@@ -53,12 +56,136 @@ Lectura.belongsTo(Zona, { foreignKey: 'zonaId', as: 'zona' });
 Usuario.hasMany(Lectura, { foreignKey: 'usuarioId', as: 'lecturas' });
 Lectura.belongsTo(Usuario, { foreignKey: 'usuarioId', as: 'usuario' });
 
-Inventario.hasMany(ConteoInicialDetalle, { foreignKey: 'inventarioId', as: 'conteoInicial' });
-ConteoInicialDetalle.belongsTo(Inventario, { foreignKey: 'inventarioId', as: 'inventario' });
+Inventario.hasMany(ConteoInicialDetalle, {
+  foreignKey: 'inventarioId',
+  as: 'conteoInicial'
+});
+ConteoInicialDetalle.belongsTo(Inventario, {
+  foreignKey: 'inventarioId',
+  as: 'inventario'
+});
+
+Zona.hasMany(ConteoInicialDetalle, {
+  foreignKey: 'zonaId',
+  as: 'conteoInicial'
+});
+ConteoInicialDetalle.belongsTo(Zona, {
+  foreignKey: 'zonaId',
+  as: 'zona'
+});
+
+Producto.hasMany(ConteoInicialDetalle, {
+  foreignKey: 'productoId',
+  as: 'conteoInicial'
+});
+ConteoInicialDetalle.belongsTo(Producto, {
+  foreignKey: 'productoId',
+  as: 'producto'
+});
+
+Inventario.hasMany(RondaConteo, {
+  foreignKey: 'inventarioId',
+  as: 'rondas'
+});
+RondaConteo.belongsTo(Inventario, {
+  foreignKey: 'inventarioId',
+  as: 'inventario'
+});
+
+Zona.hasMany(RondaConteo, {
+  foreignKey: 'zonaId',
+  as: 'rondas'
+});
+RondaConteo.belongsTo(Zona, {
+  foreignKey: 'zonaId',
+  as: 'zona'
+});
+
+RondaConteo.belongsTo(RondaConteo, {
+  foreignKey: 'generadaDesdeRondaId',
+  as: 'rondaOrigen'
+});
+RondaConteo.hasMany(RondaConteo, {
+  foreignKey: 'generadaDesdeRondaId',
+  as: 'rondasDerivadas'
+});
+
+RondaConteo.hasOne(AsignacionRonda, {
+  foreignKey: 'rondaId',
+  as: 'asignacion'
+});
+AsignacionRonda.belongsTo(RondaConteo, {
+  foreignKey: 'rondaId',
+  as: 'ronda'
+});
+
+Grupo.hasMany(AsignacionRonda, {
+  foreignKey: 'grupoId',
+  as: 'asignacionesRonda'
+});
+AsignacionRonda.belongsTo(Grupo, {
+  foreignKey: 'grupoId',
+  as: 'grupo'
+});
+
+RondaConteo.hasMany(Lectura, {
+  foreignKey: 'rondaId',
+  as: 'lecturas'
+});
+Lectura.belongsTo(RondaConteo, {
+  foreignKey: 'rondaId',
+  as: 'ronda'
+});
+
+Inventario.hasMany(DiscrepanciaConteo, {
+  foreignKey: 'inventarioId',
+  as: 'discrepancias'
+});
+DiscrepanciaConteo.belongsTo(Inventario, {
+  foreignKey: 'inventarioId',
+  as: 'inventario'
+});
+
+Zona.hasMany(DiscrepanciaConteo, {
+  foreignKey: 'zonaId',
+  as: 'discrepancias'
+});
+DiscrepanciaConteo.belongsTo(Zona, {
+  foreignKey: 'zonaId',
+  as: 'zona'
+});
+
+Producto.hasMany(DiscrepanciaConteo, {
+  foreignKey: 'productoId',
+  as: 'discrepancias'
+});
+DiscrepanciaConteo.belongsTo(Producto, {
+  foreignKey: 'productoId',
+  as: 'producto'
+});
+
+RondaConteo.hasMany(DiscrepanciaConteo, {
+  foreignKey: 'rondaBaseId',
+  as: 'discrepanciasBase'
+});
+DiscrepanciaConteo.belongsTo(RondaConteo, {
+  foreignKey: 'rondaBaseId',
+  as: 'rondaBase'
+});
+
+RondaConteo.hasMany(DiscrepanciaConteo, {
+  foreignKey: 'ultimaRondaId',
+  as: 'discrepanciasUltima'
+});
+DiscrepanciaConteo.belongsTo(RondaConteo, {
+  foreignKey: 'ultimaRondaId',
+  as: 'ultimaRonda'
+});
 
 module.exports = {
   sequelize,
   Op,
+  ConteoInicialDetalle,
   Rol,
   Usuario,
   Zona,
@@ -67,5 +194,7 @@ module.exports = {
   Producto,
   AsignacionConteo,
   Lectura,
-  ConteoInicialDetalle,
+  RondaConteo,
+  AsignacionRonda,
+  DiscrepanciaConteo
 };

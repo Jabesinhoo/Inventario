@@ -15,6 +15,10 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.INTEGER,
         allowNull: false
       },
+      rondaId: {
+        type: DataTypes.INTEGER,
+        allowNull: true
+      },
       zonaId: {
         type: DataTypes.INTEGER,
         allowNull: false
@@ -65,6 +69,7 @@ module.exports = (sequelize, DataTypes) => {
       indexes: [
         { fields: ['inventarioId'] },
         { fields: ['conteoTipo'] },
+        { fields: ['rondaId'] },
         { fields: ['zonaId'] },
         { fields: ['grupoId'] },
         { fields: ['usuarioId'] },

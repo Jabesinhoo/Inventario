@@ -3,6 +3,8 @@ import {
   BarChart3,
   Boxes,
   ClipboardList,
+  FileSpreadsheet,
+  GitCompareArrows,
   LayoutGrid,
   ScanLine,
   Tags,
@@ -16,6 +18,8 @@ const items = [
   { to: '/grupos', label: 'Grupos', icon: Users },
   { to: '/asignaciones', label: 'Asignaciones', icon: Tags },
   { to: '/productos', label: 'Productos', icon: Boxes },
+  { to: '/conteo-inicial', label: 'Conteo inicial', icon: FileSpreadsheet },
+  { to: '/diferencias', label: 'Diferencias', icon: GitCompareArrows },
   { to: '/escaneo', label: 'Escaneo', icon: ScanLine }
 ];
 
