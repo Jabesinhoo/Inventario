@@ -9,3 +9,8 @@ export async function createAsignacion(payload) {
   const response = await api.post('/asignaciones', payload);
   return response.data.data;
 }
+
+export async function deleteAsignacion(id) {
+  const response = await api.delete(`/asignaciones/${id}`);
+  return response.data;
+}

@@ -45,20 +45,22 @@ async function parseConteoInicialExcel(buffer) {
     throw new Error('El archivo no contiene hojas');
   }
 
+  const headerRow = worksheet.getRow(1);
   const headerMap = {};
-  worksheet.getRow(1).eachCell((cell, colNumber) => {
+
+  headerRow.eachCell((cell, colNumber) => {
     headerMap[normalizeHeader(cell.value)] = colNumber;
   });
 
-  const zonaCol = resolveColumnIndex(headerMap, ['zona', 'nombrezona', 'codigozona']);
-  const skuCol = resolveColumnIndex(headerMap, ['sku', 'codigosku']);
-  const codigoCol = resolveColumnIndex(headerMap, ['codigo', 'codigobarra', 'codigo de barra']);
-  const descripcionCol = resolveColumnIndex(headerMap, ['descripcion', 'descripción', 'producto', 'nombre']);
-  const cantidadCol = resolveColumnIndex(headerMap, ['cantidad', 'conteo', 'existencia']);
+  // Buscar columnas (aceptar tanto español como inglés)
+  const zonaCol = resolveColumnIndex(headerMap, ['zona', 'ubicacion', 'location']);
+  const skuCol = resolveColumnIndex(headerMap, ['sku', 'codigo', 'code', 'código']);
+  const descripcionCol = resolveColumnIndex(headerMap, ['descripcion', 'descripción', 'producto', 'nombre', 'description']);
+  const cantidadCol = resolveColumnIndex(headerMap, ['cantidad', 'quantity', 'stock', 'existencia']);
 
-  if (!zonaCol || !cantidadCol || (!skuCol && !codigoCol)) {
+  if (!zonaCol || !skuCol || !cantidadCol) {
     throw new Error(
-      'El Excel debe tener al menos: zona, cantidad y sku o codigo'
+      'El Excel debe tener al menos estas columnas: zona, sku/codigo y cantidad'
     );
   }
 
@@ -69,30 +71,22 @@ async function parseConteoInicialExcel(buffer) {
     if (rowNumber === 1) return;
 
     const zona = normalizeText(getCellValue(row.getCell(zonaCol)));
-    const sku = skuCol ? normalizeText(getCellValue(row.getCell(skuCol))) : null;
-    const codigo = codigoCol ? normalizeText(getCellValue(row.getCell(codigoCol))) : null;
+    const sku = normalizeText(getCellValue(row.getCell(skuCol)));
     const descripcion = descripcionCol ? normalizeText(getCellValue(row.getCell(descripcionCol))) : null;
     const cantidadRaw = getCellValue(row.getCell(cantidadCol));
 
-    const isEmpty = !zona && !sku && !codigo && !descripcion && !cantidadRaw;
-    if (isEmpty) return;
-
+    // Saltar filas de totales
+    if (!zona || !sku || zona.toUpperCase() === 'TOTALES') return;
+    
+    // Saltar si la cantidad no es un número válido
     const cantidad = Number(cantidadRaw);
-
-    if (!zona || (!sku && !codigo) || Number.isNaN(cantidad)) {
-      errors.push({
-        row: rowNumber,
-        message: 'Fila inválida. zona, cantidad y sku/codigo son obligatorios'
-      });
-      return;
-    }
+    if (isNaN(cantidad)) return;
 
     rows.push({
-      zona,
-      sku,
-      codigo,
-      descripcion,
-      cantidad
+      zona: zona.toUpperCase(),
+      sku: sku,
+      descripcion: descripcion,
+      cantidad: cantidad
     });
   });
 

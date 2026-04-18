@@ -6,5 +6,6 @@ const allowRoles = require('../middleware/role.middleware');
 
 router.get('/', authMiddleware, gruposController.getGrupos);
 router.post('/', authMiddleware, allowRoles('admin', 'supervisor'), gruposController.createGrupo);
-
+// Agregar esta ruta
+router.get('/:id/estadisticas', authMiddleware, gruposController.getGrupoEstadisticas);
 module.exports = router;

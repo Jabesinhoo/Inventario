@@ -15,4 +15,9 @@ router.use('/tercer-conteo', require('./tercerConteo.routes'));
 router.use('/rondas', require('./rondas.routes'));
 router.use('/asignaciones-ronda', require('./asignacionesRonda.routes'));
 router.use('/sqlserver-inventarios', require('./sqlserverInventarios.routes'));
+router.use('/exportaciones', require('./exportaciones.routes'));
+router.use('/estadisticas', require('./estadisticas.routes'));
+router.use('/scripts', require('./scripts.routes'));
+
+
 module.exports = router;

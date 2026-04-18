@@ -8,8 +8,11 @@ const {
   Zona,
   AsignacionRonda,
   Grupo,
-  DiscrepanciaConteo
+  DiscrepanciaConteo,
+  Lectura
 } = require('../models');
+
+// ==================== SCHEMAS ====================
 
 const createRondaSchema = Joi.object({
   inventarioId: Joi.number().integer().required(),
@@ -19,6 +22,8 @@ const createRondaSchema = Joi.object({
   generadaDesdeRondaId: Joi.number().integer().allow(null),
   observaciones: Joi.string().allow(null, '')
 });
+
+// ==================== HELPERS ====================
 
 async function getRoundQtyMap(rondaId, transaction) {
   const rows = await sequelize.query(
@@ -53,6 +58,8 @@ async function getRoundQtyMap(rondaId, transaction) {
 
   return map;
 }
+
+// ==================== CRUD BÁSICO ====================
 
 async function createRonda(req, res, next) {
   try {
@@ -95,6 +102,7 @@ async function createRonda(req, res, next) {
 
     const ronda = await RondaConteo.create({
       ...value,
+      estado: 'borrador',
       generadaDesdeRondaId: value.generadaDesdeRondaId || null,
       observaciones: value.observaciones || null
     });
@@ -110,24 +118,38 @@ async function createRonda(req, res, next) {
 
 async function getRondas(req, res, next) {
   try {
-    const { inventarioId, zonaId, estado } = req.query;
+    const { inventarioId, zonaId, estado, grupoId } = req.query;
 
     const where = {};
     if (inventarioId) where.inventarioId = inventarioId;
     if (zonaId) where.zonaId = zonaId;
     if (estado) where.estado = estado;
 
+    const include = [
+      { model: Zona, as: 'zona', attributes: ['id', 'nombre', 'codigo'] },
+      {
+        model: AsignacionRonda,
+        as: 'asignacion',
+        required: false,
+        include: [{ model: Grupo, as: 'grupo', attributes: ['id', 'nombre'] }]
+      }
+    ];
+
+    // Si se filtra por grupo específico
+    if (grupoId) {
+      include[1].required = true;
+      include[1].where = { grupoId };
+    }
+
+    // 🔒 AISLAMIENTO: si no es admin/supervisor, solo ve sus rondas
+    if (!req.canViewAllGroups && req.grupoId) {
+      include[1].required = true;
+      include[1].where = { grupoId: req.grupoId };
+    }
+
     const data = await RondaConteo.findAll({
       where,
-      include: [
-        { model: Zona, as: 'zona', attributes: ['id', 'nombre', 'codigo'] },
-        {
-          model: AsignacionRonda,
-          as: 'asignacion',
-          required: false,
-          include: [{ model: Grupo, as: 'grupo', attributes: ['id', 'nombre'] }]
-        }
-      ],
+      include,
       order: [['zonaId', 'ASC'], ['numeroRonda', 'ASC']]
     });
 
@@ -140,14 +162,139 @@ async function getRondas(req, res, next) {
   }
 }
 
+// ==================== CONTROL DE ESTADO ====================
+
+async function iniciarRonda(req, res, next) {
+  try {
+    const ronda = await RondaConteo.findByPk(req.params.id);
+
+    if (!ronda) {
+      return res.status(404).json({ ok: false, message: 'Ronda no encontrada' });
+    }
+
+    // Verificar acceso
+    if (!req.canViewAllGroups && req.grupoId) {
+      const asignacion = await AsignacionRonda.findOne({
+        where: { rondaId: ronda.id, grupoId: req.grupoId }
+      });
+      if (!asignacion) {
+        return res.status(403).json({ ok: false, message: 'No tienes acceso a esta ronda' });
+      }
+    }
+
+    if (ronda.estado !== 'borrador' && ronda.estado !== 'pausada') {
+      return res.status(400).json({
+        ok: false,
+        message: `No se puede iniciar una ronda en estado ${ronda.estado}`
+      });
+    }
+
+    await ronda.update({ estado: 'activa' });
+
+    res.json({
+      ok: true,
+      data: ronda,
+      message: 'Ronda iniciada correctamente'
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function pausarRonda(req, res, next) {
+  try {
+    const ronda = await RondaConteo.findByPk(req.params.id);
+
+    if (!ronda) {
+      return res.status(404).json({ ok: false, message: 'Ronda no encontrada' });
+    }
+
+    // Verificar acceso
+    if (!req.canViewAllGroups && req.grupoId) {
+      const asignacion = await AsignacionRonda.findOne({
+        where: { rondaId: ronda.id, grupoId: req.grupoId }
+      });
+      if (!asignacion) {
+        return res.status(403).json({ ok: false, message: 'No tienes acceso a esta ronda' });
+      }
+    }
+
+    if (ronda.estado !== 'activa') {
+      return res.status(400).json({
+        ok: false,
+        message: `No se puede pausar una ronda en estado ${ronda.estado}`
+      });
+    }
+
+    await ronda.update({ estado: 'pausada' });
+
+    res.json({
+      ok: true,
+      data: ronda,
+      message: 'Ronda pausada correctamente'
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+async function reanudarRonda(req, res, next) {
+  try {
+    const ronda = await RondaConteo.findByPk(req.params.id);
+
+    if (!ronda) {
+      return res.status(404).json({ ok: false, message: 'Ronda no encontrada' });
+    }
+
+    // Verificar acceso
+    if (!req.canViewAllGroups && req.grupoId) {
+      const asignacion = await AsignacionRonda.findOne({
+        where: { rondaId: ronda.id, grupoId: req.grupoId }
+      });
+      if (!asignacion) {
+        return res.status(403).json({ ok: false, message: 'No tienes acceso a esta ronda' });
+      }
+    }
+
+    if (ronda.estado !== 'pausada') {
+      return res.status(400).json({
+        ok: false,
+        message: `No se puede reanudar una ronda en estado ${ronda.estado}`
+      });
+    }
+
+    await ronda.update({ estado: 'activa' });
+
+    res.json({
+      ok: true,
+      data: ronda,
+      message: 'Ronda reanudada correctamente'
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
 async function cerrarRonda(req, res, next) {
   try {
     const ronda = await RondaConteo.findByPk(req.params.id);
 
     if (!ronda) {
-      return res.status(404).json({
+      return res.status(404).json({ ok: false, message: 'Ronda no encontrada' });
+    }
+
+    // Verificar acceso (solo admin/supervisor puede cerrar)
+    if (!req.canViewAllGroups) {
+      return res.status(403).json({
         ok: false,
-        message: 'Ronda no encontrada'
+        message: 'Solo administradores o supervisores pueden cerrar rondas'
+      });
+    }
+
+    if (ronda.estado !== 'activa' && ronda.estado !== 'pausada') {
+      return res.status(400).json({
+        ok: false,
+        message: `No se puede cerrar una ronda en estado ${ronda.estado}`
       });
     }
 
@@ -155,12 +302,15 @@ async function cerrarRonda(req, res, next) {
 
     res.json({
       ok: true,
-      data: ronda
+      data: ronda,
+      message: 'Ronda cerrada correctamente'
     });
   } catch (error) {
     next(error);
   }
 }
+
+// ==================== CONCILIACIÓN AUTOMÁTICA ====================
 
 async function getPendientesRonda(req, res, next) {
   try {
@@ -171,10 +321,17 @@ async function getPendientesRonda(req, res, next) {
     });
 
     if (!ronda) {
-      return res.status(404).json({
-        ok: false,
-        message: 'Ronda no encontrada'
+      return res.status(404).json({ ok: false, message: 'Ronda no encontrada' });
+    }
+
+    // Verificar acceso
+    if (!req.canViewAllGroups && req.grupoId) {
+      const asignacion = await AsignacionRonda.findOne({
+        where: { rondaId: ronda.id, grupoId: req.grupoId }
       });
+      if (!asignacion) {
+        return res.status(403).json({ ok: false, message: 'No tienes acceso a esta ronda' });
+      }
     }
 
     const data = await DiscrepanciaConteo.findAll({
@@ -196,6 +353,7 @@ async function getPendientesRonda(req, res, next) {
           id: ronda.id,
           numeroRonda: ronda.numeroRonda,
           tipoRonda: ronda.tipoRonda,
+          estado: ronda.estado,
           zona: ronda.zona
         },
         pendientes: data
@@ -216,9 +374,15 @@ async function conciliarRonda(req, res, next) {
 
     if (!rondaActual) {
       await transaction.rollback();
-      return res.status(404).json({
+      return res.status(404).json({ ok: false, message: 'Ronda no encontrada' });
+    }
+
+    // Solo admin/supervisor puede conciliar
+    if (!req.canViewAllGroups) {
+      await transaction.rollback();
+      return res.status(403).json({
         ok: false,
-        message: 'Ronda no encontrada'
+        message: 'Solo administradores o supervisores pueden conciliar rondas'
       });
     }
 
@@ -241,10 +405,7 @@ async function conciliarRonda(req, res, next) {
 
     if (!rondaBase) {
       await transaction.rollback();
-      return res.status(400).json({
-        ok: false,
-        message: 'No existe ronda 1 para esa zona'
-      });
+      return res.status(400).json({ ok: false, message: 'No existe ronda 1 para esa zona' });
     }
 
     const baseMap = await getRoundQtyMap(rondaBase.id, transaction);
@@ -253,29 +414,23 @@ async function conciliarRonda(req, res, next) {
     let skusEvaluar = [];
 
     if (rondaActual.numeroRonda === 2) {
-      skusEvaluar = Array.from(
-        new Set([...baseMap.keys(), ...actualMap.keys()])
-      );
+      skusEvaluar = Array.from(new Set([...baseMap.keys(), ...actualMap.keys()]));
     } else {
       const pendientes = await DiscrepanciaConteo.findAll({
         where: {
           inventarioId: rondaActual.inventarioId,
           zonaId: rondaActual.zonaId,
           proximaRondaNumero: rondaActual.numeroRonda,
-          estado: {
-            [Op.in]: ['pendiente_reconteo', 'reconteo_en_proceso']
-          }
+          estado: { [Op.in]: ['pendiente_reconteo', 'reconteo_en_proceso'] }
         },
         transaction
       });
-
       skusEvaluar = pendientes.map((item) => item.sku);
     }
 
     if (skusEvaluar.length === 0) {
       await rondaActual.update({ estado: 'cerrada' }, { transaction });
       await transaction.commit();
-
       return res.json({
         ok: true,
         message: 'No había SKUs pendientes para conciliar en esta ronda',
@@ -294,19 +449,8 @@ async function conciliarRonda(req, res, next) {
     let pendientes = 0;
 
     for (const sku of skusEvaluar) {
-      const base = baseMap.get(sku) || {
-        sku,
-        descripcion: null,
-        productoId: null,
-        cantidad: 0
-      };
-
-      const actual = actualMap.get(sku) || {
-        sku,
-        descripcion: null,
-        productoId: null,
-        cantidad: 0
-      };
+      const base = baseMap.get(sku) || { sku, descripcion: null, productoId: null, cantidad: 0 };
+      const actual = actualMap.get(sku) || { sku, descripcion: null, productoId: null, cantidad: 0 };
 
       const cantidadBase = Number(base.cantidad || 0);
       const cantidadActual = Number(actual.cantidad || 0);
@@ -326,17 +470,12 @@ async function conciliarRonda(req, res, next) {
       };
 
       const existente = await DiscrepanciaConteo.findOne({
-        where: {
-          inventarioId: rondaActual.inventarioId,
-          zonaId: rondaActual.zonaId,
-          sku
-        },
+        where: { inventarioId: rondaActual.inventarioId, zonaId: rondaActual.zonaId, sku },
         transaction
       });
 
       if (diferencia === 0) {
         conciliados += 1;
-
         const payload = {
           ...payloadBase,
           estado: 'conciliado',
@@ -345,7 +484,6 @@ async function conciliarRonda(req, res, next) {
           criterioCierre: `ronda_1_igual_ronda_${rondaActual.numeroRonda}`,
           cerradoEn: new Date()
         };
-
         if (existente) {
           await existente.update(payload, { transaction });
         } else {
@@ -353,7 +491,6 @@ async function conciliarRonda(req, res, next) {
         }
       } else {
         pendientes += 1;
-
         const payload = {
           ...payloadBase,
           estado: 'pendiente_reconteo',
@@ -362,7 +499,6 @@ async function conciliarRonda(req, res, next) {
           criterioCierre: null,
           cerradoEn: null
         };
-
         if (existente) {
           await existente.update(payload, { transaction });
         } else {
@@ -388,12 +524,10 @@ async function conciliarRonda(req, res, next) {
         },
         transaction
       });
-
       siguienteRonda = ronda;
     }
 
     await rondaActual.update({ estado: 'cerrada' }, { transaction });
-
     await transaction.commit();
 
     res.json({
@@ -404,14 +538,12 @@ async function conciliarRonda(req, res, next) {
         numeroRonda: rondaActual.numeroRonda,
         conciliados,
         pendientes,
-        siguienteRonda: siguienteRonda
-          ? {
-              id: siguienteRonda.id,
-              numeroRonda: siguienteRonda.numeroRonda,
-              tipoRonda: siguienteRonda.tipoRonda,
-              estado: siguienteRonda.estado
-            }
-          : null
+        siguienteRonda: siguienteRonda ? {
+          id: siguienteRonda.id,
+          numeroRonda: siguienteRonda.numeroRonda,
+          tipoRonda: siguienteRonda.tipoRonda,
+          estado: siguienteRonda.estado
+        } : null
       }
     });
   } catch (error) {
@@ -420,10 +552,69 @@ async function conciliarRonda(req, res, next) {
   }
 }
 
+// ==================== AJUSTE MANUAL DE CANTIDAD ====================
+
+const ajusteManualSchema = Joi.object({
+  sku: Joi.string().required(),
+  cantidadFinal: Joi.number().integer().min(0).required(),
+  observacion: Joi.string().allow(null, '')
+});
+
+async function ajusteManual(req, res, next) {
+  const transaction = await sequelize.transaction();
+
+  try {
+    const { error, value } = ajusteManualSchema.validate(req.body);
+    if (error) {
+      await transaction.rollback();
+      return res.status(400).json({ ok: false, message: error.details[0].message });
+    }
+
+    const discrepancia = await DiscrepanciaConteo.findOne({
+      where: {
+        inventarioId: req.params.inventarioId,
+        zonaId: req.params.zonaId,
+        sku: value.sku
+      },
+      transaction
+    });
+
+    if (!discrepancia) {
+      await transaction.rollback();
+      return res.status(404).json({ ok: false, message: 'Discrepancia no encontrada' });
+    }
+
+    await discrepancia.update({
+      cantidadFinal: value.cantidadFinal,
+      estado: 'conciliado_manual',
+      criterioCierre: 'manual',
+      cerradoEn: new Date(),
+      observaciones: value.observacion || null
+    }, { transaction });
+
+    await transaction.commit();
+
+    res.json({
+      ok: true,
+      message: 'Ajuste manual registrado correctamente',
+      data: discrepancia
+    });
+  } catch (error) {
+    await transaction.rollback();
+    next(error);
+  }
+}
+
+// ==================== EXPORTS ====================
+
 module.exports = {
   createRonda,
   getRondas,
+  iniciarRonda,
+  pausarRonda,
+  reanudarRonda,
   cerrarRonda,
   getPendientesRonda,
-  conciliarRonda
+  conciliarRonda,
+  ajusteManual
 };

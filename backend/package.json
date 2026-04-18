@@ -17,11 +17,17 @@
     "sqlserver:find-product-columns": "node scripts/sqlserver-find-product-columns.js",
     "sqlserver:find-product-tables": "node scripts/sqlserver-find-product-tables.js",
     "sqlserver:preview-table": "node scripts/sqlserver-preview-table.js",
-    "sqlserver:find-stock-tables": "node scripts/sqlserver-find-stock-tables.js"
+    "sqlserver:find-stock-tables": "node scripts/sqlserver-find-stock-tables.js",
+    "sqlserver:discover-port": "node scripts/sqlserver-discover-port.js",
+    "sync:productos": "node scripts/sync-productos-from-sqlserver.js",
+    "sqlserver:read-products": "node scripts/sqlserver-read-products.js",
+    "export:excel": "node scripts/export-to-excel.js"
+
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
+    "dgram": "^1.0.1",
     "dotenv": "^16.4.5",
     "exceljs": "^4.4.0",
     "express": "^4.21.2",

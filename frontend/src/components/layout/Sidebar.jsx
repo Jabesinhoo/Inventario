@@ -7,8 +7,10 @@ import {
   GitCompareArrows,
   LayoutGrid,
   ScanLine,
+  ShieldAlert,
   Tags,
-  Users
+  Users,
+  Settings
 } from 'lucide-react';
 
 const items = [
@@ -20,7 +22,9 @@ const items = [
   { to: '/productos', label: 'Productos', icon: Boxes },
   { to: '/conteo-inicial', label: 'Conteo inicial', icon: FileSpreadsheet },
   { to: '/diferencias', label: 'Diferencias', icon: GitCompareArrows },
-  { to: '/escaneo', label: 'Escaneo', icon: ScanLine }
+  { to: '/tercer-conteo', label: 'Tercer conteo', icon: ShieldAlert },
+  { to: '/escaneo', label: 'Escaneo', icon: ScanLine },
+  { to: '/scripts', label: 'Herramientas', icon: Settings }
 ];
 
 export default function Sidebar() {

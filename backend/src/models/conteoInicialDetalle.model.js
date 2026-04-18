@@ -31,7 +31,17 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.STRING(255),
         allowNull: true
       },
-      cantidad: {
+      cantidadBodega: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0
+      },
+      cantidadExhibicion: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0
+      },
+      cantidadTotal: {
         type: DataTypes.INTEGER,
         allowNull: false,
         defaultValue: 0

@@ -19,4 +19,25 @@ router.get(
   controller.getConteoInicialResumen
 );
 
+router.get(
+  '/sqlserver-status',
+  authMiddleware,
+  allowRoles('admin', 'supervisor'),
+  controller.getSqlServerStatus
+);
+
+router.post(
+  '/sync-sqlserver',
+  authMiddleware,
+  allowRoles('admin', 'supervisor'),
+  controller.syncFromSqlServer
+);
+
+router.get(
+  '/exportar',
+  authMiddleware,
+  allowRoles('admin', 'supervisor'),
+  controller.exportConteoInicial
+);
+
 module.exports = router;

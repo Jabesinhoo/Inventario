@@ -1,7 +1,7 @@
+const { Sequelize, Op } = require('sequelize');
 const Joi = require('joi');
 const {
   sequelize,
-  Op,
   Lectura,
   Producto,
   Inventario,
@@ -10,9 +10,12 @@ const {
   AsignacionConteo,
   RondaConteo,
   AsignacionRonda,
-  DiscrepanciaConteo
+  DiscrepanciaConteo,
+  Usuario
 } = require('../models');
 const { findProductoExternoByCodigo } = require('../services/sqlserverInventarios.service');
+
+// ==================== SCHEMAS ====================
 
 const scanSchema = Joi.object({
   inventarioId: Joi.number().integer().required(),
@@ -28,6 +31,8 @@ const scanRondaSchema = Joi.object({
   codigo: Joi.string().trim().required()
 });
 
+// ==================== SCAN LEGACY (con conteoTipo) ====================
+
 async function scanLectura(req, res, next) {
   const transaction = await sequelize.transaction();
 
@@ -39,6 +44,16 @@ async function scanLectura(req, res, next) {
       return res.status(400).json({
         ok: false,
         message: error.details[0].message
+      });
+    }
+
+    // Validación SKU: solo 5-7 dígitos
+    const codigoLimpio = value.codigo.trim();
+    if (codigoLimpio.length < 5 || codigoLimpio.length > 7) {
+      await transaction.rollback();
+      return res.status(400).json({
+        ok: false,
+        message: 'Código inválido. Debe tener entre 5 y 7 dígitos.'
       });
     }
 
@@ -83,9 +98,9 @@ async function scanLectura(req, res, next) {
       where: {
         activo: true,
         [Op.or]: [
-          { codigoBarra: value.codigo },
-          { codigoQr: value.codigo },
-          { sku: value.codigo }
+          { codigoBarra: codigoLimpio },
+          { codigoQr: codigoLimpio },
+          { sku: codigoLimpio }
         ]
       },
       transaction
@@ -94,7 +109,7 @@ async function scanLectura(req, res, next) {
     let externalProduct = null;
 
     if (!producto) {
-      externalProduct = await findProductoExternoByCodigo(value.codigo);
+      externalProduct = await findProductoExternoByCodigo(codigoLimpio);
     }
 
     if (!producto && !externalProduct) {
@@ -108,7 +123,7 @@ async function scanLectura(req, res, next) {
           usuarioId: req.user.id,
           productoId: null,
           sku: null,
-          codigoLeido: value.codigo,
+          codigoLeido: codigoLimpio,
           descripcionSnapshot: null,
           cantidad: 1,
           estado: 'no_reconocida'
@@ -124,7 +139,7 @@ async function scanLectura(req, res, next) {
         message: 'Código no reconocido, lectura guardada para revisión',
         data: {
           lecturaId: lectura.id,
-          codigo: value.codigo,
+          codigo: codigoLimpio,
           estado: lectura.estado
         }
       });
@@ -144,7 +159,7 @@ async function scanLectura(req, res, next) {
         usuarioId: req.user.id,
         productoId: productoIdFinal,
         sku: skuFinal,
-        codigoLeido: value.codigo,
+        codigoLeido: codigoLimpio,
         descripcionSnapshot: descripcionFinal,
         cantidad: 1,
         estado: 'valida'
@@ -189,6 +204,8 @@ async function scanLectura(req, res, next) {
   }
 }
 
+// ==================== SCAN POR RONDA (NUEVO FLUJO) ====================
+
 async function scanLecturaRonda(req, res, next) {
   const transaction = await sequelize.transaction();
 
@@ -203,6 +220,16 @@ async function scanLecturaRonda(req, res, next) {
       });
     }
 
+    // Validación SKU: solo 5-7 dígitos
+    const codigoLimpio = value.codigo.trim();
+    if (codigoLimpio.length < 5 || codigoLimpio.length > 7) {
+      await transaction.rollback();
+      return res.status(400).json({
+        ok: false,
+        message: 'Código inválido. Debe tener entre 5 y 7 dígitos.'
+      });
+    }
+
     const ronda = await RondaConteo.findByPk(value.rondaId, {
       include: [{ model: Zona, as: 'zona', attributes: ['id', 'nombre', 'codigo'] }],
       transaction
@@ -213,6 +240,23 @@ async function scanLecturaRonda(req, res, next) {
       return res.status(404).json({
         ok: false,
         message: 'Ronda no encontrada'
+      });
+    }
+
+    // Verificar que la ronda no esté pausada o cerrada
+    if (ronda.estado === 'pausada') {
+      await transaction.rollback();
+      return res.status(403).json({
+        ok: false,
+        message: 'La ronda está pausada. Reanúdala para continuar escaneando.'
+      });
+    }
+
+    if (ronda.estado === 'cerrada') {
+      await transaction.rollback();
+      return res.status(403).json({
+        ok: false,
+        message: 'La ronda ya está cerrada. No se pueden registrar más lecturas.'
       });
     }
 
@@ -246,9 +290,9 @@ async function scanLecturaRonda(req, res, next) {
       where: {
         activo: true,
         [Op.or]: [
-          { codigoBarra: value.codigo },
-          { codigoQr: value.codigo },
-          { sku: value.codigo }
+          { codigoBarra: codigoLimpio },
+          { codigoQr: codigoLimpio },
+          { sku: codigoLimpio }
         ]
       },
       transaction
@@ -257,7 +301,7 @@ async function scanLecturaRonda(req, res, next) {
     let externalProduct = null;
 
     if (!producto) {
-      externalProduct = await findProductoExternoByCodigo(value.codigo);
+      externalProduct = await findProductoExternoByCodigo(codigoLimpio);
     }
 
     if (!producto && !externalProduct) {
@@ -279,7 +323,7 @@ async function scanLecturaRonda(req, res, next) {
           usuarioId: req.user.id,
           productoId: null,
           sku: null,
-          codigoLeido: value.codigo,
+          codigoLeido: codigoLimpio,
           descripcionSnapshot: null,
           cantidad: 1,
           estado: 'no_reconocida'
@@ -295,7 +339,7 @@ async function scanLecturaRonda(req, res, next) {
         message: 'Código no reconocido, lectura guardada para revisión',
         data: {
           lecturaId: lectura.id,
-          codigo: value.codigo,
+          codigo: codigoLimpio,
           estado: lectura.estado
         }
       });
@@ -305,6 +349,7 @@ async function scanLecturaRonda(req, res, next) {
     const descripcionFinal = producto ? producto.descripcion : externalProduct.descripcion;
     const productoIdFinal = producto ? producto.id : null;
 
+    // Validación para rondas de reconteo: solo SKUs pendientes
     if (ronda.tipoRonda === 'reconteo') {
       const pendiente = await DiscrepanciaConteo.findOne({
         where: {
@@ -342,7 +387,7 @@ async function scanLecturaRonda(req, res, next) {
         usuarioId: req.user.id,
         productoId: productoIdFinal,
         sku: skuFinal,
-        codigoLeido: value.codigo,
+        codigoLeido: codigoLimpio,
         descripcionSnapshot: descripcionFinal,
         cantidad: 1,
         estado: 'valida'
@@ -359,6 +404,9 @@ async function scanLecturaRonda(req, res, next) {
       transaction
     });
 
+    // Actualizar última actividad de la ronda
+    await ronda.update({ updatedAt: new Date() }, { transaction });
+
     await transaction.commit();
 
     return res.status(201).json({
@@ -371,7 +419,8 @@ async function scanLecturaRonda(req, res, next) {
         ronda: {
           id: ronda.id,
           numeroRonda: ronda.numeroRonda,
-          tipoRonda: ronda.tipoRonda
+          tipoRonda: ronda.tipoRonda,
+          estado: ronda.estado
         },
         producto: {
           id: productoIdFinal,
@@ -389,6 +438,61 @@ async function scanLecturaRonda(req, res, next) {
   }
 }
 
+// ==================== ANULAR LECTURA (BORRAR POR ERROR) ====================
+
+async function anularLectura(req, res, next) {
+  const transaction = await sequelize.transaction();
+
+  try {
+    const lectura = await Lectura.findByPk(req.params.id, { transaction });
+
+    if (!lectura) {
+      await transaction.rollback();
+      return res.status(404).json({
+        ok: false,
+        message: 'Lectura no encontrada'
+      });
+    }
+
+    // Verificar que pertenezca al grupo del usuario (si no es admin/supervisor)
+    if (!req.canViewAllGroups && lectura.grupoId !== req.grupoId) {
+      await transaction.rollback();
+      return res.status(403).json({
+        ok: false,
+        message: 'No puedes anular una lectura de otro grupo'
+      });
+    }
+
+    // No se puede anular una lectura ya anulada
+    if (lectura.estado === 'anulada') {
+      await transaction.rollback();
+      return res.status(400).json({
+        ok: false,
+        message: 'Esta lectura ya estaba anulada'
+      });
+    }
+
+    await lectura.update({ estado: 'anulada' }, { transaction });
+
+    await transaction.commit();
+
+    res.json({
+      ok: true,
+      message: 'Lectura anulada correctamente',
+      data: {
+        lecturaId: lectura.id,
+        sku: lectura.sku,
+        codigoLeido: lectura.codigoLeido
+      }
+    });
+  } catch (error) {
+    await transaction.rollback();
+    next(error);
+  }
+}
+
+// ==================== RESUMEN DE LECTURAS (CON AISLAMIENTO POR GRUPO) ====================
+
 async function getResumenLecturas(req, res, next) {
   try {
     const { inventarioId, conteoTipo, zonaId, grupoId, rondaId } = req.query;
@@ -400,8 +504,15 @@ async function getResumenLecturas(req, res, next) {
     if (inventarioId) where.inventarioId = inventarioId;
     if (conteoTipo) where.conteoTipo = conteoTipo;
     if (zonaId) where.zonaId = zonaId;
-    if (grupoId) where.grupoId = grupoId;
     if (rondaId) where.rondaId = rondaId;
+
+    // 🔒 AISLAMIENTO: si no es admin/supervisor, solo ve su grupo
+    if (!req.canViewAllGroups && req.grupoId) {
+      where.grupoId = req.grupoId;
+    } else if (grupoId && req.canViewAllGroups) {
+      // Si es admin y quiere filtrar por grupo específico
+      where.grupoId = grupoId;
+    }
 
     const resumen = await Lectura.findAll({
       where,
@@ -423,21 +534,34 @@ async function getResumenLecturas(req, res, next) {
   }
 }
 
+// ==================== HISTORIAL DE LECTURAS ====================
+
 async function getHistorialLecturas(req, res, next) {
   try {
-    const { inventarioId, conteoTipo, zonaId, grupoId, rondaId } = req.query;
+    const { inventarioId, conteoTipo, zonaId, grupoId, rondaId, limit = 200 } = req.query;
 
     const where = {};
+
     if (inventarioId) where.inventarioId = inventarioId;
     if (conteoTipo) where.conteoTipo = conteoTipo;
     if (zonaId) where.zonaId = zonaId;
-    if (grupoId) where.grupoId = grupoId;
     if (rondaId) where.rondaId = rondaId;
+
+    // 🔒 AISLAMIENTO: si no es admin/supervisor, solo ve su grupo
+    if (!req.canViewAllGroups && req.grupoId) {
+      where.grupoId = req.grupoId;
+    } else if (grupoId && req.canViewAllGroups) {
+      where.grupoId = grupoId;
+    }
 
     const lecturas = await Lectura.findAll({
       where,
       order: [['fechaHora', 'DESC']],
-      limit: 200
+      limit: parseInt(limit),
+      include: [
+        { model: Usuario, as: 'usuario', attributes: ['id', 'nombre'] },
+        { model: Zona, as: 'zona', attributes: ['id', 'nombre'] }
+      ]
     });
 
     res.json({
@@ -449,9 +573,142 @@ async function getHistorialLecturas(req, res, next) {
   }
 }
 
+// ==================== ESTADÍSTICAS POR GRUPO/RONDA ====================
+
+async function getEstadisticasGrupo(req, res, next) {
+  try {
+    const { rondaId, grupoId } = req.query;
+
+    if (!rondaId || !grupoId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'rondaId y grupoId son requeridos'
+      });
+    }
+
+    // Verificar acceso
+    if (!req.canViewAllGroups && parseInt(grupoId) !== req.grupoId) {
+      return res.status(403).json({
+        ok: false,
+        message: 'No puedes ver estadísticas de otro grupo'
+      });
+    }
+
+    const lecturas = await Lectura.findAll({
+      where: {
+        rondaId,
+        grupoId,
+        estado: 'valida'
+      }
+    });
+
+    const totalEscaneos = lecturas.reduce((sum, l) => sum + l.cantidad, 0);
+    const productosUnicos = new Set(lecturas.map(l => l.sku).filter(s => s)).size;
+    const primeraLectura = await Lectura.findOne({
+      where: { rondaId, grupoId, estado: 'valida' },
+      order: [['fechaHora', 'ASC']]
+    });
+    const ultimaLectura = await Lectura.findOne({
+      where: { rondaId, grupoId, estado: 'valida' },
+      order: [['fechaHora', 'DESC']]
+    });
+
+    let tiempoTotal = null;
+    if (primeraLectura && ultimaLectura) {
+      tiempoTotal = Math.round((ultimaLectura.fechaHora - primeraLectura.fechaHora) / 1000);
+    }
+
+    res.json({
+      ok: true,
+      data: {
+        totalEscaneos,
+        productosUnicos,
+        tiempoSegundos: tiempoTotal,
+        tiempoFormateado: tiempoTotal ? `${Math.floor(tiempoTotal / 60)}m ${tiempoTotal % 60}s` : null,
+        primeraLectura: primeraLectura?.fechaHora || null,
+        ultimaLectura: ultimaLectura?.fechaHora || null
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+// ==================== EXPORTACIÓN DE RESULTADOS POR GRUPO ====================
+
+async function exportarResultadosGrupo(req, res, next) {
+  try {
+    const { rondaId, grupoId, inventarioId } = req.query;
+
+    if (!rondaId || !grupoId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'rondaId y grupoId son requeridos'
+      });
+    }
+
+    // Verificar acceso
+    if (!req.canViewAllGroups && parseInt(grupoId) !== req.grupoId) {
+      return res.status(403).json({
+        ok: false,
+        message: 'No puedes exportar resultados de otro grupo'
+      });
+    }
+
+    const resumen = await Lectura.findAll({
+      where: {
+        rondaId,
+        grupoId,
+        estado: 'valida'
+      },
+      attributes: [
+        'sku',
+        'descripcionSnapshot',
+        [sequelize.fn('SUM', sequelize.col('cantidad')), 'cantidadTotal']
+      ],
+      group: ['sku', 'descripcionSnapshot'],
+      order: [[sequelize.literal('"cantidadTotal"'), 'DESC']]
+    });
+
+    const grupoInfo = await Grupo.findByPk(grupoId);
+    const rondaInfo = await RondaConteo.findByPk(rondaId, {
+      include: [{ model: Zona, as: 'zona' }]
+    });
+
+    res.json({
+      ok: true,
+      data: {
+        grupo: {
+          id: grupoInfo?.id,
+          nombre: grupoInfo?.nombre
+        },
+        ronda: {
+          id: rondaInfo?.id,
+          numeroRonda: rondaInfo?.numeroRonda,
+          tipoRonda: rondaInfo?.tipoRonda,
+          zona: rondaInfo?.zona?.nombre || null
+        },
+        resultados: resumen.map(item => ({
+          sku: item.sku,
+          descripcion: item.descripcionSnapshot,
+          cantidadTotal: parseInt(item.dataValues.cantidadTotal)
+        })),
+        totalProductos: resumen.length,
+        totalUnidades: resumen.reduce((sum, item) => sum + parseInt(item.dataValues.cantidadTotal), 0)
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+
 module.exports = {
   scanLectura,
   scanLecturaRonda,
+  anularLectura,
   getResumenLecturas,
-  getHistorialLecturas
+  getHistorialLecturas,
+  getEstadisticasGrupo,
+  exportarResultadosGrupo
 };

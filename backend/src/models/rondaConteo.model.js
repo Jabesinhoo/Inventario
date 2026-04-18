@@ -36,6 +36,19 @@ module.exports = (sequelize, DataTypes) => {
       observaciones: {
         type: DataTypes.TEXT,
         allowNull: true
+      },
+      tiempoInicio: {
+        type: DataTypes.DATE,
+        allowNull: true
+      },
+      tiempoFin: {
+        type: DataTypes.DATE,
+        allowNull: true
+      },
+      totalEscaneos: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0
       }
     },
     {

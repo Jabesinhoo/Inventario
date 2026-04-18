@@ -12,6 +12,7 @@ import GruposPage from './pages/grupos/GruposPage';
 import InventariosPage from './pages/inventarios/InventariosPage';
 import ProductosPage from './pages/productos/ProductosPage';
 import ZonasPage from './pages/zonas/ZonasPage';
+import ScriptsPage from './pages/admin/ScriptsPage';
 
 export default function App() {
   const auth = useAuth();
@@ -47,6 +48,8 @@ export default function App() {
           <Route path="conteo-inicial" element={<ConteoInicialPage />} />
           <Route path="diferencias" element={<DiferenciasPage />} />
           <Route path="escaneo" element={<EscaneoPage />} />
+          <Route path="scripts" element={<ScriptsPage />} />
+
         </Route>
 
         <Route path="*" element={<Navigate to="/" replace />} />

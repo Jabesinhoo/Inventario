@@ -1,245 +1,239 @@
-import { useEffect, useMemo, useState } from 'react';
-import { AlertTriangle, GitCompareArrows, ShieldCheck } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { GitCompareArrows, AlertTriangle, CheckCircle, Download, Edit3, Save, X } from 'lucide-react';
 import { getInventarios } from '../../services/inventarios.service';
-import {
-  getConteo1VsConteo2,
-  getInicialVsConteo1
-} from '../../services/diferencias.service';
-
-function getZoneSummary(rows) {
-  const byZone = new Map();
-
-  for (const row of rows) {
-    const key = `${row.zonaId}-${row.zona}`;
-    const current = byZone.get(key) || {
-      zonaId: row.zonaId,
-      zona: row.zona,
-      diferenciaTotal: 0,
-      skusConDiferencia: 0
-    };
-
-    current.diferenciaTotal += Number(row.diferencia || 0);
-    if (Number(row.diferencia || 0) > 0) {
-      current.skusConDiferencia += 1;
-    }
-
-    byZone.set(key, current);
-  }
-
-  return Array.from(byZone.values()).sort((a, b) => b.diferenciaTotal - a.diferenciaTotal);
-}
+import { getGrupos } from '../../services/grupos.service';
+import { getConteo1VsConteo2, getInicialVsConteo1, updateDiscrepanciaManual } from '../../services/diferencias.service';
 
 export default function DiferenciasPage() {
   const [inventarios, setInventarios] = useState([]);
+  const [grupos, setGrupos] = useState([]);
   const [inventarioId, setInventarioId] = useState('');
+  const [grupoId, setGrupoId] = useState('');
   const [modo, setModo] = useState('conteo1-vs-conteo2');
-  const [rows, setRows] = useState([]);
+  const [discrepancias, setDiscrepancias] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState(null);
+  const [editValue, setEditValue] = useState('');
   const [error, setError] = useState('');
 
-  async function boot() {
-    const inventariosData = await getInventarios();
-    setInventarios(inventariosData);
-
-    const firstInventarioId = inventariosData[0]?.id || '';
-    setInventarioId(firstInventarioId);
-
-    if (firstInventarioId) {
-      const data = await getConteo1VsConteo2(firstInventarioId);
-      setRows(data);
+  async function loadData() {
+    try {
+      const [inventariosData, gruposData] = await Promise.all([
+        getInventarios(),
+        getGrupos()
+      ]);
+      setInventarios(inventariosData);
+      setGrupos(gruposData);
+      
+      if (inventariosData.length > 0 && !inventarioId) {
+        setInventarioId(inventariosData[0].id);
+      }
+      if (gruposData.length > 0 && !grupoId) {
+        setGrupoId(gruposData[0].id);
+      }
+    } catch (err) {
+      setError('No se pudieron cargar los datos');
     }
   }
 
-  async function loadData(selectedInventarioId, selectedModo) {
-    if (!selectedInventarioId) {
-      setRows([]);
-      return;
+  async function loadDiscrepancias() {
+    if (!inventarioId || !grupoId) return;
+    
+    setLoading(true);
+    try {
+      const data = modo === 'inicial-vs-conteo1'
+        ? await getInicialVsConteo1(inventarioId, grupoId)
+        : await getConteo1VsConteo2(inventarioId, grupoId);
+      
+      // Filtrar solo discrepancias (diferencia > 0)
+      const soloDiscrepancias = data.filter(item => item.diferencia > 0);
+      setDiscrepancias(soloDiscrepancias);
+    } catch (err) {
+      setError('No se pudieron cargar las diferencias');
+    } finally {
+      setLoading(false);
     }
-
-    const data =
-      selectedModo === 'inicial-vs-conteo1'
-        ? await getInicialVsConteo1(selectedInventarioId)
-        : await getConteo1VsConteo2(selectedInventarioId);
-
-    setRows(data);
   }
 
   useEffect(() => {
-    boot()
-      .catch(() => setError('No se pudieron cargar las diferencias'))
-      .finally(() => setLoading(false));
+    loadData();
   }, []);
 
-  const summary = useMemo(() => {
-    const totalFilas = rows.length;
-    const totalDiferencia = rows.reduce((acc, item) => acc + Number(item.diferencia || 0), 0);
-    const filasConDiferencia = rows.filter((item) => Number(item.diferencia || 0) > 0).length;
-    const zonasAfectadas = new Set(
-      rows.filter((item) => Number(item.diferencia || 0) > 0).map((item) => item.zonaId)
-    ).size;
+  useEffect(() => {
+    if (inventarioId && grupoId) {
+      loadDiscrepancias();
+    }
+  }, [inventarioId, grupoId, modo]);
 
-    return {
-      totalFilas,
-      totalDiferencia,
-      filasConDiferencia,
-      zonasAfectadas
-    };
-  }, [rows]);
+  const handleEdit = (item) => {
+    const valorActual = modo === 'inicial-vs-conteo1' ? item.conteo1 : item.conteo2;
+    setEditing(item.sku);
+    setEditValue(valorActual);
+  };
 
-  const zoneSummary = useMemo(() => getZoneSummary(rows), [rows]);
+  const handleSave = async (item) => {
+    try {
+      await updateDiscrepanciaManual({
+        inventarioId,
+        zonaId: item.zonaId,
+        sku: item.sku,
+        cantidadFinal: parseInt(editValue),
+        observacion: 'Ajuste manual desde panel de diferencias'
+      });
+      setEditing(null);
+      await loadDiscrepancias();
+    } catch (err) {
+      setError('Error al guardar el ajuste');
+    }
+  };
 
-  if (loading) {
-    return <div className="card">Cargando diferencias...</div>;
-  }
+  const totalDiferencias = discrepancias.reduce((sum, item) => sum + item.diferencia, 0);
+  const zonasConDiferencias = new Set(discrepancias.map(d => d.zona)).size;
+  const productosConDiferencias = discrepancias.length;
+
+  if (loading) return <div className="card">Cargando diferencias...</div>;
 
   return (
-    <div className="grid-stack">
-      <div className="card">
-        <div className="filters-row">
-          <div className="form-group filter-item">
+    <div className="dashboard-container">
+      {/* Filtros */}
+      <div className="card filters-card">
+        <div className="filters-form">
+          <div className="form-group">
             <label>Inventario</label>
-            <select
-              value={inventarioId}
-              onChange={async (e) => {
-                const value = Number(e.target.value);
-                setInventarioId(value);
-                setError('');
-                await loadData(value, modo);
-              }}
-            >
-              <option value="">Selecciona</option>
-              {inventarios.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.nombre} - {item.fecha}
-                </option>
+            <select value={inventarioId} onChange={(e) => setInventarioId(Number(e.target.value))}>
+              {inventarios.map(inv => (
+                <option key={inv.id} value={inv.id}>{inv.nombre} - {inv.fecha}</option>
               ))}
             </select>
           </div>
-
-          <div className="form-group filter-item">
+          <div className="form-group">
+            <label>Grupo</label>
+            <select value={grupoId} onChange={(e) => setGrupoId(Number(e.target.value))}>
+              {grupos.filter(g => g.inventarioId === inventarioId).map(grupo => (
+                <option key={grupo.id} value={grupo.id}>{grupo.nombre}</option>
+              ))}
+            </select>
+          </div>
+          <div className="form-group">
             <label>Comparación</label>
-            <select
-              value={modo}
-              onChange={async (e) => {
-                const value = e.target.value;
-                setModo(value);
-                setError('');
-                await loadData(inventarioId, value);
-              }}
-            >
+            <select value={modo} onChange={(e) => setModo(e.target.value)}>
               <option value="conteo1-vs-conteo2">Conteo 1 vs Conteo 2</option>
               <option value="inicial-vs-conteo1">Inicial vs Conteo 1</option>
             </select>
           </div>
+          <button className="btn btn-primary" onClick={loadDiscrepancias}>Actualizar</button>
         </div>
-
-        {error ? <div className="alert-error">{error}</div> : null}
       </div>
 
-      <div className="grid-4">
-        <div className="card mini-kpi">
-          <div className="kpi-icon"><GitCompareArrows size={18} /></div>
-          <div>
-            <span className="muted">Filas comparadas</span>
-            <strong>{summary.totalFilas}</strong>
+      {/* Resumen */}
+      <div className="kpi-grid">
+        <div className="card kpi-card">
+          <div className="kpi-icon"><AlertTriangle size={24} /></div>
+          <div className="kpi-content">
+            <p className="kpi-title">Productos con diferencia</p>
+            <h3 className="kpi-value">{productosConDiferencias}</h3>
           </div>
         </div>
-
-        <div className="card mini-kpi">
-          <div className="kpi-icon"><AlertTriangle size={18} /></div>
-          <div>
-            <span className="muted">Filas con diferencia</span>
-            <strong>{summary.filasConDiferencia}</strong>
+        <div className="card kpi-card">
+          <div className="kpi-icon"><GitCompareArrows size={24} /></div>
+          <div className="kpi-content">
+            <p className="kpi-title">Total diferencia (unidades)</p>
+            <h3 className="kpi-value">{totalDiferencias}</h3>
           </div>
         </div>
-
-        <div className="card mini-kpi">
-          <div className="kpi-icon"><ShieldCheck size={18} /></div>
-          <div>
-            <span className="muted">Zonas afectadas</span>
-            <strong>{summary.zonasAfectadas}</strong>
-          </div>
-        </div>
-
-        <div className="card mini-kpi">
-          <div className="kpi-icon"><GitCompareArrows size={18} /></div>
-          <div>
-            <span className="muted">Diferencia total</span>
-            <strong>{summary.totalDiferencia}</strong>
+        <div className="card kpi-card">
+          <div className="kpi-icon"><CheckCircle size={24} /></div>
+          <div className="kpi-content">
+            <p className="kpi-title">Zonas afectadas</p>
+            <h3 className="kpi-value">{zonasConDiferencias}</h3>
           </div>
         </div>
       </div>
 
-      <div className="grid-2">
-        <div className="card">
-          <h2>Resumen por zona</h2>
-
-          {zoneSummary.length === 0 ? (
-            <p className="muted">No hay diferencias para mostrar.</p>
-          ) : (
-            <div className="table-list">
-              {zoneSummary.map((item) => (
-                <div key={`${item.zonaId}-${item.zona}`} className="list-row">
-                  <div>
-                    <strong>{item.zona}</strong>
-                    <p className="muted">
-                      Diferencia total: {item.diferenciaTotal} | SKUs con diferencia: {item.skusConDiferencia}
-                    </p>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-        </div>
-
-        <div className="card">
-          <h2>Interpretación</h2>
-          <p className="muted">
-            Esta vista te muestra dónde no coinciden los conteos. Las filas con diferencia distinta de cero
-            son las candidatas a revisión o tercer conteo.
-          </p>
-          <p className="muted">
-            La comparación activa es: <strong>{modo === 'inicial-vs-conteo1' ? 'Inicial vs Conteo 1' : 'Conteo 1 vs Conteo 2'}</strong>.
-          </p>
-        </div>
-      </div>
-
+      {/* Tabla de discrepancias */}
       <div className="card">
-        <h2>Detalle por SKU</h2>
+        <div className="list-header">
+          <h2 className="section-title">
+            <AlertTriangle size={20} />
+            <span>Productos que requieren reconteo</span>
+          </h2>
+          <button className="btn btn-outline" onClick={() => window.location.href = `/escaneo?grupo=${grupoId}&reconteo=true`}>
+            Ir a reconteo
+          </button>
+        </div>
 
-        {rows.length === 0 ? (
-          <p className="muted">No hay datos para esta comparación.</p>
+        {discrepancias.length === 0 ? (
+          <div className="alert-success">
+            <CheckCircle size={18} />
+            <span>¡No hay diferencias! Los conteos coinciden perfectamente.</span>
+          </div>
         ) : (
-          <div className="table-list">
-            {rows.map((item, index) => (
-              <div
-                key={`${item.zonaId}-${item.sku}-${index}`}
-                className={`list-row ${Number(item.diferencia) > 0 ? 'row-warning' : ''}`}
-              >
-                <div>
-                  <strong>{item.sku}</strong>
-                  <p className="muted">
-                    Zona: {item.zona || 'Sin zona'} | {item.descripcion || 'Sin descripción'}
-                  </p>
-                  {modo === 'inicial-vs-conteo1' ? (
-                    <p className="muted">
-                      Inicial: {item.inicial} | Conteo 1: {item.conteo1} | Diferencia: {item.diferencia}
-                    </p>
-                  ) : (
-                    <p className="muted">
-                      Conteo 1: {item.conteo1} | Conteo 2: {item.conteo2} | Diferencia: {item.diferencia}
-                    </p>
-                  )}
-                </div>
-
-                <span className={`status-pill ${Number(item.diferencia) > 0 ? 'warning' : 'success'}`}>
-                  {Number(item.diferencia) > 0 ? 'Diferencia' : 'Coincide'}
-                </span>
-              </div>
-            ))}
+          <div className="table-container">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Zona</th>
+                  <th>SKU</th>
+                  <th>Descripción</th>
+                  <th>Conteo 1</th>
+                  <th>Conteo 2</th>
+                  <th>Diferencia</th>
+                  <th>Acción</th>
+                </tr>
+              </thead>
+              <tbody>
+                {discrepancias.map(item => (
+                  <tr key={`${item.zonaId}-${item.sku}`} className="row-warning">
+                    <td>{item.zona}</td>
+                    <td><strong>{item.sku}</strong></td>
+                    <td>{item.descripcion || 'Sin descripción'}</td>
+                    <td>{item.conteo1}</td>
+                    <td>
+                      {editing === item.sku ? (
+                        <input
+                          type="number"
+                          value={editValue}
+                          onChange={(e) => setEditValue(e.target.value)}
+                          className="edit-input"
+                          autoFocus
+                        />
+                      ) : (
+                        item.conteo2
+                      )}
+                    </td>
+                    <td className={item.diferencia > 0 ? 'text-danger' : 'text-success'}>
+                      {item.diferencia > 0 ? `+${item.diferencia}` : item.diferencia}
+                    </td>
+                    <td>
+                      {editing === item.sku ? (
+                        <>
+                          <button className="icon-btn success" onClick={() => handleSave(item)}><Save size={16} /></button>
+                          <button className="icon-btn" onClick={() => setEditing(null)}><X size={16} /></button>
+                        </>
+                      ) : (
+                        <button className="icon-btn" onClick={() => handleEdit(item)}><Edit3 size={16} /></button>
+                      )}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
           </div>
         )}
       </div>
+
+      {/* Recomendación */}
+      {discrepancias.length > 0 && (
+        <div className="card alert-warning">
+          <h3>⚠️ Recomendación</h3>
+          <p>Se encontraron {discrepancias.length} productos con diferencias. 
+             Se recomienda realizar un <strong>reconteo</strong> solo de estos productos 
+             para el grupo <strong>{grupos.find(g => g.id === grupoId)?.nombre}</strong>.</p>
+          <button className="btn btn-primary" style={{ marginTop: '12px' }}>
+            Generar ronda de reconteo
+          </button>
+        </div>
+      )}
     </div>
   );
 }
