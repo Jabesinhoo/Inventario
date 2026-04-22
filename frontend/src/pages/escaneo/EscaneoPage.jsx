@@ -14,7 +14,7 @@ import {
   Boxes
 } from 'lucide-react';
 import { scanLecturaRonda, anularLectura, getResumenLecturas, getHistorialLecturas } from '../../services/lecturas.service';
-import { getRondasActivas, pausarRonda, reanudarRonda, iniciarRonda, getPendientesRonda } from '../../services/rondas.service';
+import { getRondas, pausarRonda, reanudarRonda, iniciarRonda, getPendientesRonda } from '../../services/rondas.service';
 import { getGrupos } from '../../services/grupos.service';
 import { getZonas } from '../../services/zonas.service';
 import { getInventarios } from '../../services/inventarios.service';
@@ -95,7 +95,7 @@ export default function EscaneoPage() {
       if (!selectedInventario || !selectedZona) return;
       
       try {
-        const data = await getRondasActivas(selectedInventario, selectedZona);
+        const data = await getRondas({ inventarioId: selectedInventario, zonaId: selectedZona });
         setRondas(data);
         
         // Buscar ronda activa o pendiente

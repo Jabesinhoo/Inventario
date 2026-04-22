@@ -8,7 +8,6 @@ import {
   LayoutGrid,
   ScanLine,
   ShieldAlert,
-  Tags,
   Users,
   Settings
 } from 'lucide-react';
@@ -18,8 +17,7 @@ const items = [
   { to: '/inventarios', label: 'Inventarios', icon: ClipboardList },
   { to: '/zonas', label: 'Zonas', icon: LayoutGrid },
   { to: '/grupos', label: 'Grupos', icon: Users },
-  { to: '/asignaciones', label: 'Asignaciones', icon: Tags },
-  { to: '/productos', label: 'Productos', icon: Boxes },
+  // ❌ ELIMINAR Asignaciones de aquí
   { to: '/conteo-inicial', label: 'Conteo inicial', icon: FileSpreadsheet },
   { to: '/diferencias', label: 'Diferencias', icon: GitCompareArrows },
   { to: '/tercer-conteo', label: 'Tercer conteo', icon: ShieldAlert },
@@ -31,11 +29,9 @@ export default function Sidebar() {
   return (
     <aside className="sidebar">
       <div className="sidebar-brand">Inventario App</div>
-
       <nav className="sidebar-nav">
         {items.map((item) => {
           const Icon = item.icon;
-
           return (
             <NavLink
               key={item.to}

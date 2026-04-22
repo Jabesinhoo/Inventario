@@ -3,7 +3,8 @@ const router = express.Router();
 const authMiddleware = require('../middleware/auth.middleware');
 const controller = require('../controllers/diferencias.controller');
 
-router.get('/inicial-vs-conteo1', authMiddleware, controller.getInicialVsConteo1);
-router.get('/conteo1-vs-conteo2', authMiddleware, controller.getConteo1VsConteo2);
+router.get('/comparar-inventarios', authMiddleware, controller.compareInventarios);
+router.post('/generar-reconteo', authMiddleware, controller.generarRondaReconteoDesdeComparacion);
+router.post('/ajuste-manual', authMiddleware, controller.updateDiscrepanciaManual);
 
 module.exports = router;

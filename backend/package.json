@@ -21,7 +21,8 @@
     "sqlserver:discover-port": "node scripts/sqlserver-discover-port.js",
     "sync:productos": "node scripts/sync-productos-from-sqlserver.js",
     "sqlserver:read-products": "node scripts/sqlserver-read-products.js",
-    "export:excel": "node scripts/export-to-excel.js"
+    "export:excel": "node scripts/export-to-excel.js",
+    "create:test-users": "node scripts/createTestUsers.js"
 
   },
   "dependencies": {

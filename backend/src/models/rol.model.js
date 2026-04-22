@@ -1,5 +1,5 @@
 module.exports = (sequelize, DataTypes) => {
-  return sequelize.define(
+  const Rol = sequelize.define(
     'Rol',
     {
       id: {
@@ -18,4 +18,10 @@ module.exports = (sequelize, DataTypes) => {
       timestamps: true
     }
   );
+
+  Rol.associate = function(models) {
+    Rol.hasMany(models.Usuario, { foreignKey: 'rolId', as: 'usuarios' });
+  };
+
+  return Rol;
 };

@@ -1,5 +1,5 @@
 module.exports = (sequelize, DataTypes) => {
-  return sequelize.define(
+  const Usuario = sequelize.define(
     'Usuario',
     {
       id: {
@@ -29,10 +29,23 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.INTEGER,
         allowNull: false
       }
+      // ✅ NO DEBE TENER grupoId AQUÍ
     },
     {
       tableName: 'usuarios',
       timestamps: true
     }
   );
+
+  Usuario.associate = function(models) {
+    Usuario.belongsTo(models.Rol, { foreignKey: 'rolId', as: 'rol' });
+    Usuario.belongsToMany(models.Grupo, {
+      through: 'usuario_grupo',
+      foreignKey: 'usuarioId',
+      otherKey: 'grupoId',
+      as: 'grupos'
+    });
+  };
+
+  return Usuario;
 };

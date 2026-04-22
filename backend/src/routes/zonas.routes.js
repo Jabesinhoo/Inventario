@@ -6,5 +6,7 @@ const allowRoles = require('../middleware/role.middleware');
 
 router.get('/', authMiddleware, zonasController.getZonas);
 router.post('/', authMiddleware, allowRoles('admin', 'supervisor'), zonasController.createZona);
+router.put('/:id', authMiddleware, allowRoles('admin', 'supervisor'), zonasController.updateZona);
+router.delete('/:id', authMiddleware, allowRoles('admin', 'supervisor'), zonasController.deleteZona);
 
 module.exports = router;

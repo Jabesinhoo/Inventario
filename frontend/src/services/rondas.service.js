@@ -5,6 +5,11 @@ export async function getRondas(params = {}) {
   return response.data.data;
 }
 
+// Alias para compatibilidad con EscaneoPage
+export async function getRondasActivas(inventarioId, zonaId) {
+  return getRondas({ inventarioId, zonaId });
+}
+
 export async function getRonda(id) {
   const response = await api.get(`/rondas/${id}`);
   return response.data.data;
@@ -43,13 +48,6 @@ export async function getPendientesRonda(id) {
 export async function conciliarRonda(id) {
   const response = await api.post(`/rondas/${id}/conciliar`);
   return response.data;
-}
-
-export async function getRondasActivas(inventarioId, zonaId) {
-  const response = await api.get('/rondas', { 
-    params: { inventarioId, zonaId } 
-  });
-  return response.data.data;
 }
 
 export async function getRondaActivaDelGrupo(grupoId) {

@@ -2,7 +2,7 @@ const { Sequelize } = require('sequelize');
 const path = require('path');
 const fs = require('fs');
 
-const sequelize = new Sequelize('inventario', 'postgres', 'Diosmio07', {
+const sequelize = new Sequelize('inventario', 'postgres', '1235', {
   host: 'localhost',
   port: 5432,
   dialect: 'postgres',
@@ -11,7 +11,6 @@ const sequelize = new Sequelize('inventario', 'postgres', 'Diosmio07', {
 
 async function runMigrations() {
   try {
-    // Sincronizar modelos (alternativa a migraciones)
     const modelsPath = path.join(__dirname, '../src/models');
     const files = fs.readdirSync(modelsPath);
     

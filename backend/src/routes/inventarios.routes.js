@@ -6,5 +6,7 @@ const allowRoles = require('../middleware/role.middleware');
 
 router.get('/', authMiddleware, inventariosController.getInventarios);
 router.post('/', authMiddleware, allowRoles('admin', 'supervisor'), inventariosController.createInventario);
+router.put('/:id', authMiddleware, allowRoles('admin', 'supervisor'), inventariosController.updateInventario);
+router.delete('/:id', authMiddleware, allowRoles('admin', 'supervisor'), inventariosController.deleteInventario);
 
 module.exports = router;

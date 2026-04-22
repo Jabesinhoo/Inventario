@@ -1,5 +1,5 @@
 module.exports = (sequelize, DataTypes) => {
-  return sequelize.define(
+  const Grupo = sequelize.define(
     'Grupo',
     {
       id: {
@@ -35,4 +35,17 @@ module.exports = (sequelize, DataTypes) => {
       timestamps: true
     }
   );
+
+  Grupo.associate = function(models) {
+    Grupo.belongsTo(models.Inventario, { foreignKey: 'inventarioId', as: 'inventario' });
+    Grupo.belongsTo(models.Usuario, { foreignKey: 'liderId', as: 'lider' });
+    Grupo.belongsToMany(models.Usuario, {
+      through: 'usuario_grupo',
+      foreignKey: 'grupoId',
+      otherKey: 'usuarioId',
+      as: 'miembros'
+    });
+  };
+
+  return Grupo;
 };

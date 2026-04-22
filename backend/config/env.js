@@ -13,7 +13,7 @@ const env = {
     port: parseInt(process.env.DB_PORT, 10) || 5432,
     name: process.env.DB_NAME || 'inventario',
     user: process.env.DB_USER || 'postgres',
-    password: process.env.DB_PASSWORD || 'Diosmio07',
+    password: process.env.DB_PASSWORD || '1235',
   },
   
   jwt: {

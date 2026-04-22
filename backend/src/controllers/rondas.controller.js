@@ -604,9 +604,43 @@ async function ajusteManual(req, res, next) {
     next(error);
   }
 }
+// ==================== RONDA ACTIVA POR GRUPO ====================
+
+async function getRondaActivaDelGrupo(req, res, next) {
+  try {
+    const { grupoId } = req.query;
+    
+    if (!grupoId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'grupoId es requerido'
+      });
+    }
+    
+    const ronda = await RondaConteo.findOne({
+      include: [{
+        model: AsignacionRonda,
+        as: 'asignacion',
+        where: { grupoId },
+        required: true,
+        include: [{ model: Grupo, as: 'grupo', attributes: ['id', 'nombre'] }]
+      }],
+      where: { estado: 'activa' },
+      include: [
+        { model: Zona, as: 'zona', attributes: ['id', 'nombre', 'codigo'] }
+      ]
+    });
+    
+    res.json({
+      ok: true,
+      data: ronda || null
+    });
+  } catch (error) {
+    next(error);
+  }
+}
 
 // ==================== EXPORTS ====================
-
 module.exports = {
   createRonda,
   getRondas,
@@ -616,5 +650,6 @@ module.exports = {
   cerrarRonda,
   getPendientesRonda,
   conciliarRonda,
-  ajusteManual
+  ajusteManual,
+  getRondaActivaDelGrupo  // 👈 AGREGAR ESTA LÍNEA
 };

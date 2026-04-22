@@ -1,17 +1,15 @@
 import api from './api';
 
-export async function getInicialVsConteo1(inventarioId, grupoId) {
-  const response = await api.get('/diferencias/inicial-vs-conteo1', {
-    params: { inventarioId, grupoId }
+export async function compareInventarios(params) {
+  const response = await api.get('/diferencias/comparar-inventarios', {
+    params
   });
   return response.data.data;
 }
 
-export async function getConteo1VsConteo2(inventarioId, grupoId) {
-  const response = await api.get('/diferencias/conteo1-vs-conteo2', {
-    params: { inventarioId, grupoId }
-  });
-  return response.data.data;
+export async function generarRondaReconteoDesdeComparacion(payload) {
+  const response = await api.post('/diferencias/generar-reconteo', payload);
+  return response.data;
 }
 
 export async function updateDiscrepanciaManual(data) {

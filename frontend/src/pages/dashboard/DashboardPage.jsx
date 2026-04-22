@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   AlertTriangle,
   BarChart3,
@@ -8,6 +8,7 @@ import {
   Clock,
   GitCompareArrows,
   LayoutGrid,
+  RefreshCw,
   ScanLine,
   Trophy,
   Users,
@@ -31,10 +32,9 @@ import {
 import { getDashboard } from '../../services/dashboard.service';
 import { getInventarios } from '../../services/inventarios.service';
 
-// Colores para gráficos
 const COLORS = ['#2563eb', '#7c3aed', '#0891b2', '#16a34a', '#ea580c', '#dc2626', '#f59e0b', '#8b5cf6'];
 
-function KpiCard({ title, value, icon: Icon, subtitle, trend }) {
+function KpiCard({ title, value, icon: Icon, subtitle }) {
   return (
     <div className="card kpi-card">
       <div className="kpi-icon">
@@ -42,20 +42,9 @@ function KpiCard({ title, value, icon: Icon, subtitle, trend }) {
       </div>
       <div className="kpi-content">
         <p className="muted kpi-title">{title}</p>
-        <h3 className="kpi-value">{value ?? 0}</h3>
+        <h3 className="kpi-value">{value?.toLocaleString() ?? 0}</h3>
         {subtitle && <p className="muted kpi-subtitle">{subtitle}</p>}
-        {trend && <span className={`trend ${trend > 0 ? 'positive' : 'negative'}`}>{trend > 0 ? '↑' : '↓'} {Math.abs(trend)}%</span>}
       </div>
-    </div>
-  );
-}
-
-function MiniStat({ label, value, icon: Icon }) {
-  return (
-    <div className="mini-stat-card">
-      {Icon && <Icon size={16} className="mini-stat-icon" />}
-      <span className="mini-stat-label">{label}</span>
-      <strong className="mini-stat-value">{value}</strong>
     </div>
   );
 }
@@ -67,19 +56,15 @@ export default function DashboardPage() {
   const [data, setData] = useState(null);
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [lastUpdate, setLastUpdate] = useState(null);
+  
+  const pollingRef = useRef(null);
 
-  async function loadDashboardData(params = {}) {
+  // Cargar lista de inventarios
+  const loadInventariosList = async () => {
     try {
-      const result = await getDashboard(params);
-      setData(result);
-    } catch (err) {
-      setError(err.response?.data?.message || 'No se pudo cargar el dashboard');
-    }
-  }
-
-  async function loadInventariosList() {
-    try {
-      const result = await getInventarios(); // 👈 USAR EL SERVICIO EXISTENTE
+      const result = await getInventarios();
       setInventarios(result);
       if (result && result.length > 0 && !inventarioId) {
         setInventarioId(result[0].id);
@@ -88,46 +73,119 @@ export default function DashboardPage() {
       console.error('Error cargando inventarios:', err);
       setError('No se pudieron cargar los inventarios');
     }
-  }
+  };
 
-  useEffect(() => {
-    loadInventariosList();
-  }, []);
-
-  useEffect(() => {
-    if (inventarioId) {
-      setLoading(true);
-      loadDashboardData({ inventarioId, ...(fecha ? { fecha } : {}) })
-        .catch(() => setError('No se pudo cargar el dashboard'))
-        .finally(() => setLoading(false));
-    }
-  }, [inventarioId, fecha]);
-
-  const handleFilter = async (e) => {
-    e.preventDefault();
+  // Cargar datos del dashboard
+  const loadDashboardData = async (showRefreshing = false) => {
     if (!inventarioId) return;
-    setLoading(true);
-    setError('');
+    
+    if (showRefreshing) {
+      setRefreshing(true);
+    } else {
+      setLoading(true);
+    }
+    
     try {
-      await loadDashboardData({ inventarioId, ...(fecha ? { fecha } : {}) });
-    } catch {
-      setError('No se pudo actualizar el dashboard');
+      console.log('Cargando dashboard para inventario:', inventarioId);
+      const result = await getDashboard({ 
+        inventarioId, 
+        ...(fecha ? { fecha } : {}) 
+      });
+      
+      setData(result);
+      setLastUpdate(new Date());
+      setError('');
+    } catch (err) {
+      console.error('Error cargando dashboard:', err);
+      setError(err.response?.data?.message || 'No se pudo cargar el dashboard');
     } finally {
       setLoading(false);
+      setRefreshing(false);
     }
   };
 
+  // Configurar polling
+  const startPolling = useCallback(() => {
+    if (pollingRef.current) {
+      clearInterval(pollingRef.current);
+    }
+    
+    pollingRef.current = setInterval(() => {
+      if (inventarioId && !refreshing && !loading) {
+        loadDashboardData(true);
+      }
+    }, 30000);
+  }, [inventarioId, refreshing, loading]);
+
+  // Cargar datos iniciales
+  useEffect(() => {
+    loadInventariosList();
+    
+    return () => {
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current);
+      }
+    };
+  }, []);
+
+  // Cargar dashboard cuando cambia inventario o fecha
+  useEffect(() => {
+    if (inventarioId) {
+      loadDashboardData();
+      startPolling();
+    }
+    
+    return () => {
+      if (pollingRef.current) {
+        clearInterval(pollingRef.current);
+      }
+    };
+  }, [inventarioId, fecha]);
+
+  // Refrescar manualmente
+  const handleRefresh = () => {
+    if (!refreshing && !loading) {
+      loadDashboardData(true);
+    }
+  };
+
+  const handleFilter = (e) => {
+    e.preventDefault();
+    loadDashboardData();
+  };
+
+  // Mostrar estado de carga
   if (loading && !data) {
-    return <div className="card loading-card">Cargando dashboard...</div>;
+    return (
+      <div className="card loading-card">
+        <div className="loading-spinner"></div>
+        <p>Cargando dashboard...</p>
+      </div>
+    );
+  }
+
+  if (error && !data) {
+    return (
+      <div className="card error-card">
+        <AlertTriangle size={32} />
+        <p>{error}</p>
+        <button className="btn btn-primary" onClick={() => loadDashboardData()}>
+          Reintentar
+        </button>
+      </div>
+    );
   }
 
   if (!data) {
-    return <div className="card error-card">{error || 'Sin datos disponibles'}</div>;
+    return (
+      <div className="card error-card">
+        <p>No hay datos disponibles. Selecciona un inventario.</p>
+      </div>
+    );
   }
 
   const { resumenGeneral, conteos, porZona, porGrupo, usuarios, productos, tiempos, reconteos, graficos, alertas } = data;
 
-  // Preparar datos para gráficos
   const zonePie = graficos?.distribucionPorZona?.map((item, index) => ({
     ...item,
     fill: COLORS[index % COLORS.length]
@@ -138,24 +196,58 @@ export default function DashboardPage() {
 
   return (
     <div className="dashboard-container">
-      {/* Filtros */}
+      {/* Header con control de tiempo real */}
       <div className="card filters-card">
-        <form className="filters-form" onSubmit={handleFilter}>
-          <div className="form-group">
-            <label>Inventario</label>
-            <select value={inventarioId} onChange={(e) => setInventarioId(e.target.value)}>
-              <option value="">Seleccionar inventario</option>
-              {inventarios.map((inv) => (
-                <option key={inv.id} value={inv.id}>{inv.nombre} - {inv.fecha}</option>
-              ))}
-            </select>
+        <div className="filters-header">
+          <div className="filters-form">
+            <div className="form-group">
+              <label>Inventario</label>
+              <select 
+                value={inventarioId} 
+                onChange={(e) => setInventarioId(e.target.value)}
+                disabled={loading || refreshing}
+              >
+                <option value="">Seleccionar inventario</option>
+                {inventarios.map((inv) => (
+                  <option key={inv.id} value={inv.id}>{inv.nombre} - {inv.fecha}</option>
+                ))}
+              </select>
+            </div>
+            <div className="form-group">
+              <label>Fecha específica</label>
+              <input 
+                type="date" 
+                value={fecha} 
+                onChange={(e) => setFecha(e.target.value)}
+                disabled={loading || refreshing}
+              />
+            </div>
+            <button 
+              className="btn btn-primary" 
+              onClick={handleFilter}
+              disabled={loading || refreshing}
+            >
+              Filtrar
+            </button>
           </div>
-          <div className="form-group">
-            <label>Fecha específica</label>
-            <input type="date" value={fecha} onChange={(e) => setFecha(e.target.value)} />
+          
+          <div className="filters-actions">
+            {lastUpdate && (
+              <div className="last-update">
+                <Clock size={14} />
+                <span>Última actualización: {lastUpdate.toLocaleTimeString()}</span>
+              </div>
+            )}
+            <button 
+              className="btn btn-outline" 
+              onClick={handleRefresh} 
+              disabled={refreshing || loading}
+            >
+              <RefreshCw size={16} className={refreshing ? 'spin' : ''} />
+              {refreshing ? 'Actualizando...' : 'Actualizar'}
+            </button>
           </div>
-          <button className="btn btn-primary" type="submit">Filtrar</button>
-        </form>
+        </div>
       </div>
 
       {/* KPIs Principales */}
@@ -282,7 +374,7 @@ export default function DashboardPage() {
         </div>
       </div>
 
-      {/* Alertas */}
+      {/* Alertas y Estadísticas */}
       <div className="alerts-grid">
         <div className="card alert-card">
           <h3><AlertTriangle size={16} /> Alertas</h3>
