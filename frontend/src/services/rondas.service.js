@@ -50,7 +50,16 @@ export async function conciliarRonda(id) {
   return response.data;
 }
 
-export async function getRondaActivaDelGrupo(grupoId) {
-  const response = await api.get('/rondas/activa', { params: { grupoId } });
+export async function reabrirRonda(id) {
+  const response = await api.patch(`/rondas/${id}/reabrir`);
+  return response.data.data;
+}
+export async function getRondaActivaDelGrupo(inventarioId, grupoId = null) {
+  const params = {};
+
+  if (inventarioId) params.inventarioId = inventarioId;
+  if (grupoId) params.grupoId = grupoId;
+
+  const response = await api.get('/rondas/activa', { params });
   return response.data.data;
 }

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useAuth } from '../../hooks/useAuth';
 import {
   ScanLine,
   Play,
@@ -24,6 +25,7 @@ import {
 } from '../../services/lecturas.service';
 import {
   getRondas,
+  getRondaActivaDelGrupo,
   pausarRonda,
   reanudarRonda,
   iniciarRonda,
@@ -54,6 +56,10 @@ export default function EscaneoPage() {
   const [syncing, setSyncing] = useState(false);
   const [exporting, setExporting] = useState(false);
 
+
+  const auth = useAuth();
+  const rol = String(auth?.user?.rol || auth?.user?.rol?.nombre || '').toLowerCase();
+  const isContador = rol === 'contador';
   const [flash, setFlash] = useState({ type: '', text: '' });
 
   const setFlashMessage = useCallback((text, type = 'success') => {
@@ -113,13 +119,33 @@ export default function EscaneoPage() {
   }
 
   const loadRondasData = useCallback(async (inventarioId, currentSelectedId = null) => {
-    if (!inventarioId) {
-      setRondas([]);
-      setSelectedRondaId('');
-      return;
-    }
-
     try {
+      if (isContador) {
+        if (!inventarioId) {
+          setRondas([]);
+          setSelectedRondaId('');
+          return;
+        }
+
+        const rondaActiva = await getRondaActivaDelGrupo(inventarioId);
+
+        if (!rondaActiva) {
+          setRondas([]);
+          setSelectedRondaId('');
+          return;
+        }
+
+        setRondas([rondaActiva]);
+        setSelectedRondaId(rondaActiva.id);
+        return;
+      }
+
+      if (!inventarioId) {
+        setRondas([]);
+        setSelectedRondaId('');
+        return;
+      }
+
       const data = await getRondas({ inventarioId });
       setRondas(data || []);
 
@@ -133,12 +159,11 @@ export default function EscaneoPage() {
 
       setSelectedRondaId(preferred?.id || '');
     } catch (err) {
-      setFlashMessage('No se pudieron cargar las rondas', 'error');
+      setFlashMessage(err.response?.data?.message || 'No se pudieron cargar las rondas', 'error');
       setRondas([]);
       setSelectedRondaId('');
     }
-  }, [setFlashMessage]);
-
+  }, [isContador, setFlashMessage]);
   const loadRoundContext = useCallback(async (ronda) => {
     if (!ronda?.id) {
       setPendientes([]);
@@ -183,11 +208,18 @@ export default function EscaneoPage() {
   }, []);
 
   useEffect(() => {
+    if (isContador) return;
     if (selectedInventario) {
       loadRondasData(selectedInventario, selectedRondaId);
     }
-  }, [selectedInventario, loadRondasData]);
+  }, [isContador, selectedInventario, selectedRondaId, loadRondasData]);
 
+  useEffect(() => {
+    if (!isContador) return;
+    if (selectedInventario) {
+      loadRondasData(selectedInventario, null);
+    }
+  }, [isContador, selectedInventario, loadRondasData]);
   useEffect(() => {
     if (selectedRonda) {
       loadRoundContext(selectedRonda);
@@ -217,7 +249,7 @@ export default function EscaneoPage() {
 
   const handleRefresh = async () => {
     if (!selectedInventario) return;
-    await loadRondasData(selectedInventario, selectedRondaId);
+    await loadRondasData(selectedInventario, isContador ? null : selectedRondaId);
   };
 
   const handleRondaAction = async (action) => {
@@ -405,81 +437,99 @@ export default function EscaneoPage() {
       <audio ref={audioRef} src="/beep.mp3" preload="auto" />
 
       <div className="card filters-card escaneo-toolbar">
-        <div className="filters-header">
-          <div className="filters-form">
-            <div className="form-group">
-              <label>Inventario</label>
-              <select
-                value={selectedInventario}
-                onChange={(e) => setSelectedInventario(Number(e.target.value))}
-              >
-                {inventarios.map((inv) => (
-                  <option key={inv.id} value={inv.id}>
-                    {inv.nombre} - {inv.fecha}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="form-group">
-              <label>Ronda de trabajo</label>
-              <select
-                value={selectedRondaId || ''}
-                onChange={(e) => setSelectedRondaId(Number(e.target.value))}
-                disabled={rondas.length === 0}
-              >
-                <option value="">Selecciona una ronda</option>
-                {rondas.map((ronda) => (
-                  <option key={ronda.id} value={ronda.id}>
-                    Ronda {ronda.numeroRonda} · {ronda.tipoRonda} · {ronda.estado}
-                  </option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          <div className="filters-actions">
-            <div className="last-update">
-              <Clock size={14} />
-              <span>{syncing ? 'Sincronizando...' : 'Vista sincronizada'}</span>
-            </div>
-
-            <button className="btn btn-outline" onClick={handleRefresh}>
-              <RefreshCw size={16} className={syncing ? 'spin' : ''} />
-              <span>Actualizar</span>
-            </button>
-          </div>
-        </div>
-
-        {selectedRonda ? (
-          <div className="escaneo-meta-grid">
-            <div className="escaneo-meta-item">
-              <span className="meta-label">Grupo</span>
-              <strong>{grupoAsignado?.nombre || 'Sin grupo'}</strong>
-            </div>
-
-            <div className="escaneo-meta-item">
-              <span className="meta-label">Zona</span>
-              <strong>
-                {zonaRonda?.nombre || 'Sin zona'}
-                {zonaRonda?.codigo ? ` (${zonaRonda.codigo})` : ''}
-              </strong>
-            </div>
-
-            <div className="escaneo-meta-item">
-              <span className="meta-label">Tipo</span>
-              <strong>{selectedRonda.tipoRonda === 'reconteo' ? 'Reconteo' : 'Completa'}</strong>
-            </div>
-
-            <div className="escaneo-meta-item">
-              <span className="meta-label">Estado</span>
-              <span className={`status-chip ${selectedRonda.estado}`}>
-                {selectedRonda.estado}
-              </span>
-            </div>
-          </div>
-        ) : null}
+  <div className="filters-header">
+    <div className="filters-form">
+      <div className="form-group">
+        <label>Inventario</label>
+        <select
+          value={selectedInventario}
+          onChange={(e) => setSelectedInventario(Number(e.target.value))}
+        >
+          {inventarios.map((inv) => (
+            <option key={inv.id} value={inv.id}>
+              {inv.nombre} - {inv.fecha}
+            </option>
+          ))}
+        </select>
       </div>
+
+      {!isContador && (
+        <div className="form-group">
+          <label>Ronda de trabajo</label>
+          <select
+            value={selectedRondaId || ''}
+            onChange={(e) => setSelectedRondaId(Number(e.target.value))}
+            disabled={rondas.length === 0}
+          >
+            <option value="">Selecciona una ronda</option>
+            {rondas.map((ronda) => (
+              <option key={ronda.id} value={ronda.id}>
+                Ronda {ronda.numeroRonda} · {ronda.tipoRonda} · {ronda.estado}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {isContador && (
+        <div className="form-group">
+          <label>Ronda asignada</label>
+          <input
+            value={
+              selectedRonda
+                ? `Ronda ${selectedRonda.numeroRonda} · ${selectedRonda.tipoRonda} · ${selectedRonda.estado}`
+                : 'No tienes ronda activa en este inventario'
+            }
+            disabled
+          />
+        </div>
+      )}
+    </div>
+
+    <div className="filters-actions">
+      <div className="last-update">
+        <Clock size={14} />
+        <span>{syncing ? 'Sincronizando...' : 'Vista sincronizada'}</span>
+      </div>
+
+      <button className="btn btn-outline" onClick={handleRefresh}>
+        <RefreshCw size={16} className={syncing ? 'spin' : ''} />
+        <span>Actualizar</span>
+      </button>
+    </div>
+  </div>
+
+  {selectedRonda ? (
+    <div className="escaneo-meta-grid">
+      <div className="escaneo-meta-item">
+        <span className="meta-label">Grupo</span>
+        <strong>{grupoAsignado?.nombre || 'Sin grupo'}</strong>
+      </div>
+
+      <div className="escaneo-meta-item">
+        <span className="meta-label">Zona</span>
+        <strong>
+          {zonaRonda?.nombre || 'Sin zona'}
+          {zonaRonda?.codigo ? ` (${zonaRonda.codigo})` : ''}
+        </strong>
+      </div>
+
+      <div className="escaneo-meta-item">
+        <span className="meta-label">Tipo</span>
+        <strong>
+          {selectedRonda.tipoRonda === 'reconteo' ? 'Reconteo' : 'Completa'}
+        </strong>
+      </div>
+
+      <div className="escaneo-meta-item">
+        <span className="meta-label">Estado</span>
+        <span className={`status-chip ${selectedRonda.estado}`}>
+          {selectedRonda.estado}
+        </span>
+      </div>
+    </div>
+  ) : null}
+</div>
 
       {flash.text ? (
         <div className={`alert-${flash.type === 'error' ? 'error' : flash.type === 'warning' ? 'warning' : 'success'}`}>

@@ -5,11 +5,9 @@ const { injectGrupoId } = require('../middleware/grupo.middleware');
 const allowRoles = require('../middleware/role.middleware');
 const controller = require('../controllers/rondas.controller');
 
-// Rutas específicas primero
-router.get('/activa', authMiddleware, injectGrupoId, controller.getRondaActivaDelGrupo);
+router.get('/activa', authMiddleware, controller.getRondaActivaDelGrupo);
 
 router.get('/', authMiddleware, injectGrupoId, controller.getRondas);
-router.get('/:id', authMiddleware, injectGrupoId, controller.getRonda);
 router.get('/:id/pendientes', authMiddleware, injectGrupoId, controller.getPendientesRonda);
 
 router.post('/', authMiddleware, allowRoles('admin', 'supervisor'), controller.createRonda);
@@ -19,6 +17,7 @@ router.patch('/:id/iniciar', authMiddleware, injectGrupoId, controller.iniciarRo
 router.patch('/:id/pausar', authMiddleware, injectGrupoId, controller.pausarRonda);
 router.patch('/:id/reanudar', authMiddleware, injectGrupoId, controller.reanudarRonda);
 router.patch('/:id/cerrar', authMiddleware, allowRoles('admin', 'supervisor'), controller.cerrarRonda);
+router.patch('/:id/reabrir', authMiddleware, allowRoles('admin', 'supervisor'), controller.reabrirRonda);
 
 router.post(
   '/:inventarioId/:zonaId/:sku/ajuste-manual',

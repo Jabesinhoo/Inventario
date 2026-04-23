@@ -3,30 +3,28 @@ import {
   Layers3,
   PlusCircle,
   RefreshCw,
-  Link2,
   Play,
   Pause,
   RotateCcw,
   Lock,
   MapPin,
-  Boxes
+  Boxes,
+  Users
 } from 'lucide-react';
 import { getInventarios } from '../../services/inventarios.service';
-import { getZonas } from '../../services/zonas.service';
 import { getGrupos } from '../../services/grupos.service';
+
 import {
   getRondas,
   createRonda,
   iniciarRonda,
   pausarRonda,
   reanudarRonda,
-  cerrarRonda
+  cerrarRonda,
+  reabrirRonda
 } from '../../services/rondas.service';
-import { createAsignacionRonda } from '../../services/asignacionesRonda.service';
-
 export default function RondasPage() {
   const [inventarios, setInventarios] = useState([]);
-  const [zonas, setZonas] = useState([]);
   const [grupos, setGrupos] = useState([]);
   const [rondas, setRondas] = useState([]);
 
@@ -38,24 +36,17 @@ export default function RondasPage() {
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
 
-  const [asignacionDraft, setAsignacionDraft] = useState({});
-
   const [form, setForm] = useState({
     inventarioId: '',
-    zonaId: '',
+    grupoId: '',
     tipoRonda: 'completa',
     observaciones: ''
   });
 
   async function loadBaseData() {
     try {
-      const [inventariosData, zonasData] = await Promise.all([
-        getInventarios(),
-        getZonas()
-      ]);
-
+      const inventariosData = await getInventarios();
       setInventarios(inventariosData || []);
-      setZonas(zonasData || []);
 
       if (inventariosData?.length > 0) {
         const firstInventarioId = inventariosData[0].id;
@@ -66,22 +57,20 @@ export default function RondasPage() {
         }));
       }
     } catch (err) {
-      setError('No se pudieron cargar los datos base');
+      setError('No se pudieron cargar los inventarios');
     } finally {
       setLoading(false);
     }
   }
 
-  async function loadGruposYRounds(inventarioId, { silent = false } = {}) {
+  async function loadData(inventarioId, { silent = false } = {}) {
     if (!inventarioId) {
       setGrupos([]);
       setRondas([]);
       return;
     }
 
-    if (!silent) {
-      setRefreshing(true);
-    }
+    if (!silent) setRefreshing(true);
 
     try {
       const [gruposData, rondasData] = await Promise.all([
@@ -104,102 +93,49 @@ export default function RondasPage() {
 
   useEffect(() => {
     if (inventarioFiltro) {
-      loadGruposYRounds(inventarioFiltro);
+      loadData(inventarioFiltro);
     }
   }, [inventarioFiltro]);
-
-  const rondasFiltradas = useMemo(() => {
-    return [...rondas].sort((a, b) => {
-      if (Number(a.zonaId) !== Number(b.zonaId)) {
-        return Number(a.zonaId) - Number(b.zonaId);
-      }
-      return Number(a.numeroRonda) - Number(b.numeroRonda);
-    });
-  }, [rondas]);
 
   const gruposDelInventario = useMemo(() => {
     return grupos.filter((g) => Number(g.inventarioId) === Number(inventarioFiltro));
   }, [grupos, inventarioFiltro]);
 
-  function getSiguienteNumeroRonda(zonaId) {
-    const rondasZona = rondas.filter((r) => Number(r.zonaId) === Number(zonaId));
-    const maxNumero = rondasZona.reduce((max, r) => Math.max(max, Number(r.numeroRonda || 0)), 0);
-    return maxNumero + 1;
-  }
-
-  function getUltimaRondaZona(zonaId) {
-    const rondasZona = rondas
-      .filter((r) => Number(r.zonaId) === Number(zonaId))
-      .sort((a, b) => Number(b.numeroRonda) - Number(a.numeroRonda));
-
-    return rondasZona[0] || null;
-  }
+  const grupoSeleccionado = useMemo(() => {
+    return gruposDelInventario.find((g) => Number(g.id) === Number(form.grupoId)) || null;
+  }, [gruposDelInventario, form.grupoId]);
 
   async function handleCreateRonda(e) {
     e.preventDefault();
-
-    if (!form.inventarioId || !form.zonaId) {
-      setError('Debes seleccionar inventario y zona');
-      return;
-    }
-
     setSaving(true);
     setError('');
     setMessage('');
 
     try {
-      const ultimaRondaZona = getUltimaRondaZona(form.zonaId);
+      if (!form.grupoId) {
+        setError('Debes seleccionar un grupo');
+        return;
+      }
 
-      const payload = {
-        inventarioId: Number(form.inventarioId),
-        zonaId: Number(form.zonaId),
-        numeroRonda: getSiguienteNumeroRonda(form.zonaId),
+      await createRonda({
+        grupoId: Number(form.grupoId),
         tipoRonda: form.tipoRonda,
-        generadaDesdeRondaId:
-          form.tipoRonda === 'reconteo' && ultimaRondaZona ? ultimaRondaZona.id : null,
         observaciones: form.observaciones?.trim() || null
-      };
-
-      await createRonda(payload);
+      });
 
       setMessage('Ronda creada correctamente');
       setForm((prev) => ({
         ...prev,
-        zonaId: '',
+        grupoId: '',
         tipoRonda: 'completa',
         observaciones: ''
       }));
 
-      await loadGruposYRounds(inventarioFiltro, { silent: true });
+      await loadData(inventarioFiltro, { silent: true });
     } catch (err) {
       setError(err.response?.data?.message || 'No se pudo crear la ronda');
     } finally {
       setSaving(false);
-    }
-  }
-
-  async function handleAsignarGrupo(rondaId) {
-    const grupoId = asignacionDraft[rondaId];
-
-    if (!grupoId) {
-      setError('Debes seleccionar un grupo');
-      return;
-    }
-
-    setError('');
-    setMessage('');
-
-    try {
-      await createAsignacionRonda({
-        rondaId: Number(rondaId),
-        grupoId: Number(grupoId)
-      });
-
-      setMessage('Grupo asignado correctamente a la ronda');
-      setAsignacionDraft((prev) => ({ ...prev, [rondaId]: '' }));
-      await loadGruposYRounds(inventarioFiltro, { silent: true });
-    } catch (err) {
-      setError(err.response?.data?.message || 'No se pudo asignar el grupo');
     }
   }
 
@@ -222,9 +158,14 @@ export default function RondasPage() {
         if (!ok) return;
         await cerrarRonda(ronda.id);
         setMessage(`Ronda ${ronda.numeroRonda} cerrada`);
+      } else if (accion === 'reabrir') {
+        const ok = window.confirm('¿Reabrir esta ronda? Quedará en estado pausada.');
+        if (!ok) return;
+        await reabrirRonda(ronda.id);
+        setMessage(`Ronda ${ronda.numeroRonda} reabierta`);
       }
 
-      await loadGruposYRounds(inventarioFiltro, { silent: true });
+      await loadData(inventarioFiltro, { silent: true });
     } catch (err) {
       setError(err.response?.data?.message || 'No se pudo actualizar la ronda');
     }
@@ -259,7 +200,11 @@ export default function RondasPage() {
                 value={form.inventarioId}
                 onChange={(e) => {
                   const value = Number(e.target.value);
-                  setForm((prev) => ({ ...prev, inventarioId: value, zonaId: '' }));
+                  setForm((prev) => ({
+                    ...prev,
+                    inventarioId: value,
+                    grupoId: ''
+                  }));
                   setInventarioFiltro(value);
                 }}
                 required
@@ -274,21 +219,36 @@ export default function RondasPage() {
             </div>
 
             <div className="form-group">
-              <label>Zona</label>
+              <label>Grupo</label>
               <select
-                value={form.zonaId}
+                value={form.grupoId}
                 onChange={(e) =>
-                  setForm((prev) => ({ ...prev, zonaId: Number(e.target.value) || '' }))
+                  setForm((prev) => ({
+                    ...prev,
+                    grupoId: Number(e.target.value) || ''
+                  }))
                 }
                 required
               >
-                <option value="">Selecciona una zona</option>
-                {zonas.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.nombre} ({item.codigo})
+                <option value="">Selecciona un grupo</option>
+                {gruposDelInventario.map((grupo) => (
+                  <option key={grupo.id} value={grupo.id}>
+                    {grupo.nombre}
                   </option>
                 ))}
               </select>
+            </div>
+
+            <div className="form-group">
+              <label>Zona del grupo</label>
+              <input
+                value={
+                  grupoSeleccionado?.zonaAsignada
+                    ? `${grupoSeleccionado.zonaAsignada.nombre} (${grupoSeleccionado.zonaAsignada.codigo || 'sin código'})`
+                    : 'El grupo no tiene zona asignada'
+                }
+                disabled
+              />
             </div>
 
             <div className="form-group">
@@ -302,15 +262,6 @@ export default function RondasPage() {
                 <option value="completa">Completa</option>
                 <option value="reconteo">Reconteo</option>
               </select>
-            </div>
-
-            <div className="form-group">
-              <label>Número sugerido</label>
-              <input
-                value={form.zonaId ? getSiguienteNumeroRonda(form.zonaId) : ''}
-                disabled
-                placeholder="Selecciona una zona"
-              />
             </div>
 
             <div className="form-group">
@@ -344,7 +295,7 @@ export default function RondasPage() {
               <span>Resumen</span>
             </h2>
 
-            <button className="btn btn-outline" onClick={() => loadGruposYRounds(inventarioFiltro)}>
+            <button className="btn btn-outline" onClick={() => loadData(inventarioFiltro)}>
               <RefreshCw size={16} className={refreshing ? 'spin' : ''} />
               <span>Actualizar</span>
             </button>
@@ -357,7 +308,7 @@ export default function RondasPage() {
               onChange={(e) => {
                 const value = Number(e.target.value);
                 setInventarioFiltro(value);
-                setForm((prev) => ({ ...prev, inventarioId: value }));
+                setForm((prev) => ({ ...prev, inventarioId: value, grupoId: '' }));
               }}
             >
               <option value="">Selecciona</option>
@@ -376,19 +327,17 @@ export default function RondasPage() {
               </div>
               <div className="kpi-content">
                 <p className="kpi-title">Rondas</p>
-                <h3 className="kpi-value">{rondasFiltradas.length}</h3>
+                <h3 className="kpi-value">{rondas.length}</h3>
               </div>
             </div>
 
             <div className="card kpi-card">
               <div className="kpi-icon">
-                <MapPin size={20} />
+                <Users size={20} />
               </div>
               <div className="kpi-content">
-                <p className="kpi-title">Zonas activas</p>
-                <h3 className="kpi-value">
-                  {new Set(rondasFiltradas.map((r) => r.zonaId)).size}
-                </h3>
+                <p className="kpi-title">Grupos</p>
+                <h3 className="kpi-value">{gruposDelInventario.length}</h3>
               </div>
             </div>
           </div>
@@ -403,11 +352,11 @@ export default function RondasPage() {
           </h2>
         </div>
 
-        {rondasFiltradas.length === 0 ? (
+        {rondas.length === 0 ? (
           <p className="muted">No hay rondas creadas para este inventario.</p>
         ) : (
           <div className="table-list">
-            {rondasFiltradas.map((ronda) => (
+            {rondas.map((ronda) => (
               <div key={ronda.id} className="list-row compact-row">
                 <div className="flex-1">
                   <div className="grupo-header">
@@ -431,7 +380,7 @@ export default function RondasPage() {
 
                   <p className="muted" style={{ marginTop: '6px' }}>
                     Grupo asignado:{' '}
-                    <strong>{ronda.asignacion?.grupo?.nombre || 'Sin asignar'}</strong>
+                    <strong>{ronda.asignacion?.grupo?.nombre || 'Sin grupo'}</strong>
                   </p>
 
                   {ronda.observaciones ? (
@@ -442,35 +391,6 @@ export default function RondasPage() {
                 </div>
 
                 <div className="zona-actions">
-                  {!ronda.asignacion?.grupo ? (
-                    <div className="select-row">
-                      <select
-                        value={asignacionDraft[ronda.id] || ''}
-                        onChange={(e) =>
-                          setAsignacionDraft((prev) => ({
-                            ...prev,
-                            [ronda.id]: Number(e.target.value) || ''
-                          }))
-                        }
-                      >
-                        <option value="">Asignar grupo</option>
-                        {gruposDelInventario.map((grupo) => (
-                          <option key={grupo.id} value={grupo.id}>
-                            {grupo.nombre}
-                          </option>
-                        ))}
-                      </select>
-
-                      <button
-                        className="btn btn-outline"
-                        onClick={() => handleAsignarGrupo(ronda.id)}
-                      >
-                        <Link2 size={16} />
-                        <span>Asignar</span>
-                      </button>
-                    </div>
-                  ) : null}
-
                   {ronda.estado === 'borrador' ? (
                     <button
                       className="btn btn-primary"
@@ -519,6 +439,16 @@ export default function RondasPage() {
                         <span>Cerrar</span>
                       </button>
                     </>
+                  ) : null}
+
+                  {ronda.estado === 'cerrada' ? (
+                    <button
+                      className="btn btn-outline"
+                      onClick={() => handleEstado(ronda, 'reabrir')}
+                    >
+                      <RotateCcw size={16} />
+                      <span>Reabrir</span>
+                    </button>
                   ) : null}
                 </div>
               </div>

@@ -13,8 +13,35 @@ import ZonasPage from './pages/zonas/ZonasPage';
 import ScriptsPage from './pages/admin/ScriptsPage';
 import RondasPage from './pages/rondas/RondasPage';
 
+function getRol(auth) {
+  const rolRaw = auth?.user?.rol || auth?.user?.rol?.nombre || '';
+  return String(rolRaw).toLowerCase();
+}
+
+function getHomeByRole(auth) {
+  const rol = getRol(auth);
+  return rol === 'contador' ? '/escaneo' : '/';
+}
+
+function AdminSupervisorRoute({ auth, children }) {
+  const rol = getRol(auth);
+  const permitido = rol === 'admin' || rol === 'supervisor';
+
+  return permitido ? children : <Navigate to={getHomeByRole(auth)} replace />;
+}
+
+function ContadorOrAdminRoute({ auth, children }) {
+  const rol = getRol(auth);
+  const permitido =
+    rol === 'contador' || rol === 'admin' || rol === 'supervisor';
+
+  return permitido ? children : <Navigate to="/login" replace />;
+}
+
 export default function App() {
   const auth = useAuth();
+  const rol = getRol(auth);
+  const homePath = getHomeByRole(auth);
 
   return (
     <BrowserRouter>
@@ -23,7 +50,7 @@ export default function App() {
           path="/login"
           element={
             auth.isAuthenticated ? (
-              <Navigate to="/" replace />
+              <Navigate to={homePath} replace />
             ) : (
               <LoginPage auth={auth} />
             )
@@ -38,18 +65,91 @@ export default function App() {
             </ProtectedRoute>
           }
         >
-          <Route index element={<DashboardPage auth={auth} />} />
-          <Route path="inventarios" element={<InventariosPage />} />
-          <Route path="zonas" element={<ZonasPage />} />
-          <Route path="grupos" element={<GruposPage />} />
-          <Route path="conteo-inicial" element={<ConteoInicialPage />} />
-          <Route path="diferencias" element={<DiferenciasPage />} />
-          <Route path="escaneo" element={<EscaneoPage />} />
-          <Route path="scripts" element={<ScriptsPage />} />
-          <Route path="rondas" element={<RondasPage />} />
+          <Route
+            index
+            element={
+              rol === 'contador' ? (
+                <Navigate to="/escaneo" replace />
+              ) : (
+                <DashboardPage auth={auth} />
+              )
+            }
+          />
+
+          <Route
+            path="inventarios"
+            element={
+              <AdminSupervisorRoute auth={auth}>
+                <InventariosPage />
+              </AdminSupervisorRoute>
+            }
+          />
+
+          <Route
+            path="zonas"
+            element={
+              <AdminSupervisorRoute auth={auth}>
+                <ZonasPage />
+              </AdminSupervisorRoute>
+            }
+          />
+
+          <Route
+            path="grupos"
+            element={
+              <AdminSupervisorRoute auth={auth}>
+                <GruposPage />
+              </AdminSupervisorRoute>
+            }
+          />
+
+          <Route
+            path="rondas"
+            element={
+              <AdminSupervisorRoute auth={auth}>
+                <RondasPage />
+              </AdminSupervisorRoute>
+            }
+          />
+
+          <Route
+            path="conteo-inicial"
+            element={
+              <AdminSupervisorRoute auth={auth}>
+                <ConteoInicialPage />
+              </AdminSupervisorRoute>
+            }
+          />
+
+          <Route
+            path="scripts"
+            element={
+              <AdminSupervisorRoute auth={auth}>
+                <ScriptsPage />
+              </AdminSupervisorRoute>
+            }
+          />
+
+          <Route
+            path="diferencias"
+            element={
+              <ContadorOrAdminRoute auth={auth}>
+                <DiferenciasPage />
+              </ContadorOrAdminRoute>
+            }
+          />
+
+          <Route
+            path="escaneo"
+            element={
+              <ContadorOrAdminRoute auth={auth}>
+                <EscaneoPage />
+              </ContadorOrAdminRoute>
+            }
+          />
         </Route>
 
-        <Route path="*" element={<Navigate to="/" replace />} />
+        <Route path="*" element={<Navigate to={homePath} replace />} />
       </Routes>
     </BrowserRouter>
   );

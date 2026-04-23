@@ -7,22 +7,19 @@ const {
   Inventario,
   Zona,
   AsignacionRonda,
+  AsignacionConteo,
   Grupo,
   DiscrepanciaConteo,
   Lectura
 } = require('../models');
-
 // ==================== SCHEMAS ====================
 
 const createRondaSchema = Joi.object({
-  inventarioId: Joi.number().integer().required(),
-  zonaId: Joi.number().integer().required(),
-  numeroRonda: Joi.number().integer().min(1).optional(),
+  grupoId: Joi.number().integer().required(),
   tipoRonda: Joi.string().valid('completa', 'reconteo').required(),
   generadaDesdeRondaId: Joi.number().integer().allow(null),
   observaciones: Joi.string().allow(null, '')
 });
-
 // ==================== HELPERS ====================
 
 async function getRoundQtyMap(rondaId, transaction) {
@@ -123,21 +120,76 @@ async function createRonda(req, res, next) {
       });
     }
 
-    const [inventario, zona] = await Promise.all([
-      Inventario.findByPk(value.inventarioId),
-      Zona.findByPk(value.zonaId)
-    ]);
+    const grupo = await Grupo.findByPk(value.grupoId);
 
-    if (!inventario) {
-      return res.status(404).json({ ok: false, message: 'Inventario no encontrado' });
+    if (!grupo) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Grupo no encontrado'
+      });
     }
 
+    const inventario = await Inventario.findByPk(grupo.inventarioId);
+
+    if (!inventario) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Inventario no encontrado para este grupo'
+      });
+    }
+
+    const asignacionZona = await AsignacionConteo.findOne({
+      where: {
+        inventarioId: grupo.inventarioId,
+        grupoId: grupo.id
+      },
+      order: [['conteoTipo', 'ASC'], ['id', 'ASC']]
+    });
+
+    const zonaId = grupo.zonaId || asignacionZona?.zonaId || null;
+
+    if (!zonaId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'El grupo no tiene una zona asignada. Asígnale zona antes de crear la ronda.'
+      });
+    }
+
+    const zona = await Zona.findByPk(zonaId);
+
     if (!zona) {
-      return res.status(404).json({ ok: false, message: 'Zona no encontrada' });
+      return res.status(404).json({
+        ok: false,
+        message: 'Zona no encontrada para este grupo'
+      });
+    }
+
+    const rondaAbierta = await RondaConteo.findOne({
+      where: {
+        estado: {
+          [Op.in]: ['borrador', 'activa', 'pausada']
+        }
+      },
+      include: [
+        {
+          model: AsignacionRonda,
+          as: 'asignacion',
+          required: true,
+          where: { grupoId: grupo.id }
+        }
+      ]
+    });
+
+    if (rondaAbierta) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Este grupo ya tiene una ronda abierta. Ciérrala o páusala antes de crear otra.'
+      });
     }
 
     if (value.generadaDesdeRondaId) {
       const rondaOrigen = await RondaConteo.findByPk(value.generadaDesdeRondaId);
+
       if (!rondaOrigen) {
         return res.status(404).json({
           ok: false,
@@ -146,48 +198,29 @@ async function createRonda(req, res, next) {
       }
 
       if (
-        Number(rondaOrigen.inventarioId) !== Number(value.inventarioId) ||
-        Number(rondaOrigen.zonaId) !== Number(value.zonaId)
+        Number(rondaOrigen.inventarioId) !== Number(grupo.inventarioId) ||
+        Number(rondaOrigen.zonaId) !== Number(zonaId)
       ) {
         return res.status(400).json({
           ok: false,
-          message: 'La ronda origen no pertenece al mismo inventario y zona'
+          message: 'La ronda origen no pertenece al mismo inventario y zona del grupo'
         });
       }
     }
 
-    let numeroRonda = value.numeroRonda;
-
-    if (!numeroRonda) {
-      const ultima = await RondaConteo.findOne({
-        where: {
-          inventarioId: value.inventarioId,
-          zonaId: value.zonaId
-        },
-        order: [['numeroRonda', 'DESC']]
-      });
-
-      numeroRonda = Number(ultima?.numeroRonda || 0) + 1;
-    }
-
-    const existente = await RondaConteo.findOne({
+    const ultima = await RondaConteo.findOne({
       where: {
-        inventarioId: value.inventarioId,
-        zonaId: value.zonaId,
-        numeroRonda
-      }
+        inventarioId: grupo.inventarioId,
+        zonaId
+      },
+      order: [['numeroRonda', 'DESC']]
     });
 
-    if (existente) {
-      return res.status(400).json({
-        ok: false,
-        message: 'Ya existe esa ronda para ese inventario y zona'
-      });
-    }
+    const numeroRonda = Number(ultima?.numeroRonda || 0) + 1;
 
     const ronda = await RondaConteo.create({
-      inventarioId: value.inventarioId,
-      zonaId: value.zonaId,
+      inventarioId: grupo.inventarioId,
+      zonaId,
       numeroRonda,
       tipoRonda: value.tipoRonda,
       estado: 'borrador',
@@ -195,9 +228,37 @@ async function createRonda(req, res, next) {
       observaciones: value.observaciones || null
     });
 
+    await AsignacionRonda.create({
+      rondaId: ronda.id,
+      grupoId: grupo.id,
+      estado: 'asignada'
+    });
+
+    const rondaCreada = await RondaConteo.findByPk(ronda.id, {
+      include: [
+        {
+          model: Zona,
+          as: 'zona',
+          attributes: ['id', 'nombre', 'codigo']
+        },
+        {
+          model: AsignacionRonda,
+          as: 'asignacion',
+          required: false,
+          include: [
+            {
+              model: Grupo,
+              as: 'grupo',
+              attributes: ['id', 'nombre', 'inventarioId']
+            }
+          ]
+        }
+      ]
+    });
+
     res.status(201).json({
       ok: true,
-      data: ronda
+      data: rondaCreada
     });
   } catch (error) {
     next(error);
@@ -381,20 +442,32 @@ async function reanudarRonda(req, res, next) {
 
 async function cerrarRonda(req, res, next) {
   try {
-    const ronda = await getRondaConAcceso(req.params.id, req);
+    const ronda = await RondaConteo.findByPk(req.params.id, {
+      include: [
+        {
+          model: Zona,
+          as: 'zona',
+          attributes: ['id', 'nombre', 'codigo']
+        },
+        {
+          model: AsignacionRonda,
+          as: 'asignacion',
+          required: false,
+          include: [
+            {
+              model: Grupo,
+              as: 'grupo',
+              attributes: ['id', 'nombre', 'inventarioId']
+            }
+          ]
+        }
+      ]
+    });
 
     if (!ronda) {
-      return res.status(404).json({ ok: false, message: 'Ronda no encontrada' });
-    }
-
-    if (ronda === 'FORBIDDEN') {
-      return res.status(403).json({ ok: false, message: 'No tienes acceso a esta ronda' });
-    }
-
-    if (!req.canViewAllGroups) {
-      return res.status(403).json({
+      return res.status(404).json({
         ok: false,
-        message: 'Solo administradores o supervisores pueden cerrar rondas'
+        message: 'Ronda no encontrada'
       });
     }
 
@@ -422,7 +495,6 @@ async function cerrarRonda(req, res, next) {
     next(error);
   }
 }
-
 // ==================== CONCILIACIÓN AUTOMÁTICA ====================
 
 async function getPendientesRonda(req, res, next) {
@@ -469,6 +541,58 @@ async function getPendientesRonda(req, res, next) {
     next(error);
   }
 }
+async function reabrirRonda(req, res, next) {
+  try {
+    const ronda = await RondaConteo.findByPk(req.params.id, {
+      include: [
+        {
+          model: Zona,
+          as: 'zona',
+          attributes: ['id', 'nombre', 'codigo']
+        },
+        {
+          model: AsignacionRonda,
+          as: 'asignacion',
+          required: false,
+          include: [
+            {
+              model: Grupo,
+              as: 'grupo',
+              attributes: ['id', 'nombre', 'inventarioId']
+            }
+          ]
+        }
+      ]
+    });
+
+    if (!ronda) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Ronda no encontrada'
+      });
+    }
+
+    if (ronda.estado !== 'cerrada') {
+      return res.status(400).json({
+        ok: false,
+        message: `Solo se puede reabrir una ronda cerrada. Estado actual: ${ronda.estado}`
+      });
+    }
+
+    await ronda.update({
+      estado: 'pausada',
+      tiempoFin: null
+    });
+
+    return res.json({
+      ok: true,
+      message: 'Ronda reabierta correctamente',
+      data: ronda
+    });
+  } catch (error) {
+    next(error);
+  }
+}
 
 async function conciliarRonda(req, res, next) {
   const transaction = await sequelize.transaction();
@@ -491,14 +615,13 @@ async function conciliarRonda(req, res, next) {
       return res.status(404).json({ ok: false, message: 'Ronda no encontrada' });
     }
 
-    if (!req.canViewAllGroups) {
+    if (!['admin', 'supervisor'].includes(req.user?.rol)) {
       await transaction.rollback();
       return res.status(403).json({
         ok: false,
         message: 'Solo administradores o supervisores pueden conciliar rondas'
       });
     }
-
     if (rondaActual.numeroRonda === 1) {
       await transaction.rollback();
       return res.status(400).json({
@@ -696,11 +819,11 @@ async function conciliarRonda(req, res, next) {
         pendientes,
         siguienteRonda: siguienteRonda
           ? {
-              id: siguienteRonda.id,
-              numeroRonda: siguienteRonda.numeroRonda,
-              tipoRonda: siguienteRonda.tipoRonda,
-              estado: siguienteRonda.estado
-            }
+            id: siguienteRonda.id,
+            numeroRonda: siguienteRonda.numeroRonda,
+            tipoRonda: siguienteRonda.tipoRonda,
+            estado: siguienteRonda.estado
+          }
           : null
       }
     });
@@ -769,42 +892,121 @@ async function ajusteManual(req, res, next) {
 }
 
 // ==================== RONDA ACTIVA POR GRUPO ====================
-
 async function getRondaActivaDelGrupo(req, res, next) {
   try {
-    let grupoId = req.query.grupoId ? Number(req.query.grupoId) : null;
+    const inventarioId = req.query.inventarioId
+      ? Number(req.query.inventarioId)
+      : null;
 
-    if (!req.canViewAllGroups) {
-      grupoId = Number(req.grupoId);
-    }
+    const grupoIdQuery = req.query.grupoId
+      ? Number(req.query.grupoId)
+      : null;
 
-    if (!grupoId) {
-      return res.status(400).json({
-        ok: false,
-        message: 'grupoId es requerido'
-      });
-    }
+    if (req.user.rol === 'admin' || req.user.rol === 'supervisor') {
+      const where = { estado: 'activa' };
+      if (inventarioId) where.inventarioId = inventarioId;
 
-    const ronda = await RondaConteo.findOne({
-      where: { estado: 'activa' },
-      include: [
+      const include = [
         {
           model: AsignacionRonda,
           as: 'asignacion',
-          where: { grupoId },
           required: true,
-          include: [{ model: Grupo, as: 'grupo', attributes: ['id', 'nombre', 'inventarioId'] }]
+          ...(grupoIdQuery ? { where: { grupoId: grupoIdQuery } } : {}),
+          include: [
+            {
+              model: Grupo,
+              as: 'grupo',
+              attributes: ['id', 'nombre', 'inventarioId']
+            }
+          ]
         },
         {
           model: Zona,
           as: 'zona',
           attributes: ['id', 'nombre', 'codigo']
         }
-      ],
-      order: [['updatedAt', 'DESC']]
+      ];
+
+      const rondas = await RondaConteo.findAll({
+        where,
+        include,
+        order: [['updatedAt', 'DESC']]
+      });
+
+      return res.json({
+        ok: true,
+        data: rondas[0] || null
+      });
+    }
+
+    if (!inventarioId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'inventarioId es requerido'
+      });
+    }
+
+    const matches = await sequelize.query(
+      `
+      SELECT
+        r.id,
+        ug."grupoId"
+      FROM usuario_grupo ug
+      JOIN asignaciones_ronda ar
+        ON ar."grupoId" = ug."grupoId"
+      JOIN rondas_conteo r
+        ON r.id = ar."rondaId"
+      WHERE ug."usuarioId" = :usuarioId
+        AND r.estado = 'activa'
+        AND r."inventarioId" = :inventarioId
+      ORDER BY r."updatedAt" DESC
+      `,
+      {
+        replacements: {
+          usuarioId: req.user.id,
+          inventarioId
+        },
+        type: QueryTypes.SELECT
+      }
+    );
+
+    if (matches.length === 0) {
+      return res.json({
+        ok: true,
+        data: null
+      });
+    }
+
+    if (matches.length > 1) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Tienes más de un grupo con ronda activa en este inventario. Cierra o pausa uno de ellos.'
+      });
+    }
+
+    const ronda = await RondaConteo.findByPk(matches[0].id, {
+      include: [
+        {
+          model: AsignacionRonda,
+          as: 'asignacion',
+          required: true,
+          include: [
+            {
+              model: Grupo,
+              as: 'grupo',
+              attributes: ['id', 'nombre', 'inventarioId']
+            }
+          ]
+        },
+        {
+          model: Zona,
+          as: 'zona',
+          attributes: ['id', 'nombre', 'codigo']
+        }
+      ]
     });
 
-    res.json({
+    return res.json({
       ok: true,
       data: ronda || null
     });
@@ -812,7 +1014,6 @@ async function getRondaActivaDelGrupo(req, res, next) {
     next(error);
   }
 }
-
 // ==================== EXPORTS ====================
 
 module.exports = {
@@ -826,5 +1027,6 @@ module.exports = {
   getPendientesRonda,
   conciliarRonda,
   ajusteManual,
-  getRondaActivaDelGrupo
+  getRondaActivaDelGrupo,
+  reabrirRonda
 };
