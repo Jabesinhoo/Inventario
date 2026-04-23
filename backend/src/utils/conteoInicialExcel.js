@@ -45,22 +45,48 @@ async function parseConteoInicialExcel(buffer) {
     throw new Error('El archivo no contiene hojas');
   }
 
+  console.log('[PARSER] Hoja encontrada:', worksheet.name);
+  console.log('[PARSER] Número de filas:', worksheet.rowCount);
+
   const headerRow = worksheet.getRow(1);
   const headerMap = {};
 
   headerRow.eachCell((cell, colNumber) => {
-    headerMap[normalizeHeader(cell.value)] = colNumber;
+    const headerValue = normalizeHeader(cell.value);
+    headerMap[headerValue] = colNumber;
+    console.log(`[PARSER] Columna ${colNumber}: "${cell.value}" → normalizado: "${headerValue}"`);
   });
 
-  // Buscar columnas (aceptar tanto español como inglés)
   const zonaCol = resolveColumnIndex(headerMap, ['zona', 'ubicacion', 'location']);
   const skuCol = resolveColumnIndex(headerMap, ['sku', 'codigo', 'code', 'código']);
-  const descripcionCol = resolveColumnIndex(headerMap, ['descripcion', 'descripción', 'producto', 'nombre', 'description']);
+  const descripcionCol = resolveColumnIndex(headerMap, [
+    'descripcion',
+    'descripción',
+    'nombre',
+    'detalle',
+    'producto'
+  ]);
   const cantidadCol = resolveColumnIndex(headerMap, ['cantidad', 'quantity', 'stock', 'existencia']);
+  const codigoBarraCol = resolveColumnIndex(headerMap, [
+    'codigobarra',
+    'codigo de barras',
+    'codigo barras',
+    'codbarras',
+    'barcode',
+    'ean'
+  ]);
+
+  console.log('[PARSER] Columnas encontradas:', {
+    zonaCol,
+    skuCol,
+    descripcionCol,
+    cantidadCol,
+    codigoBarraCol
+  });
 
   if (!zonaCol || !skuCol || !cantidadCol) {
     throw new Error(
-      'El Excel debe tener al menos estas columnas: zona, sku/codigo y cantidad'
+      `El Excel debe tener al menos: zona (columna ${zonaCol}), sku/codigo (columna ${skuCol}) y cantidad (columna ${cantidadCol})`
     );
   }
 
@@ -72,23 +98,49 @@ async function parseConteoInicialExcel(buffer) {
 
     const zona = normalizeText(getCellValue(row.getCell(zonaCol)));
     const sku = normalizeText(getCellValue(row.getCell(skuCol)));
-    const descripcion = descripcionCol ? normalizeText(getCellValue(row.getCell(descripcionCol))) : null;
-    const cantidadRaw = getCellValue(row.getCell(cantidadCol));
+    const descripcion = descripcionCol
+      ? normalizeText(getCellValue(row.getCell(descripcionCol)))
+      : null;
+    const codigoBarra = codigoBarraCol
+      ? normalizeText(getCellValue(row.getCell(codigoBarraCol)))
+      : null;
 
-    // Saltar filas de totales
-    if (!zona || !sku || zona.toUpperCase() === 'TOTALES') return;
-    
-    // Saltar si la cantidad no es un número válido
+    const cantidadRaw = getCellValue(row.getCell(cantidadCol));
     const cantidad = Number(cantidadRaw);
-    if (isNaN(cantidad)) return;
+
+    if (rowNumber % 100 === 0) {
+      console.log(
+        `[PARSER] Procesando fila ${rowNumber}: zona="${zona}", sku="${sku}", descripcion="${descripcion}", cantidad=${cantidad}`
+      );
+    }
+
+    if (!zona || !sku) {
+      errors.push({
+        row: rowNumber,
+        message: `Fila inválida: zona="${zona}", sku="${sku}"`
+      });
+      return;
+    }
+
+    if (Number.isNaN(cantidad)) {
+      errors.push({
+        row: rowNumber,
+        message: `Cantidad inválida: "${cantidadRaw}"`
+      });
+      return;
+    }
 
     rows.push({
       zona: zona.toUpperCase(),
-      sku: sku,
-      descripcion: descripcion,
-      cantidad: cantidad
+      sku: String(sku).trim(),
+      codigoLeido: codigoBarra || String(sku).trim(),
+      descripcion: descripcion || null,
+      cantidad
     });
   });
+
+  console.log(`[PARSER] Total filas procesadas: ${rows.length}`);
+  console.log(`[PARSER] Total errores: ${errors.length}`);
 
   return { rows, errors };
 }

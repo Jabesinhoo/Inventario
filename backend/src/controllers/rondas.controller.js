@@ -17,7 +17,7 @@ const {
 const createRondaSchema = Joi.object({
   inventarioId: Joi.number().integer().required(),
   zonaId: Joi.number().integer().required(),
-  numeroRonda: Joi.number().integer().min(1).required(),
+  numeroRonda: Joi.number().integer().min(1).optional(),
   tipoRonda: Joi.string().valid('completa', 'reconteo').required(),
   generadaDesdeRondaId: Joi.number().integer().allow(null),
   observaciones: Joi.string().allow(null, '')
@@ -36,6 +36,7 @@ async function getRoundQtyMap(rondaId, transaction) {
     FROM lecturas l
     WHERE l."rondaId" = :rondaId
       AND l.estado = 'valida'
+      AND l.sku IS NOT NULL
     GROUP BY l.sku
     `,
     {
@@ -57,6 +58,56 @@ async function getRoundQtyMap(rondaId, transaction) {
   }
 
   return map;
+}
+
+async function getTotalEscaneosRonda(rondaId, transaction = null) {
+  const total = await Lectura.sum('cantidad', {
+    where: {
+      rondaId,
+      estado: 'valida'
+    },
+    transaction
+  });
+
+  return Number(total || 0);
+}
+
+async function getRondaConAcceso(rondaId, req, extraOptions = {}) {
+  const include = [
+    {
+      model: Zona,
+      as: 'zona',
+      attributes: ['id', 'nombre', 'codigo']
+    },
+    {
+      model: AsignacionRonda,
+      as: 'asignacion',
+      required: false,
+      include: [
+        {
+          model: Grupo,
+          as: 'grupo',
+          attributes: ['id', 'nombre', 'inventarioId']
+        }
+      ]
+    }
+  ];
+
+  const ronda = await RondaConteo.findByPk(rondaId, {
+    ...extraOptions,
+    include
+  });
+
+  if (!ronda) return null;
+
+  if (!req.canViewAllGroups && req.grupoId) {
+    const grupoAsignado = Number(ronda.asignacion?.grupoId || 0);
+    if (grupoAsignado !== Number(req.grupoId)) {
+      return 'FORBIDDEN';
+    }
+  }
+
+  return ronda;
 }
 
 // ==================== CRUD BÁSICO ====================
@@ -85,11 +136,45 @@ async function createRonda(req, res, next) {
       return res.status(404).json({ ok: false, message: 'Zona no encontrada' });
     }
 
+    if (value.generadaDesdeRondaId) {
+      const rondaOrigen = await RondaConteo.findByPk(value.generadaDesdeRondaId);
+      if (!rondaOrigen) {
+        return res.status(404).json({
+          ok: false,
+          message: 'La ronda origen no existe'
+        });
+      }
+
+      if (
+        Number(rondaOrigen.inventarioId) !== Number(value.inventarioId) ||
+        Number(rondaOrigen.zonaId) !== Number(value.zonaId)
+      ) {
+        return res.status(400).json({
+          ok: false,
+          message: 'La ronda origen no pertenece al mismo inventario y zona'
+        });
+      }
+    }
+
+    let numeroRonda = value.numeroRonda;
+
+    if (!numeroRonda) {
+      const ultima = await RondaConteo.findOne({
+        where: {
+          inventarioId: value.inventarioId,
+          zonaId: value.zonaId
+        },
+        order: [['numeroRonda', 'DESC']]
+      });
+
+      numeroRonda = Number(ultima?.numeroRonda || 0) + 1;
+    }
+
     const existente = await RondaConteo.findOne({
       where: {
         inventarioId: value.inventarioId,
         zonaId: value.zonaId,
-        numeroRonda: value.numeroRonda
+        numeroRonda
       }
     });
 
@@ -101,7 +186,10 @@ async function createRonda(req, res, next) {
     }
 
     const ronda = await RondaConteo.create({
-      ...value,
+      inventarioId: value.inventarioId,
+      zonaId: value.zonaId,
+      numeroRonda,
+      tipoRonda: value.tipoRonda,
       estado: 'borrador',
       generadaDesdeRondaId: value.generadaDesdeRondaId || null,
       observaciones: value.observaciones || null
@@ -131,20 +219,16 @@ async function getRondas(req, res, next) {
         model: AsignacionRonda,
         as: 'asignacion',
         required: false,
-        include: [{ model: Grupo, as: 'grupo', attributes: ['id', 'nombre'] }]
+        include: [{ model: Grupo, as: 'grupo', attributes: ['id', 'nombre', 'inventarioId'] }]
       }
     ];
 
-    // Si se filtra por grupo específico
-    if (grupoId) {
-      include[1].required = true;
-      include[1].where = { grupoId };
-    }
-
-    // 🔒 AISLAMIENTO: si no es admin/supervisor, solo ve sus rondas
     if (!req.canViewAllGroups && req.grupoId) {
       include[1].required = true;
       include[1].where = { grupoId: req.grupoId };
+    } else if (grupoId) {
+      include[1].required = true;
+      include[1].where = { grupoId };
     }
 
     const data = await RondaConteo.findAll({
@@ -162,34 +246,66 @@ async function getRondas(req, res, next) {
   }
 }
 
+async function getRonda(req, res, next) {
+  try {
+    const ronda = await getRondaConAcceso(req.params.id, req);
+
+    if (!ronda) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Ronda no encontrada'
+      });
+    }
+
+    if (ronda === 'FORBIDDEN') {
+      return res.status(403).json({
+        ok: false,
+        message: 'No tienes acceso a esta ronda'
+      });
+    }
+
+    res.json({
+      ok: true,
+      data: ronda
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
 // ==================== CONTROL DE ESTADO ====================
 
 async function iniciarRonda(req, res, next) {
   try {
-    const ronda = await RondaConteo.findByPk(req.params.id);
+    const ronda = await getRondaConAcceso(req.params.id, req);
 
     if (!ronda) {
       return res.status(404).json({ ok: false, message: 'Ronda no encontrada' });
     }
 
-    // Verificar acceso
-    if (!req.canViewAllGroups && req.grupoId) {
-      const asignacion = await AsignacionRonda.findOne({
-        where: { rondaId: ronda.id, grupoId: req.grupoId }
-      });
-      if (!asignacion) {
-        return res.status(403).json({ ok: false, message: 'No tienes acceso a esta ronda' });
-      }
+    if (ronda === 'FORBIDDEN') {
+      return res.status(403).json({ ok: false, message: 'No tienes acceso a esta ronda' });
     }
 
-    if (ronda.estado !== 'borrador' && ronda.estado !== 'pausada') {
+    if (!ronda.asignacion?.grupoId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'No se puede iniciar una ronda sin grupo asignado'
+      });
+    }
+
+    if (ronda.estado !== 'borrador') {
       return res.status(400).json({
         ok: false,
         message: `No se puede iniciar una ronda en estado ${ronda.estado}`
       });
     }
 
-    await ronda.update({ estado: 'activa' });
+    await ronda.update({
+      estado: 'activa',
+      tiempoInicio: ronda.tiempoInicio || new Date(),
+      tiempoFin: null
+    });
 
     res.json({
       ok: true,
@@ -203,20 +319,14 @@ async function iniciarRonda(req, res, next) {
 
 async function pausarRonda(req, res, next) {
   try {
-    const ronda = await RondaConteo.findByPk(req.params.id);
+    const ronda = await getRondaConAcceso(req.params.id, req);
 
     if (!ronda) {
       return res.status(404).json({ ok: false, message: 'Ronda no encontrada' });
     }
 
-    // Verificar acceso
-    if (!req.canViewAllGroups && req.grupoId) {
-      const asignacion = await AsignacionRonda.findOne({
-        where: { rondaId: ronda.id, grupoId: req.grupoId }
-      });
-      if (!asignacion) {
-        return res.status(403).json({ ok: false, message: 'No tienes acceso a esta ronda' });
-      }
+    if (ronda === 'FORBIDDEN') {
+      return res.status(403).json({ ok: false, message: 'No tienes acceso a esta ronda' });
     }
 
     if (ronda.estado !== 'activa') {
@@ -240,20 +350,14 @@ async function pausarRonda(req, res, next) {
 
 async function reanudarRonda(req, res, next) {
   try {
-    const ronda = await RondaConteo.findByPk(req.params.id);
+    const ronda = await getRondaConAcceso(req.params.id, req);
 
     if (!ronda) {
       return res.status(404).json({ ok: false, message: 'Ronda no encontrada' });
     }
 
-    // Verificar acceso
-    if (!req.canViewAllGroups && req.grupoId) {
-      const asignacion = await AsignacionRonda.findOne({
-        where: { rondaId: ronda.id, grupoId: req.grupoId }
-      });
-      if (!asignacion) {
-        return res.status(403).json({ ok: false, message: 'No tienes acceso a esta ronda' });
-      }
+    if (ronda === 'FORBIDDEN') {
+      return res.status(403).json({ ok: false, message: 'No tienes acceso a esta ronda' });
     }
 
     if (ronda.estado !== 'pausada') {
@@ -277,13 +381,16 @@ async function reanudarRonda(req, res, next) {
 
 async function cerrarRonda(req, res, next) {
   try {
-    const ronda = await RondaConteo.findByPk(req.params.id);
+    const ronda = await getRondaConAcceso(req.params.id, req);
 
     if (!ronda) {
       return res.status(404).json({ ok: false, message: 'Ronda no encontrada' });
     }
 
-    // Verificar acceso (solo admin/supervisor puede cerrar)
+    if (ronda === 'FORBIDDEN') {
+      return res.status(403).json({ ok: false, message: 'No tienes acceso a esta ronda' });
+    }
+
     if (!req.canViewAllGroups) {
       return res.status(403).json({
         ok: false,
@@ -298,7 +405,13 @@ async function cerrarRonda(req, res, next) {
       });
     }
 
-    await ronda.update({ estado: 'cerrada' });
+    const totalEscaneos = await getTotalEscaneosRonda(ronda.id);
+
+    await ronda.update({
+      estado: 'cerrada',
+      tiempoFin: new Date(),
+      totalEscaneos
+    });
 
     res.json({
       ok: true,
@@ -316,22 +429,14 @@ async function getPendientesRonda(req, res, next) {
   try {
     const rondaId = Number(req.params.id);
 
-    const ronda = await RondaConteo.findByPk(rondaId, {
-      include: [{ model: Zona, as: 'zona', attributes: ['id', 'nombre', 'codigo'] }]
-    });
+    const ronda = await getRondaConAcceso(rondaId, req);
 
     if (!ronda) {
       return res.status(404).json({ ok: false, message: 'Ronda no encontrada' });
     }
 
-    // Verificar acceso
-    if (!req.canViewAllGroups && req.grupoId) {
-      const asignacion = await AsignacionRonda.findOne({
-        where: { rondaId: ronda.id, grupoId: req.grupoId }
-      });
-      if (!asignacion) {
-        return res.status(403).json({ ok: false, message: 'No tienes acceso a esta ronda' });
-      }
+    if (ronda === 'FORBIDDEN') {
+      return res.status(403).json({ ok: false, message: 'No tienes acceso a esta ronda' });
     }
 
     const data = await DiscrepanciaConteo.findAll({
@@ -354,7 +459,8 @@ async function getPendientesRonda(req, res, next) {
           numeroRonda: ronda.numeroRonda,
           tipoRonda: ronda.tipoRonda,
           estado: ronda.estado,
-          zona: ronda.zona
+          zona: ronda.zona,
+          grupo: ronda.asignacion?.grupo || null
         },
         pendientes: data
       }
@@ -368,16 +474,23 @@ async function conciliarRonda(req, res, next) {
   const transaction = await sequelize.transaction();
 
   try {
-    const rondaId = Number(req.params.id);
-
-    const rondaActual = await RondaConteo.findByPk(rondaId, { transaction });
+    const rondaActual = await RondaConteo.findByPk(Number(req.params.id), {
+      include: [
+        {
+          model: AsignacionRonda,
+          as: 'asignacion',
+          required: false,
+          include: [{ model: Grupo, as: 'grupo', attributes: ['id', 'nombre', 'inventarioId'] }]
+        }
+      ],
+      transaction
+    });
 
     if (!rondaActual) {
       await transaction.rollback();
       return res.status(404).json({ ok: false, message: 'Ronda no encontrada' });
     }
 
-    // Solo admin/supervisor puede conciliar
     if (!req.canViewAllGroups) {
       await transaction.rollback();
       return res.status(403).json({
@@ -416,7 +529,7 @@ async function conciliarRonda(req, res, next) {
     if (rondaActual.numeroRonda === 2) {
       skusEvaluar = Array.from(new Set([...baseMap.keys(), ...actualMap.keys()]));
     } else {
-      const pendientes = await DiscrepanciaConteo.findAll({
+      const pendientesActuales = await DiscrepanciaConteo.findAll({
         where: {
           inventarioId: rondaActual.inventarioId,
           zonaId: rondaActual.zonaId,
@@ -425,12 +538,24 @@ async function conciliarRonda(req, res, next) {
         },
         transaction
       });
-      skusEvaluar = pendientes.map((item) => item.sku);
+
+      skusEvaluar = pendientesActuales.map((item) => item.sku);
     }
 
     if (skusEvaluar.length === 0) {
-      await rondaActual.update({ estado: 'cerrada' }, { transaction });
+      const totalEscaneos = await getTotalEscaneosRonda(rondaActual.id, transaction);
+
+      await rondaActual.update(
+        {
+          estado: 'cerrada',
+          tiempoFin: new Date(),
+          totalEscaneos
+        },
+        { transaction }
+      );
+
       await transaction.commit();
+
       return res.json({
         ok: true,
         message: 'No había SKUs pendientes para conciliar en esta ronda',
@@ -470,12 +595,17 @@ async function conciliarRonda(req, res, next) {
       };
 
       const existente = await DiscrepanciaConteo.findOne({
-        where: { inventarioId: rondaActual.inventarioId, zonaId: rondaActual.zonaId, sku },
+        where: {
+          inventarioId: rondaActual.inventarioId,
+          zonaId: rondaActual.zonaId,
+          sku
+        },
         transaction
       });
 
       if (diferencia === 0) {
         conciliados += 1;
+
         const payload = {
           ...payloadBase,
           estado: 'conciliado',
@@ -484,6 +614,7 @@ async function conciliarRonda(req, res, next) {
           criterioCierre: `ronda_1_igual_ronda_${rondaActual.numeroRonda}`,
           cerradoEn: new Date()
         };
+
         if (existente) {
           await existente.update(payload, { transaction });
         } else {
@@ -491,6 +622,7 @@ async function conciliarRonda(req, res, next) {
         }
       } else {
         pendientes += 1;
+
         const payload = {
           ...payloadBase,
           estado: 'pendiente_reconteo',
@@ -499,6 +631,7 @@ async function conciliarRonda(req, res, next) {
           criterioCierre: null,
           cerradoEn: null
         };
+
         if (existente) {
           await existente.update(payload, { transaction });
         } else {
@@ -524,10 +657,33 @@ async function conciliarRonda(req, res, next) {
         },
         transaction
       });
+
       siguienteRonda = ronda;
+
+      if (rondaActual.asignacion?.grupoId) {
+        await AsignacionRonda.findOrCreate({
+          where: { rondaId: ronda.id },
+          defaults: {
+            rondaId: ronda.id,
+            grupoId: rondaActual.asignacion.grupoId,
+            estado: 'asignada'
+          },
+          transaction
+        });
+      }
     }
 
-    await rondaActual.update({ estado: 'cerrada' }, { transaction });
+    const totalEscaneos = await getTotalEscaneosRonda(rondaActual.id, transaction);
+
+    await rondaActual.update(
+      {
+        estado: 'cerrada',
+        tiempoFin: new Date(),
+        totalEscaneos
+      },
+      { transaction }
+    );
+
     await transaction.commit();
 
     res.json({
@@ -538,12 +694,14 @@ async function conciliarRonda(req, res, next) {
         numeroRonda: rondaActual.numeroRonda,
         conciliados,
         pendientes,
-        siguienteRonda: siguienteRonda ? {
-          id: siguienteRonda.id,
-          numeroRonda: siguienteRonda.numeroRonda,
-          tipoRonda: siguienteRonda.tipoRonda,
-          estado: siguienteRonda.estado
-        } : null
+        siguienteRonda: siguienteRonda
+          ? {
+              id: siguienteRonda.id,
+              numeroRonda: siguienteRonda.numeroRonda,
+              tipoRonda: siguienteRonda.tipoRonda,
+              estado: siguienteRonda.estado
+            }
+          : null
       }
     });
   } catch (error) {
@@ -565,6 +723,7 @@ async function ajusteManual(req, res, next) {
 
   try {
     const { error, value } = ajusteManualSchema.validate(req.body);
+
     if (error) {
       await transaction.rollback();
       return res.status(400).json({ ok: false, message: error.details[0].message });
@@ -584,13 +743,17 @@ async function ajusteManual(req, res, next) {
       return res.status(404).json({ ok: false, message: 'Discrepancia no encontrada' });
     }
 
-    await discrepancia.update({
-      cantidadFinal: value.cantidadFinal,
-      estado: 'conciliado_manual',
-      criterioCierre: 'manual',
-      cerradoEn: new Date(),
-      observaciones: value.observacion || null
-    }, { transaction });
+    await discrepancia.update(
+      {
+        cantidadFinal: value.cantidadFinal,
+        cantidadUltima: value.cantidadFinal,
+        diferencia: 0,
+        estado: 'conciliado_manual',
+        criterioCierre: 'manual',
+        cerradoEn: new Date()
+      },
+      { transaction }
+    );
 
     await transaction.commit();
 
@@ -604,33 +767,43 @@ async function ajusteManual(req, res, next) {
     next(error);
   }
 }
+
 // ==================== RONDA ACTIVA POR GRUPO ====================
 
 async function getRondaActivaDelGrupo(req, res, next) {
   try {
-    const { grupoId } = req.query;
-    
+    let grupoId = req.query.grupoId ? Number(req.query.grupoId) : null;
+
+    if (!req.canViewAllGroups) {
+      grupoId = Number(req.grupoId);
+    }
+
     if (!grupoId) {
       return res.status(400).json({
         ok: false,
         message: 'grupoId es requerido'
       });
     }
-    
+
     const ronda = await RondaConteo.findOne({
-      include: [{
-        model: AsignacionRonda,
-        as: 'asignacion',
-        where: { grupoId },
-        required: true,
-        include: [{ model: Grupo, as: 'grupo', attributes: ['id', 'nombre'] }]
-      }],
       where: { estado: 'activa' },
       include: [
-        { model: Zona, as: 'zona', attributes: ['id', 'nombre', 'codigo'] }
-      ]
+        {
+          model: AsignacionRonda,
+          as: 'asignacion',
+          where: { grupoId },
+          required: true,
+          include: [{ model: Grupo, as: 'grupo', attributes: ['id', 'nombre', 'inventarioId'] }]
+        },
+        {
+          model: Zona,
+          as: 'zona',
+          attributes: ['id', 'nombre', 'codigo']
+        }
+      ],
+      order: [['updatedAt', 'DESC']]
     });
-    
+
     res.json({
       ok: true,
       data: ronda || null
@@ -641,9 +814,11 @@ async function getRondaActivaDelGrupo(req, res, next) {
 }
 
 // ==================== EXPORTS ====================
+
 module.exports = {
   createRonda,
   getRondas,
+  getRonda,
   iniciarRonda,
   pausarRonda,
   reanudarRonda,
@@ -651,5 +826,5 @@ module.exports = {
   getPendientesRonda,
   conciliarRonda,
   ajusteManual,
-  getRondaActivaDelGrupo  // 👈 AGREGAR ESTA LÍNEA
+  getRondaActivaDelGrupo
 };

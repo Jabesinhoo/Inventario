@@ -1,460 +1,761 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
-import { 
-  ScanLine, 
-  Play, 
-  Pause, 
-  RotateCcw, 
-  Trash2, 
-  Download, 
-  History, 
-  CheckCircle, 
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import {
+  ScanLine,
+  Play,
+  Pause,
+  RefreshCw,
+  Trash2,
+  Download,
+  History,
+  CheckCircle,
   AlertTriangle,
   Zap,
   Clock,
-  Boxes
+  Boxes,
+  Layers3
 } from 'lucide-react';
-import { scanLecturaRonda, anularLectura, getResumenLecturas, getHistorialLecturas } from '../../services/lecturas.service';
-import { getRondas, pausarRonda, reanudarRonda, iniciarRonda, getPendientesRonda } from '../../services/rondas.service';
-import { getGrupos } from '../../services/grupos.service';
-import { getZonas } from '../../services/zonas.service';
+import {
+  scanLecturaRonda,
+  anularLectura,
+  getResumenLecturas,
+  getHistorialLecturas,
+  getEstadisticasGrupo,
+  exportarResultadosGrupo
+} from '../../services/lecturas.service';
+import {
+  getRondas,
+  pausarRonda,
+  reanudarRonda,
+  iniciarRonda,
+  getPendientesRonda
+} from '../../services/rondas.service';
 import { getInventarios } from '../../services/inventarios.service';
 
 export default function EscaneoPage() {
+  const lastSentRef = useRef({ code: '', at: 0 });
   const inputRef = useRef(null);
   const audioRef = useRef(null);
 
-  // Estados
   const [inventarios, setInventarios] = useState([]);
-  const [zonas, setZonas] = useState([]);
-  const [grupos, setGrupos] = useState([]);
-  const [rondas, setRondas] = useState([]);
-  const [pendientes, setPendientes] = useState([]);
-  
-  const [selectedRonda, setSelectedRonda] = useState(null);
-  const [selectedGrupo, setSelectedGrupo] = useState('');
-  const [selectedZona, setSelectedZona] = useState('');
   const [selectedInventario, setSelectedInventario] = useState('');
-  
+  const [rondas, setRondas] = useState([]);
+  const [selectedRondaId, setSelectedRondaId] = useState('');
+
+  const [pendientes, setPendientes] = useState([]);
+  const [resumen, setResumen] = useState([]);
+  const [history, setHistory] = useState([]);
+  const [stats, setStats] = useState(null);
+
   const [codigo, setCodigo] = useState('');
   const [lastScan, setLastScan] = useState(null);
-  const [message, setMessage] = useState('');
-  const [error, setError] = useState('');
-  const [history, setHistory] = useState([]);
-  const [resumen, setResumen] = useState([]);
-  const [loading, setLoading] = useState(false);
+
   const [bootLoading, setBootLoading] = useState(true);
-  const [rondaActiva, setRondaActiva] = useState(null);
+  const [loadingScan, setLoadingScan] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
-  // Sonidos
-  const playBeep = () => {
-    if (audioRef.current) {
-      audioRef.current.currentTime = 0;
-      audioRef.current.play().catch(e => console.log('Audio no soportado'));
-    }
-  };
+  const [flash, setFlash] = useState({ type: '', text: '' });
 
-  const playError = () => {
-    // Sonido de error (opcional)
-  };
-
-  // Cargar datos iniciales
-  useEffect(() => {
-    async function init() {
-      try {
-        const [inventariosData, zonasData, gruposData] = await Promise.all([
-          getInventarios(),
-          getZonas(),
-          getGrupos()
-        ]);
-        
-        setInventarios(inventariosData);
-        setZonas(zonasData);
-        setGrupos(gruposData);
-        
-        if (inventariosData.length > 0) {
-          setSelectedInventario(inventariosData[0].id);
-        }
-        if (zonasData.length > 0) {
-          setSelectedZona(zonasData[0].id);
-        }
-        if (gruposData.length > 0) {
-          setSelectedGrupo(gruposData[0].id);
-        }
-      } catch (err) {
-        setError('No se pudieron cargar los datos iniciales');
-      } finally {
-        setBootLoading(false);
-      }
-    }
-    init();
+  const setFlashMessage = useCallback((text, type = 'success') => {
+    setFlash({ text, type });
   }, []);
 
-  // Cargar rondas del inventario
   useEffect(() => {
-    async function loadRondas() {
-      if (!selectedInventario || !selectedZona) return;
-      
-      try {
-        const data = await getRondas({ inventarioId: selectedInventario, zonaId: selectedZona });
-        setRondas(data);
-        
-        // Buscar ronda activa o pendiente
-        const activa = data.find(r => r.estado === 'activa');
-        const pendiente = data.find(r => r.estado === 'pendiente');
-        const borrador = data.find(r => r.estado === 'borrador');
-        
-        if (activa) {
-          setRondaActiva(activa);
-          setSelectedRonda(activa.id);
-          await loadPendientes(activa.id);
-          await loadResumen(activa.id);
-          await loadHistorial(activa.id);
-        } else if (pendiente) {
-          setRondaActiva(pendiente);
-          setSelectedRonda(pendiente.id);
-        } else if (borrador) {
-          setRondaActiva(borrador);
-          setSelectedRonda(borrador.id);
-        }
-      } catch (err) {
-        console.error('Error cargando rondas:', err);
+    if (!flash.text) return;
+    const timeout = setTimeout(() => {
+      setFlash({ type: '', text: '' });
+    }, 3000);
+    return () => clearTimeout(timeout);
+  }, [flash]);
+
+  const playBeep = () => {
+    if (!audioRef.current) return;
+    audioRef.current.currentTime = 0;
+    audioRef.current.play().catch(() => { });
+  };
+
+  const selectedRonda = useMemo(() => {
+    return rondas.find((item) => Number(item.id) === Number(selectedRondaId)) || null;
+  }, [rondas, selectedRondaId]);
+
+  const grupoAsignado = selectedRonda?.asignacion?.grupo || null;
+  const zonaRonda = selectedRonda?.zona || null;
+  const isReconteo = selectedRonda?.tipoRonda === 'reconteo';
+  const canScan = selectedRonda?.estado === 'activa' && Boolean(grupoAsignado?.id);
+
+  const totalEscaneos = Number(stats?.totalEscaneos || 0);
+  const productosUnicos = Number(stats?.productosUnicos || resumen.length || 0);
+
+  const formatDateTime = (value) => {
+    if (!value) return '—';
+    const date = new Date(value);
+    return `${date.toLocaleDateString()} ${date.toLocaleTimeString()}`;
+  };
+
+  const formatOnlyTime = (value) => {
+    if (!value) return '—';
+    return new Date(value).toLocaleTimeString();
+  };
+
+  async function loadInventariosData() {
+    try {
+      const data = await getInventarios();
+      setInventarios(data);
+
+      if (data.length > 0) {
+        setSelectedInventario((prev) => prev || data[0].id);
       }
-    }
-    
-    loadRondas();
-  }, [selectedInventario, selectedZona]);
-
-  // Cargar pendientes de reconteo
-  const loadPendientes = async (rondaId) => {
-    try {
-      const data = await getPendientesRonda(rondaId);
-      setPendientes(data.pendientes || []);
     } catch (err) {
-      console.error('Error cargando pendientes:', err);
+      setFlashMessage('No se pudieron cargar los inventarios', 'error');
+    } finally {
+      setBootLoading(false);
     }
-  };
+  }
 
-  // Cargar resumen de escaneos
-  const loadResumen = async (rondaId) => {
-    try {
-      const data = await getResumenLecturas({ rondaId });
-      setResumen(data);
-    } catch (err) {
-      console.error('Error cargando resumen:', err);
-    }
-  };
-
-  // Cargar historial
-  const loadHistorial = async (rondaId) => {
-    try {
-      const data = await getHistorialLecturas({ rondaId, limit: 50 });
-      setHistory(data);
-    } catch (err) {
-      console.error('Error cargando historial:', err);
-    }
-  };
-
-  // Iniciar ronda
-  const handleIniciarRonda = async () => {
-    if (!selectedRonda) return;
-    try {
-      await iniciarRonda(selectedRonda);
-      setRondaActiva({ ...rondaActiva, estado: 'activa' });
-      setMessage('Ronda iniciada. ¡Pueden comenzar a escanear!');
-      inputRef.current?.focus();
-    } catch (err) {
-      setError('No se pudo iniciar la ronda');
-    }
-  };
-
-  // Pausar ronda
-  const handlePausarRonda = async () => {
-    if (!selectedRonda) return;
-    try {
-      await pausarRonda(selectedRonda);
-      setRondaActiva({ ...rondaActiva, estado: 'pausada' });
-      setMessage('Ronda pausada. Escaneo detenido temporalmente.');
-    } catch (err) {
-      setError('No se pudo pausar la ronda');
-    }
-  };
-
-  // Reanudar ronda
-  const handleReanudarRonda = async () => {
-    if (!selectedRonda) return;
-    try {
-      await reanudarRonda(selectedRonda);
-      setRondaActiva({ ...rondaActiva, estado: 'activa' });
-      setMessage('Ronda reanudada. Continúen escaneando.');
-      inputRef.current?.focus();
-    } catch (err) {
-      setError('No se pudo reanudar la ronda');
-    }
-  };
-
-  // Escanear código
-  const handleScan = async (e) => {
-    e.preventDefault();
-    if (!codigo.trim()) return;
-    
-    // Validación SKU: 5-7 dígitos
-    if (codigo.trim().length < 5 || codigo.trim().length > 7) {
-      setError('Código inválido. Debe tener entre 5 y 7 dígitos.');
-      playError();
-      setCodigo('');
-      setTimeout(() => inputRef.current?.focus(), 100);
+  const loadRondasData = useCallback(async (inventarioId, currentSelectedId = null) => {
+    if (!inventarioId) {
+      setRondas([]);
+      setSelectedRondaId('');
       return;
     }
-    
-    if (!rondaActiva || rondaActiva.estado !== 'activa') {
-      setError('No hay una ronda activa. Inicia o reanuda la ronda primero.');
-      playError();
-      setCodigo('');
-      setTimeout(() => inputRef.current?.focus(), 100);
+
+    try {
+      const data = await getRondas({ inventarioId });
+      setRondas(data || []);
+
+      const preferred =
+        data.find((item) => Number(item.id) === Number(currentSelectedId)) ||
+        data.find((item) => item.estado === 'activa') ||
+        data.find((item) => item.estado === 'pausada') ||
+        data.find((item) => item.estado === 'borrador') ||
+        data[0] ||
+        null;
+
+      setSelectedRondaId(preferred?.id || '');
+    } catch (err) {
+      setFlashMessage('No se pudieron cargar las rondas', 'error');
+      setRondas([]);
+      setSelectedRondaId('');
+    }
+  }, [setFlashMessage]);
+
+  const loadRoundContext = useCallback(async (ronda) => {
+    if (!ronda?.id) {
+      setPendientes([]);
+      setResumen([]);
+      setHistory([]);
+      setStats(null);
       return;
     }
-    
-    setLoading(true);
-    setError('');
-    setMessage('');
-    
+
+    setSyncing(true);
+
     try {
-      const response = await scanLecturaRonda({
-        rondaId: rondaActiva.id,
-        grupoId: selectedGrupo,
-        codigo: codigo.trim()
-      });
-      
-      playBeep();
-      setLastScan(response.data);
-      setMessage(response.message);
-      
-      // Actualizar resumen e historial
-      await loadResumen(rondaActiva.id);
-      await loadHistorial(rondaActiva.id);
-      
-      setCodigo('');
+      const requests = [
+        getResumenLecturas({ rondaId: ronda.id }),
+        getHistorialLecturas({ rondaId: ronda.id, limit: 50 }),
+        ronda.tipoRonda === 'reconteo'
+          ? getPendientesRonda(ronda.id)
+          : Promise.resolve({ pendientes: [] }),
+        ronda.asignacion?.grupoId || ronda.asignacion?.grupo?.id
+          ? getEstadisticasGrupo({
+            rondaId: ronda.id,
+            grupoId: ronda.asignacion?.grupoId || ronda.asignacion?.grupo?.id
+          })
+          : Promise.resolve(null)
+      ];
+
+      const [resumenData, historyData, pendientesData, statsData] = await Promise.all(requests);
+
+      setResumen(resumenData || []);
+      setHistory(historyData || []);
+      setPendientes(pendientesData?.pendientes || []);
+      setStats(statsData || null);
+    } catch (err) {
+      setFlashMessage('No se pudo sincronizar la información de la ronda', 'error');
+    } finally {
+      setSyncing(false);
+    }
+  }, [setFlashMessage]);
+
+  useEffect(() => {
+    loadInventariosData();
+  }, []);
+
+  useEffect(() => {
+    if (selectedInventario) {
+      loadRondasData(selectedInventario, selectedRondaId);
+    }
+  }, [selectedInventario, loadRondasData]);
+
+  useEffect(() => {
+    if (selectedRonda) {
+      loadRoundContext(selectedRonda);
+    } else {
+      setPendientes([]);
+      setResumen([]);
+      setHistory([]);
+      setStats(null);
+    }
+  }, [selectedRonda, loadRoundContext]);
+
+  useEffect(() => {
+    if (!selectedRonda?.id || selectedRonda.estado !== 'activa') return;
+
+    const interval = setInterval(() => {
+      loadRoundContext(selectedRonda);
+    }, 4000);
+
+    return () => clearInterval(interval);
+  }, [selectedRonda, loadRoundContext]);
+
+  useEffect(() => {
+    if (!bootLoading) {
+      setTimeout(() => inputRef.current?.focus(), 50);
+    }
+  }, [bootLoading, selectedRondaId]);
+
+  const handleRefresh = async () => {
+    if (!selectedInventario) return;
+    await loadRondasData(selectedInventario, selectedRondaId);
+  };
+
+  const handleRondaAction = async (action) => {
+    if (!selectedRonda?.id) return;
+
+    try {
+      if (action === 'iniciar') {
+        await iniciarRonda(selectedRonda.id);
+        setFlashMessage('Ronda iniciada. Ya puedes escanear.', 'success');
+      } else if (action === 'pausar') {
+        await pausarRonda(selectedRonda.id);
+        setFlashMessage('Ronda pausada.', 'warning');
+      } else if (action === 'reanudar') {
+        await reanudarRonda(selectedRonda.id);
+        setFlashMessage('Ronda reanudada.', 'success');
+      }
+
+      await loadRondasData(selectedInventario, selectedRonda.id);
       setTimeout(() => inputRef.current?.focus(), 50);
     } catch (err) {
-      setError(err.response?.data?.message || 'Error al registrar lectura');
-      playError();
-      setCodigo('');
-      setTimeout(() => inputRef.current?.focus(), 100);
-    } finally {
-      setLoading(false);
+      setFlashMessage(err.response?.data?.message || 'No se pudo actualizar el estado de la ronda', 'error');
     }
   };
 
-  // Anular última lectura
+  const handleScan = async (e) => {
+    e.preventDefault();
+
+    const codigoLimpio = codigo.trim();
+
+    if (!codigoLimpio) return;
+
+    if (!/^\d{5,7}$/.test(codigoLimpio)) {
+      setFlashMessage('Código inválido. Debe tener entre 5 y 7 dígitos numéricos.', 'warning');
+      setCodigo('');
+      setTimeout(() => inputRef.current?.focus(), 50);
+      return;
+    }
+    const now = Date.now();
+
+    if (
+      lastSentRef.current.code === codigoLimpio &&
+      now - lastSentRef.current.at < 700
+    ) {
+      setCodigo('');
+      setTimeout(() => inputRef.current?.focus(), 50);
+      return;
+    }
+
+    lastSentRef.current = {
+      code: codigoLimpio,
+      at: now
+    };
+    if (!selectedRonda?.id) {
+      setFlashMessage('Debes seleccionar una ronda.', 'error');
+      setTimeout(() => inputRef.current?.focus(), 50);
+      return;
+    }
+
+    if (selectedRonda.estado !== 'activa') {
+      setFlashMessage('La ronda debe estar activa para escanear.', 'warning');
+      setCodigo('');
+      setTimeout(() => inputRef.current?.focus(), 50);
+      return;
+    }
+
+    if (!grupoAsignado?.id) {
+      setFlashMessage('Esta ronda no tiene un grupo asignado.', 'error');
+      setCodigo('');
+      setTimeout(() => inputRef.current?.focus(), 50);
+      return;
+    }
+
+    setLoadingScan(true);
+
+    try {
+      const response = await scanLecturaRonda({
+        rondaId: selectedRonda.id,
+        grupoId: grupoAsignado.id,
+        codigo: codigoLimpio
+      });
+
+      playBeep();
+      setLastScan(response.data || null);
+      setFlashMessage(
+        response.message || 'Lectura registrada',
+        response.warning ? 'warning' : 'success'
+      );
+
+      setCodigo('');
+      await loadRoundContext(selectedRonda);
+      setTimeout(() => inputRef.current?.focus(), 50);
+    } catch (err) {
+      setFlashMessage(err.response?.data?.message || 'Error al registrar lectura', 'error');
+      setCodigo('');
+      setTimeout(() => inputRef.current?.focus(), 50);
+    } finally {
+      setLoadingScan(false);
+    }
+  };
+
   const handleAnularLectura = async (lecturaId) => {
-    if (!confirm('¿Anular esta lectura? Se restará del conteo.')) return;
+    const ok = window.confirm('¿Anular esta lectura?');
+    if (!ok) return;
+
     try {
       await anularLectura(lecturaId);
-      setMessage('Lectura anulada correctamente');
-      await loadResumen(rondaActiva.id);
-      await loadHistorial(rondaActiva.id);
+      setFlashMessage('Lectura anulada correctamente', 'success');
+      await loadRoundContext(selectedRonda);
     } catch (err) {
-      setError('No se pudo anular la lectura');
+      setFlashMessage(err.response?.data?.message || 'No se pudo anular la lectura', 'error');
+    }
+  };
+
+  const handleExportGrupo = async () => {
+    if (!selectedRonda?.id || !grupoAsignado?.id) return;
+
+    setExporting(true);
+
+    try {
+      const payload = await exportarResultadosGrupo({
+        rondaId: selectedRonda.id,
+        grupoId: grupoAsignado.id,
+        inventarioId: selectedRonda.inventarioId
+      });
+
+      const data = payload?.data;
+      const resultados = data?.resultados || [];
+
+      const rows = [
+        ['Grupo', data?.grupo?.nombre || ''],
+        ['Ronda', data?.ronda?.numeroRonda || ''],
+        ['Tipo', data?.ronda?.tipoRonda || ''],
+        ['Zona', data?.ronda?.zona || ''],
+        [],
+        ['SKU', 'Descripción', 'Cantidad Total'],
+        ...resultados.map((item) => [
+          item.sku || '',
+          (item.descripcion || '').replace(/\n/g, ' '),
+          item.cantidadTotal || 0
+        ])
+      ];
+
+      const csv = rows
+        .map((row) =>
+          row
+            .map((value) => `"${String(value ?? '').replace(/"/g, '""')}"`)
+            .join(',')
+        )
+        .join('\n');
+
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+
+      link.href = url;
+      link.setAttribute(
+        'download',
+        `grupo-${data?.grupo?.nombre || 'resultado'}-ronda-${data?.ronda?.numeroRonda || 'x'}.csv`
+      );
+
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+
+      setFlashMessage('Exportación del grupo generada correctamente', 'success');
+    } catch (err) {
+      setFlashMessage(err.response?.data?.message || 'No se pudo exportar el grupo', 'error');
+    } finally {
+      setExporting(false);
     }
   };
 
   if (bootLoading) {
-    return <div className="card">Cargando módulo de escaneo...</div>;
+    return (
+      <div className="card loading-card">
+        <div className="loading-spinner" />
+        <p>Cargando módulo de escaneo...</p>
+      </div>
+    );
   }
 
-  const isReconteo = rondaActiva?.tipoRonda === 'reconteo';
-  const totalEscaneos = resumen.reduce((sum, item) => sum + item.cantidadTotal, 0);
-  const totalProductos = resumen.length;
-
   return (
-    <div className="escaneo-container">
+    <div className="dashboard-container escaneo-page">
       <audio ref={audioRef} src="/beep.mp3" preload="auto" />
-      
-      {/* Selectores */}
-      <div className="card selectores-card">
-        <div className="selectores-grid">
-          <div className="form-group">
-            <label>Inventario</label>
-            <select value={selectedInventario} onChange={(e) => setSelectedInventario(Number(e.target.value))}>
-              {inventarios.map(inv => (
-                <option key={inv.id} value={inv.id}>{inv.nombre}</option>
-              ))}
-            </select>
+
+      <div className="card filters-card escaneo-toolbar">
+        <div className="filters-header">
+          <div className="filters-form">
+            <div className="form-group">
+              <label>Inventario</label>
+              <select
+                value={selectedInventario}
+                onChange={(e) => setSelectedInventario(Number(e.target.value))}
+              >
+                {inventarios.map((inv) => (
+                  <option key={inv.id} value={inv.id}>
+                    {inv.nombre} - {inv.fecha}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="form-group">
+              <label>Ronda de trabajo</label>
+              <select
+                value={selectedRondaId || ''}
+                onChange={(e) => setSelectedRondaId(Number(e.target.value))}
+                disabled={rondas.length === 0}
+              >
+                <option value="">Selecciona una ronda</option>
+                {rondas.map((ronda) => (
+                  <option key={ronda.id} value={ronda.id}>
+                    Ronda {ronda.numeroRonda} · {ronda.tipoRonda} · {ronda.estado}
+                  </option>
+                ))}
+              </select>
+            </div>
           </div>
-          <div className="form-group">
-            <label>Zona</label>
-            <select value={selectedZona} onChange={(e) => setSelectedZona(Number(e.target.value))}>
-              {zonas.map(zona => (
-                <option key={zona.id} value={zona.id}>{zona.nombre}</option>
-              ))}
-            </select>
-          </div>
-          <div className="form-group">
-            <label>Grupo</label>
-            <select value={selectedGrupo} onChange={(e) => setSelectedGrupo(Number(e.target.value))}>
-              {grupos.filter(g => g.inventarioId === selectedInventario).map(grupo => (
-                <option key={grupo.id} value={grupo.id}>{grupo.nombre}</option>
-              ))}
-            </select>
-          </div>
-          <div className="form-group">
-            <label>Ronda</label>
-            <select value={selectedRonda || ''} onChange={(e) => setSelectedRonda(Number(e.target.value))}>
-              <option value="">Seleccionar ronda</option>
-              {rondas.map(r => (
-                <option key={r.id} value={r.id}>
-                  Ronda {r.numeroRonda} - {r.tipoRonda} ({r.estado})
-                </option>
-              ))}
-            </select>
+
+          <div className="filters-actions">
+            <div className="last-update">
+              <Clock size={14} />
+              <span>{syncing ? 'Sincronizando...' : 'Vista sincronizada'}</span>
+            </div>
+
+            <button className="btn btn-outline" onClick={handleRefresh}>
+              <RefreshCw size={16} className={syncing ? 'spin' : ''} />
+              <span>Actualizar</span>
+            </button>
           </div>
         </div>
+
+        {selectedRonda ? (
+          <div className="escaneo-meta-grid">
+            <div className="escaneo-meta-item">
+              <span className="meta-label">Grupo</span>
+              <strong>{grupoAsignado?.nombre || 'Sin grupo'}</strong>
+            </div>
+
+            <div className="escaneo-meta-item">
+              <span className="meta-label">Zona</span>
+              <strong>
+                {zonaRonda?.nombre || 'Sin zona'}
+                {zonaRonda?.codigo ? ` (${zonaRonda.codigo})` : ''}
+              </strong>
+            </div>
+
+            <div className="escaneo-meta-item">
+              <span className="meta-label">Tipo</span>
+              <strong>{selectedRonda.tipoRonda === 'reconteo' ? 'Reconteo' : 'Completa'}</strong>
+            </div>
+
+            <div className="escaneo-meta-item">
+              <span className="meta-label">Estado</span>
+              <span className={`status-chip ${selectedRonda.estado}`}>
+                {selectedRonda.estado}
+              </span>
+            </div>
+          </div>
+        ) : null}
       </div>
 
-      {/* Estado de ronda */}
-      {rondaActiva && (
-        <div className={`card ronda-status ${rondaActiva.estado}`}>
-          <div className="ronda-info">
-            <div className="ronda-badge">
-              <span className={`status-dot ${rondaActiva.estado}`} />
-              <strong>Ronda {rondaActiva.numeroRonda}</strong>
-              <span className="ronda-tipo">{rondaActiva.tipoRonda === 'reconteo' ? '🔄 Reconteo' : '📋 Completa'}</span>
-            </div>
-            {isReconteo && pendientes.length > 0 && (
-              <div className="pendientes-badge">
-                <AlertTriangle size={14} />
-                <span>{pendientes.length} productos pendientes</span>
+      {flash.text ? (
+        <div className={`alert-${flash.type === 'error' ? 'error' : flash.type === 'warning' ? 'warning' : 'success'}`}>
+          {flash.text}
+        </div>
+      ) : null}
+
+      {selectedRonda ? (
+        <>
+          <div className="kpi-grid">
+            <div className="card kpi-card">
+              <div className="kpi-icon">
+                <Boxes size={24} />
               </div>
-            )}
+              <div className="kpi-content">
+                <p className="kpi-title">Total escaneos</p>
+                <h3 className="kpi-value">{totalEscaneos}</h3>
+              </div>
+            </div>
+
+            <div className="card kpi-card">
+              <div className="kpi-icon">
+                <Layers3 size={24} />
+              </div>
+              <div className="kpi-content">
+                <p className="kpi-title">Productos distintos</p>
+                <h3 className="kpi-value">{productosUnicos}</h3>
+              </div>
+            </div>
+
+            <div className="card kpi-card">
+              <div className="kpi-icon">
+                <AlertTriangle size={24} />
+              </div>
+              <div className="kpi-content">
+                <p className="kpi-title">Pendientes</p>
+                <h3 className="kpi-value">{isReconteo ? pendientes.length : 0}</h3>
+              </div>
+            </div>
           </div>
-          
-          <div className="ronda-actions">
-            {rondaActiva.estado === 'borrador' && (
-              <button className="btn btn-primary" onClick={handleIniciarRonda}><Play size={16} /> Iniciar</button>
-            )}
-            {rondaActiva.estado === 'activa' && (
-              <button className="btn btn-outline" onClick={handlePausarRonda}><Pause size={16} /> Pausar</button>
-            )}
-            {rondaActiva.estado === 'pausada' && (
-              <button className="btn btn-primary" onClick={handleReanudarRonda}><Play size={16} /> Reanudar</button>
-            )}
-          </div>
-        </div>
-      )}
 
-      <div className="escaneo-grid">
-        {/* Escáner */}
-        <div className="card scanner-card">
-          <h2 className="section-title"><ScanLine size={20} /> Escanear producto</h2>
-          
-          <form onSubmit={handleScan}>
-            <div className="scanner-input">
-              <input
-                ref={inputRef}
-                type="text"
-                value={codigo}
-                onChange={(e) => setCodigo(e.target.value)}
-                placeholder="Escanea o escribe el código (5-7 dígitos)"
-                autoComplete="off"
-                disabled={!rondaActiva || rondaActiva.estado !== 'activa'}
-              />
-              <button type="submit" disabled={loading || !rondaActiva || rondaActiva.estado !== 'activa'}>
-                {loading ? '...' : 'Escanear'}
-              </button>
-            </div>
-          </form>
+          <div className="scan-layout">
+            <div className="card scanner-shell">
+              <div className="list-header">
+                <h2 className="section-title">
+                  <ScanLine size={20} />
+                  <span>Escanear producto</span>
+                </h2>
 
-          {message && <div className="alert-success">{message}</div>}
-          {error && <div className="alert-error">{error}</div>}
-
-          {lastScan && (
-            <div className="last-scan">
-              <div className="last-scan-header">
-                <CheckCircle size={18} className="text-success" />
-                <span>Último escaneo</span>
-              </div>
-              <div className="last-scan-content">
-                <div>
-                  <strong>{lastScan.producto?.sku || 'No reconocido'}</strong>
-                  <p>{lastScan.producto?.descripcion || 'Producto no encontrado en catálogo'}</p>
-                </div>
-                <div className="acumulado">
-                  <Zap size={16} />
-                  <span>Acumulado: <strong>{lastScan.acumuladoSku}</strong></span>
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-
-        {/* Contador rápido */}
-        <div className="card counter-card">
-          <h2 className="section-title"><Boxes size={20} /> Conteo actual</h2>
-          <div className="counters">
-            <div className="counter-item">
-              <span className="counter-label">Total escaneos</span>
-              <span className="counter-value">{totalEscaneos}</span>
-            </div>
-            <div className="counter-item">
-              <span className="counter-label">Productos distintos</span>
-              <span className="counter-value">{totalProductos}</span>
-            </div>
-            {isReconteo && (
-              <div className="counter-item">
-                <span className="counter-label">Pendientes</span>
-                <span className="counter-value pending">{pendientes.length}</span>
-              </div>
-            )}
-          </div>
-        </div>
-      </div>
-
-      {/* Resumen por SKU */}
-      <div className="card resumen-card">
-        <h2 className="section-title"><History size={20} /> Resumen por producto</h2>
-        <div className="resumen-grid">
-          {resumen.length === 0 ? (
-            <p className="muted">Aún no hay escaneos registrados.</p>
-          ) : (
-            resumen.map(item => (
-              <div key={item.sku} className="resumen-item">
-                <div className="resumen-sku">
-                  <strong>{item.sku}</strong>
-                  <p>{item.descripcionSnapshot || 'Sin descripción'}</p>
-                </div>
-                <span className="resumen-cantidad">{item.cantidadTotal}</span>
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-
-      {/* Historial de escaneos */}
-      <div className="card historial-card">
-        <h2 className="section-title"><Clock size={20} /> Historial reciente</h2>
-        <div className="historial-list">
-          {history.length === 0 ? (
-            <p className="muted">No hay escaneos recientes.</p>
-          ) : (
-            history.slice(0, 20).map(lectura => (
-              <div key={lectura.id} className={`historial-item ${lectura.estado === 'anulada' ? 'anulada' : ''}`}>
-                <div className="historial-info">
-                  <span className="historial-codigo">{lectura.codigoLeido}</span>
-                  <span className="historial-sku">{lectura.sku || 'No reconocido'}</span>
-                  <span className="historial-fecha">{new Date(lectura.fechaHora).toLocaleTimeString()}</span>
-                </div>
-                <div className="historial-actions">
-                  {lectura.estado !== 'anulada' && (
-                    <button className="icon-btn danger" onClick={() => handleAnularLectura(lectura.id)}>
-                      <Trash2 size={14} />
+                <div className="scanner-actions">
+                  {selectedRonda.estado === 'borrador' ? (
+                    <button className="btn btn-primary" onClick={() => handleRondaAction('iniciar')}>
+                      <Play size={16} />
+                      <span>Iniciar</span>
                     </button>
+                  ) : null}
+
+                  {selectedRonda.estado === 'activa' ? (
+                    <button className="btn btn-outline" onClick={() => handleRondaAction('pausar')}>
+                      <Pause size={16} />
+                      <span>Pausar</span>
+                    </button>
+                  ) : null}
+
+                  {selectedRonda.estado === 'pausada' ? (
+                    <button className="btn btn-primary" onClick={() => handleRondaAction('reanudar')}>
+                      <Play size={16} />
+                      <span>Reanudar</span>
+                    </button>
+                  ) : null}
+
+                  <button
+                    className="btn btn-outline"
+                    onClick={handleExportGrupo}
+                    disabled={!grupoAsignado?.id || exporting}
+                  >
+                    <Download size={16} />
+                    <span>{exporting ? 'Exportando...' : 'Exportar grupo'}</span>
+                  </button>
+                </div>
+              </div>
+
+              <form onSubmit={handleScan}>
+                <div className="scanner-input-row">
+                  <input
+                    ref={inputRef}
+                    type="text"
+                    value={codigo}
+                    onChange={(e) => setCodigo(e.target.value)}
+                    placeholder="Escanea o escribe el código"
+                    autoComplete="off"
+                    disabled={!canScan || loadingScan}
+                  />
+                  <button className="btn btn-primary" type="submit" disabled={!canScan || loadingScan}>
+                    {loadingScan ? '...' : 'Escanear'}
+                  </button>
+                </div>
+              </form>
+
+              <p className="scan-helper">
+                Solo se aceptan códigos numéricos de 5 a 7 dígitos. Si el código no cumple, se notifica y el flujo sigue.
+              </p>
+
+              {lastScan ? (
+                <div className="last-scan-card">
+                  <div className="last-scan-header">
+                    <CheckCircle size={18} className="text-success" />
+                    <span>Último escaneo</span>
+                  </div>
+
+                  <div className="last-scan-grid">
+                    <div>
+                      <span className="meta-label">SKU</span>
+                      <strong>{lastScan.producto?.sku || 'No reconocido'}</strong>
+                    </div>
+
+                    <div>
+                      <span className="meta-label">Descripción</span>
+                      <strong>{lastScan.producto?.descripcion || 'Sin descripción'}</strong>
+                    </div>
+
+                    <div>
+                      <span className="meta-label">Acumulado del SKU</span>
+                      <strong>{lastScan.acumuladoSku || 0}</strong>
+                    </div>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+
+            <div className="card round-summary-card">
+              <h2 className="section-title">
+                <Zap size={20} />
+                <span>Estado de la ronda</span>
+              </h2>
+
+              <div className="round-summary-grid">
+                <div className="summary-box">
+                  <span>Inicio</span>
+                  <strong>{formatDateTime(selectedRonda.tiempoInicio)}</strong>
+                </div>
+
+                <div className="summary-box">
+                  <span>Fin</span>
+                  <strong>{formatDateTime(selectedRonda.tiempoFin)}</strong>
+                </div>
+
+                <div className="summary-box">
+                  <span>Primera lectura</span>
+                  <strong>{formatDateTime(stats?.primeraLectura)}</strong>
+                </div>
+
+                <div className="summary-box">
+                  <span>Última lectura</span>
+                  <strong>{formatDateTime(stats?.ultimaLectura)}</strong>
+                </div>
+
+                <div className="summary-box full">
+                  <span>Tiempo activo</span>
+                  <strong>{stats?.tiempoFormateado || '—'}</strong>
+                </div>
+              </div>
+
+              {isReconteo ? (
+                <div className="pending-panel">
+                  <div className="pending-header">
+                    <AlertTriangle size={16} />
+                    <span>SKU pendientes para reconteo</span>
+                  </div>
+
+                  {pendientes.length === 0 ? (
+                    <div className="escaneo-empty">No hay pendientes para esta ronda.</div>
+                  ) : (
+                    <div className="pending-list">
+                      {pendientes.slice(0, 12).map((item) => (
+                        <div key={`${item.sku}-${item.id}`} className="pending-item">
+                          <div>
+                            <strong>{item.sku}</strong>
+                            <p>{item.descripcionSnapshot || 'Sin descripción'}</p>
+                          </div>
+                          <span className="pending-diff">Dif. {item.diferencia}</span>
+                        </div>
+                      ))}
+                    </div>
                   )}
                 </div>
+              ) : null}
+            </div>
+          </div>
+
+          <div className="grid-2">
+            <div className="card resumen-card">
+              <div className="list-header">
+                <h2 className="section-title">
+                  <Boxes size={20} />
+                  <span>Resumen por producto</span>
+                </h2>
               </div>
-            ))
-          )}
+
+              {resumen.length === 0 ? (
+                <div className="escaneo-empty">Aún no hay escaneos registrados.</div>
+              ) : (
+                <div className="table-container">
+                  <table className="data-table">
+                    <thead>
+                      <tr>
+                        <th>SKU</th>
+                        <th>Descripción</th>
+                        <th>Cantidad</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {resumen.map((item) => (
+                        <tr key={item.sku}>
+                          <td>
+                            <strong>{item.sku}</strong>
+                          </td>
+                          <td>{item.descripcionSnapshot || 'Sin descripción'}</td>
+                          <td>{item.cantidadTotal}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div className="card historial-card">
+              <div className="list-header">
+                <h2 className="section-title">
+                  <History size={20} />
+                  <span>Historial reciente</span>
+                </h2>
+              </div>
+
+              {history.length === 0 ? (
+                <div className="escaneo-empty">No hay lecturas recientes.</div>
+              ) : (
+                <div className="history-list">
+                  {history.slice(0, 20).map((lectura) => (
+                    <div
+                      key={lectura.id}
+                      className={`history-item ${lectura.estado === 'anulada' ? 'anulada' : ''}`}
+                    >
+                      <div className="history-main">
+                        <strong>{lectura.codigoLeido}</strong>
+                        <p>{lectura.sku || 'No reconocido'}</p>
+                      </div>
+
+                      <div className="history-meta">
+                        <span className="tag-muted">{formatOnlyTime(lectura.fechaHora)}</span>
+                        <span className={`status-chip mini ${lectura.estado}`}>
+                          {lectura.estado}
+                        </span>
+                        {lectura.estado !== 'anulada' ? (
+                          <button
+                            className="icon-btn"
+                            onClick={() => handleAnularLectura(lectura.id)}
+                            title="Anular lectura"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        </>
+      ) : (
+        <div className="card">
+          <p className="muted">Selecciona un inventario que tenga rondas disponibles.</p>
         </div>
-      </div>
+      )}
     </div>
   );
 }

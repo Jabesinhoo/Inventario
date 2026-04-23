@@ -1,108 +1,158 @@
 const sql = require('mssql');
 
+let pool = null;
 let poolPromise = null;
-let retryCount = 0;
-const MAX_RETRIES = 3;
+
+function isSqlServerEnabled() {
+  return String(process.env.SQLSERVER_ENABLED || '')
+    .trim()
+    .toLowerCase() === 'true';
+}
 
 function buildSqlServerConfig() {
-  const config = {
-    user: process.env.SQLSERVER_USER || 'Jabes',
-    password: process.env.SQLSERVER_PASSWORD || 'Jabes2026',
-    server: 'SERTECNO',
-    database: 'Melissa_2023',
-    connectionTimeout: 120000,  // 2 minutos
-    requestTimeout: 120000,     // 2 minutos
+  return {
+    user: process.env.SQLSERVER_USER || '',
+    password: process.env.SQLSERVER_PASSWORD || '',
+    server: process.env.SQLSERVER_HOST || 'SERTECNO',
+    database: process.env.SQLSERVER_DATABASE || 'Melissa_2023',
+
+    connectionTimeout: Number(process.env.SQLSERVER_CONNECTION_TIMEOUT || 5000),
+    requestTimeout: Number(process.env.SQLSERVER_REQUEST_TIMEOUT || 8000),
+
     pool: {
-      max: 5,
+      max: Number(process.env.SQLSERVER_POOL_MAX || 5),
       min: 0,
-      idleTimeoutMillis: 120000,
-      acquireTimeoutMillis: 120000
+      idleTimeoutMillis: Number(process.env.SQLSERVER_IDLE_TIMEOUT || 10000)
     },
+
     options: {
-      instanceName: 'WORLDOFFICE14',
+      instanceName: process.env.SQLSERVER_INSTANCE || 'WORLDOFFICE14',
       encrypt: false,
       trustServerCertificate: true,
       enableArithAbort: true,
-      useUTC: false,
-      connectTimeout: 120000
+      useUTC: false
     }
   };
+}
 
+function isConnectionResetError(error) {
+  const message = String(error?.message || '').toLowerCase();
+  const code = String(error?.code || '').toUpperCase();
+
+  return (
+    code === 'ESOCKET' ||
+    code === 'ECONNRESET' ||
+    message.includes('econnreset') ||
+    message.includes('connection lost') ||
+    message.includes('socket') ||
+    message.includes('failed to connect')
+  );
+}
+
+function resetPool() {
+  pool = null;
+  poolPromise = null;
+}
+
+async function createPool() {
+  const config = buildSqlServerConfig();
+
+  console.log('[SQLSERVER] Habilitado:', isSqlServerEnabled());
+  console.log('[SQLSERVER] ENV raw:', JSON.stringify(process.env.SQLSERVER_ENABLED));
   console.log('[SQLSERVER] Configuración:');
   console.log(`   Host: ${config.server}`);
   console.log(`   Instancia: ${config.options.instanceName}`);
   console.log(`   Base de datos: ${config.database}`);
+  console.log('[SQLSERVER] Conectando...');
 
-  return config;
+  const connectionPool = new sql.ConnectionPool(config);
+
+  connectionPool.on('error', (err) => {
+    console.error('[SQLSERVER POOL ERROR]', err.message);
+    resetPool();
+  });
+
+  await connectionPool.connect();
+
+  console.log('[SQLSERVER] ✅ Conectado exitosamente');
+
+  return connectionPool;
 }
 
 async function getSqlServerPool() {
-  if (!poolPromise) {
-    try {
-      const config = buildSqlServerConfig();
-      const pool = new sql.ConnectionPool(config);
-      
-      pool.on('error', (err) => {
-        console.error('[SQLSERVER POOL ERROR]', err.message);
-        poolPromise = null;
-      });
-
-      console.log('[SQLSERVER] Conectando...');
-      poolPromise = pool.connect();
-      await poolPromise;
-      console.log('[SQLSERVER] ✅ Conectado exitosamente');
-      retryCount = 0;
-    } catch (error) {
-      console.error('[SQLSERVER] Error de conexión:', error.message);
-      poolPromise = null;
-      
-      if (retryCount < MAX_RETRIES) {
-        retryCount++;
-        console.log(`[SQLSERVER] Reintentando (${retryCount}/${MAX_RETRIES}) en 2 segundos...`);
-        await new Promise(resolve => setTimeout(resolve, 2000));
-        return getSqlServerPool();
-      }
-      throw error;
-    }
+  if (!isSqlServerEnabled()) {
+    throw new Error('SQL Server deshabilitado por configuración');
   }
+
+  if (pool && pool.connected) {
+    return pool;
+  }
+
+  if (poolPromise) {
+    return poolPromise;
+  }
+
+  poolPromise = createPool()
+    .then((connectedPool) => {
+      pool = connectedPool;
+      return connectedPool;
+    })
+    .catch((error) => {
+      resetPool();
+      throw error;
+    });
+
   return poolPromise;
 }
 
 async function closeSqlServerPool() {
-  if (poolPromise) {
-    const pool = await poolPromise;
-    await pool.close();
-    poolPromise = null;
-    console.log('[SQLSERVER] Pool cerrado');
+  try {
+    if (pool) {
+      await pool.close();
+      console.log('[SQLSERVER] Pool cerrado');
+    }
+  } catch (error) {
+    console.error('[SQLSERVER] Error cerrando pool:', error.message);
+  } finally {
+    resetPool();
   }
 }
 
-async function executeQuery(query, params = {}) {
-  let lastError = null;
-  
-  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-    try {
-      const pool = await getSqlServerPool();
-      const request = pool.request();
-      
-      for (const [key, value] of Object.entries(params)) {
-        request.input(key, value);
-      }
-      
-      const result = await request.query(query);
-      return result;
-    } catch (error) {
-      lastError = error;
-      console.error(`[SQLSERVER] Query falló (intento ${attempt}/${MAX_RETRIES}):`, error.message);
-      
-      if (attempt < MAX_RETRIES) {
-        poolPromise = null;
-        await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
-      }
-    }
+async function executeQuery(query, params = {}, options = {}) {
+  const { retryOnceOnSocketError = true } = options;
+
+  if (!isSqlServerEnabled()) {
+    throw new Error('SQL Server deshabilitado por configuración');
   }
-  
-  throw lastError;
+
+  try {
+    const activePool = await getSqlServerPool();
+    const request = activePool.request();
+
+    for (const [key, value] of Object.entries(params)) {
+      request.input(key, value);
+    }
+
+    return await request.query(query);
+  } catch (error) {
+    console.error('[SQLSERVER] Query falló:', error.message);
+
+    if (retryOnceOnSocketError && isConnectionResetError(error)) {
+      console.warn('[SQLSERVER] Reiniciando pool y reintentando una vez...');
+      await closeSqlServerPool();
+
+      const retryPool = await getSqlServerPool();
+      const retryRequest = retryPool.request();
+
+      for (const [key, value] of Object.entries(params)) {
+        retryRequest.input(key, value);
+      }
+
+      return await retryRequest.query(query);
+    }
+
+    throw error;
+  }
 }
 
 module.exports = {

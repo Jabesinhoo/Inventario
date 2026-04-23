@@ -11,6 +11,7 @@ import GruposPage from './pages/grupos/GruposPage';
 import InventariosPage from './pages/inventarios/InventariosPage';
 import ZonasPage from './pages/zonas/ZonasPage';
 import ScriptsPage from './pages/admin/ScriptsPage';
+import RondasPage from './pages/rondas/RondasPage';
 
 export default function App() {
   const auth = useAuth();
@@ -45,7 +46,7 @@ export default function App() {
           <Route path="diferencias" element={<DiferenciasPage />} />
           <Route path="escaneo" element={<EscaneoPage />} />
           <Route path="scripts" element={<ScriptsPage />} />
-
+          <Route path="rondas" element={<RondasPage />} />
         </Route>
 
         <Route path="*" element={<Navigate to="/" replace />} />

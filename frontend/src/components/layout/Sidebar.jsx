@@ -9,7 +9,8 @@ import {
   ScanLine,
   ShieldAlert,
   Users,
-  Settings
+  Settings, 
+  Layers3
 } from 'lucide-react';
 
 const items = [
@@ -17,7 +18,7 @@ const items = [
   { to: '/inventarios', label: 'Inventarios', icon: ClipboardList },
   { to: '/zonas', label: 'Zonas', icon: LayoutGrid },
   { to: '/grupos', label: 'Grupos', icon: Users },
-  // ❌ ELIMINAR Asignaciones de aquí
+  { to: '/rondas', label: 'Rondas', icon: BarChart3 },
   { to: '/conteo-inicial', label: 'Conteo inicial', icon: FileSpreadsheet },
   { to: '/diferencias', label: 'Diferencias', icon: GitCompareArrows },
   { to: '/tercer-conteo', label: 'Tercer conteo', icon: ShieldAlert },

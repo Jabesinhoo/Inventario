@@ -3,7 +3,6 @@ const {
   sequelize,
   Inventario,
   Zona,
-  Producto,
   ConteoInicialDetalle,
   Op
 } = require('../models');
@@ -12,6 +11,34 @@ const { parseConteoInicialExcel } = require('../utils/conteoInicialExcel');
 const querySchema = Joi.object({
   inventarioId: Joi.number().integer().required()
 });
+
+function normalizarZonaEntrada(zonaTexto) {
+  const valor = String(zonaTexto || '').trim().toUpperCase();
+
+  if (valor === 'BODEGA' || valor === 'BOD' || valor === 'BODEGA PRINCIPAL') {
+    return {
+      nombre: 'Bodega Principal',
+      codigo: 'BOD'
+    };
+  }
+
+  if (
+    valor === 'EXHIBICION' ||
+    valor === 'EXHIBICIÓN' ||
+    valor === 'EXH' ||
+    valor === 'EXHIBICION PRINCIPAL'
+  ) {
+    return {
+      nombre: 'Exhibición',
+      codigo: 'EXH'
+    };
+  }
+
+  return {
+    nombre: zonaTexto,
+    codigo: valor.slice(0, 10) || 'GEN'
+  };
+}
 
 async function importConteoInicialExcel(req, res, next) {
   const transaction = await sequelize.transaction();
@@ -35,7 +62,7 @@ async function importConteoInicialExcel(req, res, next) {
       });
     }
 
-    const inventario = await Inventario.findByPk(value.inventarioId);
+    const inventario = await Inventario.findByPk(value.inventarioId, { transaction });
     if (!inventario) {
       await transaction.rollback();
       return res.status(404).json({
@@ -45,7 +72,7 @@ async function importConteoInicialExcel(req, res, next) {
     }
 
     const { rows, errors } = await parseConteoInicialExcel(req.file.buffer);
-    
+
     console.log('[IMPORT] Filas procesadas:', rows.length);
     console.log('[IMPORT] Errores:', errors.length);
 
@@ -53,90 +80,80 @@ async function importConteoInicialExcel(req, res, next) {
     let actualizados = 0;
     const noResueltos = [];
 
-    // Procesar cada fila
     for (const item of rows) {
       try {
-        // Buscar la zona por nombre o código
-        let zonaNombre = item.zona;
-        if (zonaNombre === 'BODEGA') zonaNombre = 'Bodega Principal';
-        if (zonaNombre === 'EXHIBICION') zonaNombre = 'Exhibición';
-        
+        const zonaNormalizada = normalizarZonaEntrada(item.zona);
+
         let zona = await Zona.findOne({
           where: {
             [Op.or]: [
-              { nombre: zonaNombre },
-              { codigo: item.zona }
+              { nombre: zonaNormalizada.nombre },
+              { codigo: zonaNormalizada.codigo }
             ]
           },
           transaction
         });
 
-        // Si no existe la zona, crearla
         if (!zona) {
-          zona = await Zona.create({
-            nombre: zonaNombre,
-            codigo: item.zona,
-            activa: true
-          }, { transaction });
+          zona = await Zona.create(
+            {
+              nombre: zonaNormalizada.nombre,
+              codigo: zonaNormalizada.codigo,
+              activa: true
+            },
+            { transaction }
+          );
           console.log(`[IMPORT] Zona creada: ${zona.nombre}`);
         }
 
-        // Truncar descripción si es muy larga
         let descripcionCorta = item.descripcion || 'Sin descripción';
         if (descripcionCorta.length > 250) {
           descripcionCorta = descripcionCorta.substring(0, 247) + '...';
         }
 
-        // Buscar el producto por SKU
-        let producto = await Producto.findOne({
-          where: { sku: item.sku },
-          transaction
-        });
+        const codigoLeido = String(item.codigoLeido || item.sku || '').trim();
+        const sku = String(item.sku || '').trim();
 
-        // Si no existe el producto, crearlo
-        if (!producto) {
-          producto = await Producto.create({
-            sku: item.sku,
-            codigoBarra: item.sku.substring(0, 120),
-            descripcion: descripcionCorta,
-            activo: true
-          }, { transaction });
-          console.log(`[IMPORT] Producto creado: ${producto.sku}`);
-        }
-
-        // Truncar también para el snapshot
-        let snapshotDescripcion = descripcionCorta;
-
-        // Buscar si ya existe el conteo
         const existing = await ConteoInicialDetalle.findOne({
           where: {
             inventarioId: value.inventarioId,
             zonaId: zona.id,
-            sku: item.sku
+            sku
           },
           transaction
         });
 
         if (!existing) {
-          await ConteoInicialDetalle.create({
-            inventarioId: value.inventarioId,
-            zonaId: zona.id,
-            productoId: producto.id,
-            sku: item.sku,
-            codigoLeido: item.sku,
-            descripcionSnapshot: snapshotDescripcion,
-            cantidadTotal: item.cantidad,
-            origenArchivo: req.file.originalname
-          }, { transaction });
+          await ConteoInicialDetalle.create(
+            {
+              inventarioId: value.inventarioId,
+              zonaId: zona.id,
+              productoId: null,
+              sku,
+              codigoLeido,
+              descripcionSnapshot: descripcionCorta,
+              cantidadBodega: zona.codigo === 'BOD' ? item.cantidad : 0,
+              cantidadExhibicion: zona.codigo === 'EXH' ? item.cantidad : 0,
+              cantidadTotal: item.cantidad,
+              origenArchivo: req.file.originalname
+            },
+            { transaction }
+          );
           insertados++;
         } else {
-          await existing.update({
-            cantidadTotal: item.cantidad,
-            descripcionSnapshot: snapshotDescripcion
-          }, { transaction });
+          await existing.update(
+            {
+              codigoLeido,
+              descripcionSnapshot: descripcionCorta,
+              cantidadBodega: zona.codigo === 'BOD' ? item.cantidad : 0,
+              cantidadExhibicion: zona.codigo === 'EXH' ? item.cantidad : 0,
+              cantidadTotal: item.cantidad,
+              origenArchivo: req.file.originalname
+            },
+            { transaction }
+          );
           actualizados++;
         }
-        
       } catch (err) {
         console.error(`[IMPORT] Error con SKU ${item.sku}:`, err.message);
         noResueltos.push({
@@ -165,30 +182,29 @@ async function importConteoInicialExcel(req, res, next) {
     next(error);
   }
 }
-  async function getConteoInicialResumen(req, res, next) {
+
+async function getConteoInicialResumen(req, res, next) {
   try {
     const { inventarioId } = req.query;
-    
+
     if (!inventarioId) {
       return res.status(400).json({
         ok: false,
         message: 'inventarioId es requerido'
       });
     }
-    
+
     const data = await ConteoInicialDetalle.findAll({
       where: { inventarioId },
-      include: [
-        { model: Zona, as: 'zona', attributes: ['id', 'nombre', 'codigo'] }
-      ],
+      include: [{ model: Zona, as: 'zona', attributes: ['id', 'nombre', 'codigo'] }],
       order: [['zonaId', 'ASC'], ['sku', 'ASC']]
     });
-    
-    // Transformar para mostrar por producto con cantidades por zona
+
     const productosMap = new Map();
-    
+
     for (const item of data) {
       const key = item.sku;
+
       if (!productosMap.has(key)) {
         productosMap.set(key, {
           sku: item.sku,
@@ -200,43 +216,58 @@ async function importConteoInicialExcel(req, res, next) {
           origen: item.origenArchivo || 'Manual'
         });
       }
-      
+
       const producto = productosMap.get(key);
       const zonaCodigo = item.zona?.codigo;
-      
+
       if (zonaCodigo === 'BOD') {
         producto.cantidadBodega = item.cantidadTotal;
       } else if (zonaCodigo === 'EXH') {
         producto.cantidadExhibicion = item.cantidadTotal;
       }
-      
-      producto.total += item.cantidadTotal;
+
+      if (
+        (!producto.descripcion || producto.descripcion === 'Sin descripción') &&
+        item.descripcionSnapshot &&
+        item.descripcionSnapshot !== 'Sin descripción'
+      ) {
+        producto.descripcion = item.descripcionSnapshot;
+      }
+
+      producto.total += Number(item.cantidadTotal || 0);
     }
-    
+
     const resumen = Array.from(productosMap.values());
-    
+
     res.json({
       ok: true,
       data: resumen
     });
-    
   } catch (error) {
     console.error('[RESUMEN] Error:', error);
     next(error);
   }
 }
 
-
-// Agregar al final del archivo, antes del module.exports
-
 async function getSqlServerStatus(req, res, next) {
   try {
     const { getSqlServerPool } = require('../config/sqlserver');
-    
+    if (process.env.SQLSERVER_ENABLED !== 'true') {
+      return res.json({
+        ok: true,
+        data: {
+          connected: false,
+          database: null,
+          error: 'SQL Server deshabilitado',
+          host: null,
+          instance: null
+        }
+      });
+    }
     let connected = false;
     let error = null;
     let database = null;
-    
+
     try {
       const pool = await getSqlServerPool();
       const result = await pool.request().query('SELECT DB_NAME() as dbName');
@@ -246,7 +277,7 @@ async function getSqlServerStatus(req, res, next) {
       error = err.message;
       connected = false;
     }
-    
+
     res.json({
       ok: true,
       data: {
@@ -265,16 +296,21 @@ async function getSqlServerStatus(req, res, next) {
 async function syncFromSqlServer(req, res, next) {
   try {
     const { inventarioId } = req.body;
-    
+
     console.log('[SYNC] Iniciando sincronización desde SQL Server...');
-    
+    if (process.env.SQLSERVER_ENABLED !== 'true') {
+      return res.status(503).json({
+        ok: false,
+        message: 'La sincronización con SQL Server está deshabilitada'
+      });
+    }
     if (!inventarioId) {
       return res.status(400).json({
         ok: false,
         message: 'inventarioId es requerido'
       });
     }
-    
+
     const inventario = await Inventario.findByPk(inventarioId);
     if (!inventario) {
       return res.status(404).json({
@@ -282,11 +318,12 @@ async function syncFromSqlServer(req, res, next) {
         message: 'Inventario no encontrado'
       });
     }
-    
+
     const { getSqlServerPool } = require('../config/sqlserver');
-    
+
     async function executeWithRetry(query, maxRetries = 3) {
       let lastError = null;
+
       for (let i = 0; i < maxRetries; i++) {
         try {
           const pool = await getSqlServerPool();
@@ -296,16 +333,16 @@ async function syncFromSqlServer(req, res, next) {
           lastError = err;
           console.log(`[SYNC] Intento ${i + 1}/${maxRetries} falló: ${err.message}`);
           if (i < maxRetries - 1) {
-            await new Promise(resolve => setTimeout(resolve, 2000));
+            await new Promise((resolve) => setTimeout(resolve, 2000));
           }
         }
       }
+
       throw lastError;
     }
-    
-    // SOLO Obtener productos con cantidades en BOD (Bodega Principal) y EXH (Exhibición)
+
     console.log('[SYNC] Obteniendo productos de Bodega Principal y Exhibición...');
-    
+
     const productosResult = await executeWithRetry(`
       SELECT 
         i.[CódigoInventario] as sku,
@@ -317,23 +354,19 @@ async function syncFromSqlServer(req, res, next) {
       FROM [dbo].[Inventarios] i
       INNER JOIN [dbo].[CCA_M_Inventarios] c ON c.IdInventario = i.IdInventario
       WHERE i.[Activo] = -1
-        AND c.Cantidad > 0
+        AND c.Cantidad >= 0
         AND c.IdBodegaInventario IN ('BOD', 'EXH')
       GROUP BY 
         i.[CódigoInventario],
         i.[CodigoBarras],
         i.[Descripción],
         i.[Nombre_Generico]
-      HAVING 
-        SUM(CASE WHEN c.IdBodegaInventario = 'BOD' THEN c.Cantidad ELSE 0 END) > 0
-        OR SUM(CASE WHEN c.IdBodegaInventario = 'EXH' THEN c.Cantidad ELSE 0 END) > 0
       ORDER BY i.[CódigoInventario]
     `);
-    
+
     console.log('[SYNC] Productos encontrados:', productosResult.recordset.length);
-    
-    // Crear o obtener las zonas BOD y EXH
-    const [zonaBodega, createdB] = await Zona.findOrCreate({
+
+    const [zonaBodega] = await Zona.findOrCreate({
       where: { codigo: 'BOD' },
       defaults: {
         nombre: 'Bodega Principal',
@@ -341,8 +374,8 @@ async function syncFromSqlServer(req, res, next) {
         activa: true
       }
     });
-    
-    const [zonaExhibicion, createdE] = await Zona.findOrCreate({
+
+    const [zonaExhibicion] = await Zona.findOrCreate({
       where: { codigo: 'EXH' },
       defaults: {
         nombre: 'Exhibición',
@@ -350,89 +383,74 @@ async function syncFromSqlServer(req, res, next) {
         activa: true
       }
     });
-    
-    console.log('[SYNC] Zonas: Bodega Principal (ID:', zonaBodega.id, ') Exhibición (ID:', zonaExhibicion.id, ')');
-    
+
     let procesados = 0;
     let errores = 0;
     let totalBodega = 0;
     let totalExhibicion = 0;
-    
-    // Limpiar datos anteriores de este inventario para estas zonas
+
     await ConteoInicialDetalle.destroy({
       where: {
         inventarioId,
         zonaId: [zonaBodega.id, zonaExhibicion.id]
       }
     });
-    
+
     for (const row of productosResult.recordset) {
       try {
+        const sku = String(row.sku || '').trim();
+        const codigoLeido = String(row.codigoBarra || row.sku || '').trim();
+        const descripcion = String(row.descripcion || 'Sin descripción').trim();
+
         const cantidadBodega = Math.round(Number(row.cantidadBodega) || 0);
         const cantidadExhibicion = Math.round(Number(row.cantidadExhibicion) || 0);
-        
+
         totalBodega += cantidadBodega;
         totalExhibicion += cantidadExhibicion;
-        
-        // Buscar o crear el producto localmente
-        const [producto] = await Producto.findOrCreate({
-          where: { sku: row.sku },
-          defaults: {
-            sku: row.sku,
-            codigoBarra: row.codigoBarra || row.sku,
-            descripcion: row.descripcion || 'Sin descripción',
-            categoria: row.categoria || null,
-            activo: true
-          }
-        });
-        
-        // Guardar para zona BODEGA (si tiene cantidad)
+
         if (cantidadBodega > 0) {
           await ConteoInicialDetalle.create({
             inventarioId,
             zonaId: zonaBodega.id,
-            productoId: producto.id,
-            sku: row.sku,
-            codigoLeido: row.codigoBarra || row.sku,
-            descripcionSnapshot: row.descripcion || 'Sin descripción',
-            cantidadBodega: cantidadBodega,
+            productoId: null,
+            sku,
+            codigoLeido,
+            descripcionSnapshot: descripcion,
+            cantidadBodega,
             cantidadExhibicion: 0,
             cantidadTotal: cantidadBodega,
             origenArchivo: 'sqlserver_sync'
           });
         }
-        
-        // Guardar para zona EXHIBICIÓN (si tiene cantidad)
+
         if (cantidadExhibicion > 0) {
           await ConteoInicialDetalle.create({
             inventarioId,
             zonaId: zonaExhibicion.id,
-            productoId: producto.id,
-            sku: row.sku,
-            codigoLeido: row.codigoBarra || row.sku,
-            descripcionSnapshot: row.descripcion || 'Sin descripción',
+            productoId: null,
+            sku,
+            codigoLeido,
+            descripcionSnapshot: descripcion,
             cantidadBodega: 0,
-            cantidadExhibicion: cantidadExhibicion,
+            cantidadExhibicion,
             cantidadTotal: cantidadExhibicion,
             origenArchivo: 'sqlserver_sync'
           });
         }
-        
+
         procesados++;
-        
+
         if (procesados % 100 === 0) {
           console.log(`[SYNC] Procesados ${procesados}/${productosResult.recordset.length} productos...`);
         }
-        
       } catch (err) {
         errores++;
         console.error(`[SYNC] Error con SKU ${row.sku}:`, err.message);
       }
     }
-    
+
     console.log('[SYNC] Completado:', { procesados, errores });
-    console.log('[SYNC] Totales - Bodega:', totalBodega, 'unidades - Exhibición:', totalExhibicion, 'unidades');
-    
+
     res.json({
       ok: true,
       message: 'Sincronización completada',
@@ -445,7 +463,6 @@ async function syncFromSqlServer(req, res, next) {
         totalUnidades: totalBodega + totalExhibicion
       }
     });
-    
   } catch (error) {
     console.error('[SYNC] Error:', error);
     next(error);
@@ -455,18 +472,18 @@ async function syncFromSqlServer(req, res, next) {
 async function exportConteoInicial(req, res, next) {
   try {
     const { inventarioId } = req.query;
-    
+
     if (!inventarioId) {
       return res.status(400).json({
         ok: false,
         message: 'inventarioId es requerido'
       });
     }
-    
+
     const ExcelJS = require('exceljs');
     const workbook = new ExcelJS.Workbook();
     const sheet = workbook.addWorksheet('Conteo Inicial');
-    
+
     sheet.columns = [
       { header: 'Zona', key: 'zona', width: 30 },
       { header: 'SKU', key: 'sku', width: 20 },
@@ -474,28 +491,32 @@ async function exportConteoInicial(req, res, next) {
       { header: 'Cantidad', key: 'cantidad', width: 15 },
       { header: 'Origen', key: 'origen', width: 20 }
     ];
-    
+
     const data = await ConteoInicialDetalle.findAll({
       where: { inventarioId },
-      include: [
-        { model: Zona, as: 'zona', attributes: ['nombre'] }
-      ],
+      include: [{ model: Zona, as: 'zona', attributes: ['nombre'] }],
       order: [['zonaId', 'ASC'], ['sku', 'ASC']]
     });
-    
+
     for (const item of data) {
       sheet.addRow({
         zona: item.zona?.nombre || 'N/A',
         sku: item.sku,
         descripcion: item.descripcionSnapshot || '',
-        cantidad: item.cantidad,
+        cantidad: item.cantidadTotal || 0,
         origen: item.origenArchivo || 'Manual'
       });
     }
-    
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename=conteo_inicial_${inventarioId}.xlsx`);
-    
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=conteo_inicial_${inventarioId}.xlsx`
+    );
+
     await workbook.xlsx.write(res);
     res.end();
   } catch (error) {
@@ -503,7 +524,6 @@ async function exportConteoInicial(req, res, next) {
   }
 }
 
-// Actualizar module.exports
 module.exports = {
   importConteoInicialExcel,
   getConteoInicialResumen,
