@@ -5,27 +5,22 @@ export async function getUsuarios() {
   return response.data.data;
 }
 
-export async function getUsuario(id) {
-  const response = await api.get(`/usuarios/${id}`);
+export async function getRolesUsuarios() {
+  const response = await api.get('/usuarios/roles');
   return response.data.data;
 }
 
-export async function createUsuario(data) {
-  const response = await api.post('/usuarios', data);
+export async function createUsuario(payload) {
+  const response = await api.post('/usuarios', payload);
   return response.data.data;
 }
 
-export async function updateUsuario(id, data) {
-  const response = await api.put(`/usuarios/${id}`, data);
-  return response.data;
+export async function updateUsuario(id, payload) {
+  const response = await api.put(`/usuarios/${id}`, payload);
+  return response.data.data;
 }
 
-export async function deleteUsuario(id) {
-  const response = await api.delete(`/usuarios/${id}`);
-  return response.data;
-}
-
-export async function asignarUsuarioAGrupo(usuarioId, grupoId) {
-  const response = await api.post('/usuarios/asignar-grupo', { usuarioId, grupoId });
+export async function updateEstadoUsuario(id, activo) {
+  const response = await api.patch(`/usuarios/${id}/estado`, { activo });
   return response.data;
 }

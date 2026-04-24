@@ -193,13 +193,15 @@ export default function DiferenciasPage() {
         }
       }
 
-      const response = await compareInventariosDiferencias({
+      const params = {
         inventarioBaseId,
-        inventarioComparadoId,
-        zonaBaseId: zonaBaseId || undefined,
-        zonaComparadaId: zonaComparadaId || undefined
-      });
+        inventarioComparadoId
+      };
 
+      if (zonaBaseId) params.zonaBaseId = zonaBaseId;
+      if (zonaComparadaId) params.zonaComparadaId = zonaComparadaId;
+
+      const response = await compareInventariosDiferencias(params);
       setData(response);
     } catch (err) {
       setError(err.response?.data?.message || 'No se pudo comparar los inventarios');
@@ -213,6 +215,11 @@ export default function DiferenciasPage() {
       setExporting(true);
       setError('');
 
+      if (!inventarioBaseId || !inventarioComparadoId) {
+        setError('Debes seleccionar ambos inventarios');
+        return;
+      }
+
       if ((zonaBaseId && !zonaComparadaId) || (!zonaBaseId && zonaComparadaId)) {
         setError('Si comparas por zona, debes seleccionar zona base y zona comparada.');
         return;
@@ -225,12 +232,15 @@ export default function DiferenciasPage() {
         }
       }
 
-      await exportarDiferenciasExcel({
+      const params = {
         inventarioBaseId,
-        inventarioComparadoId,
-        zonaBaseId: zonaBaseId || undefined,
-        zonaComparadaId: zonaComparadaId || undefined
-      });
+        inventarioComparadoId
+      };
+
+      if (zonaBaseId) params.zonaBaseId = zonaBaseId;
+      if (zonaComparadaId) params.zonaComparadaId = zonaComparadaId;
+
+      await exportarDiferenciasExcel(params);
     } catch (err) {
       setError(err.response?.data?.message || 'No se pudo exportar el Excel');
     } finally {

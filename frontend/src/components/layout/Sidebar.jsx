@@ -30,7 +30,8 @@ export default function Sidebar() {
     { to: '/conteo-inicial', label: 'Conteo inicial', icon: FileSpreadsheet },
     { to: '/diferencias', label: 'Diferencias', icon: GitCompareArrows },
     { to: '/escaneo', label: 'Escaneo', icon: ScanLine },
-    { to: '/scripts', label: 'Herramientas', icon: Settings }
+    { to: '/scripts', label: 'Herramientas', icon: Settings },
+    { to: '/usuarios', label: 'Usuarios', icon: Users }
   ];
 
   const itemsContador = [

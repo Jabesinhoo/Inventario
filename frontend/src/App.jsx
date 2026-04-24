@@ -12,6 +12,7 @@ import InventariosPage from './pages/inventarios/InventariosPage';
 import ZonasPage from './pages/zonas/ZonasPage';
 import ScriptsPage from './pages/admin/ScriptsPage';
 import RondasPage from './pages/rondas/RondasPage';
+import UsuariosPage from './pages/usuarios/UsuariosPage';
 
 function getRol(auth) {
   const rolRaw = auth?.user?.rol || auth?.user?.rol?.nombre || '';
@@ -138,7 +139,14 @@ export default function App() {
               </ContadorOrAdminRoute>
             }
           />
-
+          <Route
+  path="usuarios"
+  element={
+    getRol(auth) === 'admin'
+      ? <UsuariosPage />
+      : <Navigate to={getHomeByRole(auth)} replace />
+  }
+/>
           <Route
             path="escaneo"
             element={
@@ -148,7 +156,7 @@ export default function App() {
             }
           />
         </Route>
-
+            
         <Route path="*" element={<Navigate to={homePath} replace />} />
       </Routes>
     </BrowserRouter>

@@ -20,7 +20,7 @@ function buildSqlServerConfig() {
     requestTimeout: Number(process.env.SQLSERVER_REQUEST_TIMEOUT || 8000),
 
     pool: {
-      max: Number(process.env.SQLSERVER_POOL_MAX || 5),
+      max: Number(process.env.SQLSERVER_POOL_MAX || 2),
       min: 0,
       idleTimeoutMillis: Number(process.env.SQLSERVER_IDLE_TIMEOUT || 10000)
     },
@@ -119,7 +119,10 @@ async function closeSqlServerPool() {
 }
 
 async function executeQuery(query, params = {}, options = {}) {
-  const { retryOnceOnSocketError = true } = options;
+  const {
+    retryOnceOnSocketError = true,
+    closeAfterUse = false
+  } = options;
 
   if (!isSqlServerEnabled()) {
     throw new Error('SQL Server deshabilitado por configuración');
@@ -133,7 +136,13 @@ async function executeQuery(query, params = {}, options = {}) {
       request.input(key, value);
     }
 
-    return await request.query(query);
+    const result = await request.query(query);
+
+    if (closeAfterUse) {
+      await closeSqlServerPool();
+    }
+
+    return result;
   } catch (error) {
     console.error('[SQLSERVER] Query falló:', error.message);
 
@@ -148,17 +157,51 @@ async function executeQuery(query, params = {}, options = {}) {
         retryRequest.input(key, value);
       }
 
-      return await retryRequest.query(query);
+      const result = await retryRequest.query(query);
+
+      if (closeAfterUse) {
+        await closeSqlServerPool();
+      }
+
+      return result;
+    }
+
+    if (closeAfterUse) {
+      await closeSqlServerPool();
     }
 
     throw error;
   }
 }
 
+async function executeManualQuery(query, params = {}) {
+  return executeQuery(query, params, {
+    retryOnceOnSocketError: true,
+    closeAfterUse: true
+  });
+}
+
+async function withSqlServerConnection(callback) {
+  if (!isSqlServerEnabled()) {
+    throw new Error('SQL Server deshabilitado por configuración');
+  }
+
+  try {
+    const activePool = await getSqlServerPool();
+    const result = await callback(activePool);
+    return result;
+  } finally {
+    await closeSqlServerPool();
+  }
+}
+
 module.exports = {
   sql,
   buildSqlServerConfig,
+  isSqlServerEnabled,
   getSqlServerPool,
   closeSqlServerPool,
-  executeQuery
+  executeQuery,
+  executeManualQuery,
+  withSqlServerConnection
 };

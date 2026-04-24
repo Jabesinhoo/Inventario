@@ -1,13 +1,32 @@
 import api from './api';
 
 export async function compareInventariosDiferencias(params) {
-  const response = await api.get('/diferencias', { params });
+  const cleanParams = {
+    inventarioBaseId: params.inventarioBaseId,
+    inventarioComparadoId: params.inventarioComparadoId
+  };
+
+  if (params.zonaBaseId) cleanParams.zonaBaseId = params.zonaBaseId;
+  if (params.zonaComparadaId) cleanParams.zonaComparadaId = params.zonaComparadaId;
+
+  const response = await api.get('/diferencias', {
+    params: cleanParams
+  });
+
   return response.data.data;
 }
 
 export async function exportarDiferenciasExcel(params) {
+  const cleanParams = {
+    inventarioBaseId: params.inventarioBaseId,
+    inventarioComparadoId: params.inventarioComparadoId
+  };
+
+  if (params.zonaBaseId) cleanParams.zonaBaseId = params.zonaBaseId;
+  if (params.zonaComparadaId) cleanParams.zonaComparadaId = params.zonaComparadaId;
+
   const response = await api.get('/diferencias/exportar', {
-    params,
+    params: cleanParams,
     responseType: 'blob'
   });
 
@@ -18,7 +37,7 @@ export async function exportarDiferenciasExcel(params) {
   const url = window.URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
-  link.download = `diferencias_${params.inventarioBaseId}_vs_${params.inventarioComparadoId}.xlsx`;
+  link.download = `diferencias_${cleanParams.inventarioBaseId}_vs_${cleanParams.inventarioComparadoId}.xlsx`;
   document.body.appendChild(link);
   link.click();
   link.remove();
