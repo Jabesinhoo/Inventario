@@ -54,6 +54,15 @@ export async function reabrirRonda(id) {
   const response = await api.patch(`/rondas/${id}/reabrir`);
   return response.data.data;
 }
+
+export async function getMisRondasParaEscaneo(inventarioId) {
+  const response = await api.get('/rondas/mis-rondas', {
+    params: { inventarioId }
+  });
+  return response.data.data;
+}
+
+
 export async function getRondaActivaDelGrupo(inventarioId, grupoId = null) {
   const params = {};
 

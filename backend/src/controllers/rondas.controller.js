@@ -1014,6 +1014,102 @@ async function getRondaActivaDelGrupo(req, res, next) {
     next(error);
   }
 }
+
+
+async function getMisRondasParaEscaneo(req, res, next) {
+  try {
+    const inventarioId = req.query.inventarioId ? Number(req.query.inventarioId) : null;
+
+    if (!inventarioId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'inventarioId es requerido'
+      });
+    }
+
+    const rondas = await sequelize.query(
+      `
+      SELECT
+        r.id,
+        r."inventarioId",
+        r."zonaId",
+        r."numeroRonda",
+        r."tipoRonda",
+        r.estado,
+        r."tiempoInicio",
+        r."tiempoFin",
+        r."totalEscaneos",
+        r."updatedAt",
+        z.id as "zona.id",
+        z.nombre as "zona.nombre",
+        z.codigo as "zona.codigo",
+        g.id as "asignacion.grupo.id",
+        g.nombre as "asignacion.grupo.nombre",
+        g."inventarioId" as "asignacion.grupo.inventarioId"
+      FROM usuario_grupo ug
+      JOIN asignaciones_ronda ar
+        ON ar."grupoId" = ug."grupoId"
+      JOIN rondas_conteo r
+        ON r.id = ar."rondaId"
+      JOIN grupos g
+        ON g.id = ar."grupoId"
+      JOIN zonas z
+        ON z.id = r."zonaId"
+      WHERE ug."usuarioId" = :usuarioId
+        AND r."inventarioId" = :inventarioId
+        AND r.estado IN ('borrador', 'activa', 'pausada')
+      ORDER BY
+        CASE r.estado
+          WHEN 'activa' THEN 1
+          WHEN 'pausada' THEN 2
+          WHEN 'borrador' THEN 3
+          ELSE 4
+        END,
+        r."updatedAt" DESC
+      `,
+      {
+        replacements: {
+          usuarioId: req.user.id,
+          inventarioId
+        },
+        type: QueryTypes.SELECT
+      }
+    );
+
+    const data = rondas.map((row) => ({
+      id: row.id,
+      inventarioId: row.inventarioId,
+      zonaId: row.zonaId,
+      numeroRonda: row.numeroRonda,
+      tipoRonda: row.tipoRonda,
+      estado: row.estado,
+      tiempoInicio: row.tiempoInicio,
+      tiempoFin: row.tiempoFin,
+      totalEscaneos: row.totalEscaneos,
+      updatedAt: row.updatedAt,
+      zona: {
+        id: row['zona.id'],
+        nombre: row['zona.nombre'],
+        codigo: row['zona.codigo']
+      },
+      asignacion: {
+        grupoId: row['asignacion.grupo.id'],
+        grupo: {
+          id: row['asignacion.grupo.id'],
+          nombre: row['asignacion.grupo.nombre'],
+          inventarioId: row['asignacion.grupo.inventarioId']
+        }
+      }
+    }));
+
+    res.json({
+      ok: true,
+      data
+    });
+  } catch (error) {
+    next(error);
+  }
+}
 // ==================== EXPORTS ====================
 
 module.exports = {
@@ -1028,5 +1124,6 @@ module.exports = {
   conciliarRonda,
   ajusteManual,
   getRondaActivaDelGrupo,
-  reabrirRonda
+  reabrirRonda,
+  getMisRondasParaEscaneo
 };

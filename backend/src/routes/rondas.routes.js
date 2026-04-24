@@ -18,7 +18,7 @@ router.patch('/:id/pausar', authMiddleware, injectGrupoId, controller.pausarRond
 router.patch('/:id/reanudar', authMiddleware, injectGrupoId, controller.reanudarRonda);
 router.patch('/:id/cerrar', authMiddleware, allowRoles('admin', 'supervisor'), controller.cerrarRonda);
 router.patch('/:id/reabrir', authMiddleware, allowRoles('admin', 'supervisor'), controller.reabrirRonda);
-
+router.get('/mis-rondas', authMiddleware, controller.getMisRondasParaEscaneo);
 router.post(
   '/:inventarioId/:zonaId/:sku/ajuste-manual',
   authMiddleware,

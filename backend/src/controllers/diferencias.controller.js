@@ -1,492 +1,590 @@
+const Joi = require('joi');
+const ExcelJS = require('exceljs');
 const { QueryTypes } = require('sequelize');
-const {
-  sequelize,
-  AsignacionConteo,
-  Grupo,
-  Zona,
-  RondaConteo,
-  DiscrepanciaConteo
-} = require('../models');
+const { sequelize, Zona } = require('../models');
 
-function parseOptionalNumber(value) {
-  if (value === undefined || value === null || value === '') return null;
-  const n = Number(value);
-  return Number.isNaN(n) ? null : n;
+const compareSchema = Joi.object({
+  inventarioBaseId: Joi.number().integer().required(),
+  inventarioComparadoId: Joi.number().integer().required(),
+  zonaBaseId: Joi.number().integer().allow(null, ''),
+  zonaComparadaId: Joi.number().integer().allow(null, '')
+});
+
+function isAdminOrSupervisor(req) {
+  return ['admin', 'supervisor'].includes(String(req.user?.rol || '').toLowerCase());
 }
 
-function buildError(message, statusCode = 400) {
-  const error = new Error(message);
-  error.statusCode = statusCode;
-  return error;
+function normalizeZoneText(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
 }
 
-async function getZonaIdByGrupo(inventarioId, grupoId, transaction = null) {
-  const asignacion = await AsignacionConteo.findOne({
-    where: {
-      inventarioId: Number(inventarioId),
-      grupoId: Number(grupoId)
-    },
-    order: [['conteoTipo', 'DESC'], ['id', 'DESC']],
-    transaction
-  });
+function areEquivalentZones(zonaA, zonaB) {
+  if (!zonaA || !zonaB) return false;
 
-  if (!asignacion) {
-    throw buildError('El grupo seleccionado no tiene zona asignada en ese inventario');
+  const codigoA = normalizeZoneText(zonaA.codigo);
+  const codigoB = normalizeZoneText(zonaB.codigo);
+
+  if (codigoA && codigoB) {
+    return codigoA === codigoB;
   }
 
-  return Number(asignacion.zonaId);
+  const nombreA = normalizeZoneText(zonaA.nombre);
+  const nombreB = normalizeZoneText(zonaB.nombre);
+
+  return nombreA === nombreB;
 }
 
-async function getGrupoInfo(grupoId, transaction = null) {
-  if (!grupoId) return null;
+async function getAllowedGroupIds(req) {
+  if (isAdminOrSupervisor(req)) return null;
 
-  return Grupo.findByPk(Number(grupoId), {
-    attributes: ['id', 'nombre', 'inventarioId'],
-    transaction
-  });
-}
-
-async function getLatestGroupForInventarioZona(inventarioId, zonaId, transaction = null) {
-  const asignacion = await AsignacionConteo.findOne({
-    where: {
-      inventarioId: Number(inventarioId),
-      zonaId: Number(zonaId)
-    },
-    order: [['conteoTipo', 'DESC'], ['id', 'DESC']],
-    transaction
-  });
-
-  if (!asignacion) return null;
-
-  return Grupo.findByPk(Number(asignacion.grupoId), {
-    attributes: ['id', 'nombre', 'inventarioId'],
-    transaction
-  });
-}
-
-async function resolveComparisonScope({
-  inventarioBaseId,
-  inventarioComparadoId,
-  grupoBaseIdParam,
-  grupoComparadoIdParam,
-  zonaIdParam = null,
-  transaction = null
-}) {
-  const baseId = Number(inventarioBaseId);
-  const comparadoId = Number(inventarioComparadoId);
-
-  if (!baseId || !comparadoId) {
-    throw buildError('inventarioBaseId e inventarioComparadoId son requeridos');
-  }
-
-  if (baseId === comparadoId) {
-    throw buildError('El inventario base y el inventario comparado deben ser distintos');
-  }
-
-  let grupoBaseId = parseOptionalNumber(grupoBaseIdParam);
-  let grupoComparadoId = parseOptionalNumber(grupoComparadoIdParam);
-  let zonaId = parseOptionalNumber(zonaIdParam);
-
-  if (!grupoBaseId && !grupoComparadoId && !zonaId) {
-    throw buildError('Debes indicar una zona o seleccionar los grupos base y comparado');
-  }
-
-  if (grupoBaseId) {
-    const zonaBase = await getZonaIdByGrupo(baseId, grupoBaseId, transaction);
-    if (zonaId && Number(zonaId) !== Number(zonaBase)) {
-      throw buildError('La zona indicada no coincide con la zona del grupo base');
-    }
-    zonaId = zonaBase;
-  }
-
-  if (grupoComparadoId) {
-    const zonaComparada = await getZonaIdByGrupo(comparadoId, grupoComparadoId, transaction);
-    if (zonaId && Number(zonaId) !== Number(zonaComparada)) {
-      throw buildError('El grupo base y el grupo comparado no pertenecen a la misma zona');
-    }
-    zonaId = zonaComparada;
-  }
-
-  if (!zonaId) {
-    throw buildError('No se pudo resolver la zona para la comparación');
-  }
-
-  const zona = await Zona.findByPk(Number(zonaId), {
-    attributes: ['id', 'nombre', 'codigo'],
-    transaction
-  });
-
-  if (!zona) {
-    throw buildError('La zona indicada no existe', 404);
-  }
-
-  let grupoBase = await getGrupoInfo(grupoBaseId, transaction);
-  let grupoComparado = await getGrupoInfo(grupoComparadoId, transaction);
-
-  if (!grupoBase) {
-    grupoBase = await getLatestGroupForInventarioZona(baseId, zonaId, transaction);
-    grupoBaseId = grupoBase?.id || null;
-  }
-
-  if (!grupoComparado) {
-    grupoComparado = await getLatestGroupForInventarioZona(comparadoId, zonaId, transaction);
-    grupoComparadoId = grupoComparado?.id || null;
-  }
-
-  return {
-    inventarioBaseId: baseId,
-    inventarioComparadoId: comparadoId,
-    zonaId: Number(zonaId),
-    zona,
-    grupoBaseId,
-    grupoComparadoId,
-    grupoBase,
-    grupoComparado
-  };
-}
-
-async function getInventarioSnapshot({ inventarioId, zonaId, transaction = null }) {
-  const initialRows = await sequelize.query(
+  const rows = await sequelize.query(
     `
-    SELECT
-      cid.sku,
-      MAX(cid."descripcionSnapshot") AS descripcion,
-      SUM(cid."cantidadTotal")::int AS cantidad
-    FROM conteo_inicial_detalle cid
-    WHERE cid."inventarioId" = :inventarioId
-      AND cid."zonaId" = :zonaId
-    GROUP BY cid.sku
-    ORDER BY cid.sku ASC
+    SELECT DISTINCT ug."grupoId"
+    FROM usuario_grupo ug
+    WHERE ug."usuarioId" = :usuarioId
     `,
     {
-      replacements: {
-        inventarioId: Number(inventarioId),
-        zonaId: Number(zonaId)
-      },
-      type: QueryTypes.SELECT,
-      transaction
+      replacements: { usuarioId: req.user.id },
+      type: QueryTypes.SELECT
     }
   );
 
-  if (initialRows.length > 0) {
-    return {
-      source: 'conteo_inicial',
-      rows: initialRows.map((row) => ({
-        sku: row.sku,
-        descripcion: row.descripcion || null,
-        cantidad: Number(row.cantidad || 0)
-      }))
-    };
+  return rows.map((row) => Number(row.grupoId));
+}
+
+function buildLecturasFilterSql({
+  groupIds,
+  zonaId,
+  alias = 'l',
+  groupParam = 'groupIds',
+  zonaParam = 'zonaId'
+}) {
+  let sql = '';
+
+  if (groupIds !== null) {
+    if (!Array.isArray(groupIds) || groupIds.length === 0) {
+      return ' AND 1 = 0 ';
+    }
+    sql += ` AND ${alias}."grupoId" IN (:${groupParam}) `;
   }
 
-  const lecturaRows = await sequelize.query(
+  if (zonaId) {
+    sql += ` AND ${alias}."zonaId" = :${zonaParam} `;
+  }
+
+  return sql;
+}
+
+async function getSkuComparisonRows(
+  inventarioBaseId,
+  inventarioComparadoId,
+  allowedGroupIds,
+  zonaBaseId,
+  zonaComparadaId
+) {
+  const filterBase = buildLecturasFilterSql({
+    groupIds: allowedGroupIds,
+    zonaId: zonaBaseId,
+    alias: 'l',
+    groupParam: 'allowedGroupIds',
+    zonaParam: 'zonaBaseId'
+  });
+
+  const filterComparado = buildLecturasFilterSql({
+    groupIds: allowedGroupIds,
+    zonaId: zonaComparadaId,
+    alias: 'l',
+    groupParam: 'allowedGroupIds',
+    zonaParam: 'zonaComparadaId'
+  });
+
+  const baseRows = await sequelize.query(
     `
     SELECT
-      l.sku,
-      MAX(l."descripcionSnapshot") AS descripcion,
-      SUM(l.cantidad)::int AS cantidad
+      l.sku AS "sku",
+      MAX(l."descripcionSnapshot") AS "descripcion",
+      COALESCE(SUM(l.cantidad), 0)::int AS "cantidad"
     FROM lecturas l
-    WHERE l."inventarioId" = :inventarioId
-      AND l."zonaId" = :zonaId
+    WHERE l."inventarioId" = :inventarioBaseId
       AND l.estado = 'valida'
+      AND l.sku IS NOT NULL
+      ${filterBase}
     GROUP BY l.sku
     ORDER BY l.sku ASC
     `,
     {
       replacements: {
-        inventarioId: Number(inventarioId),
-        zonaId: Number(zonaId)
+        inventarioBaseId,
+        allowedGroupIds,
+        zonaBaseId
       },
-      type: QueryTypes.SELECT,
-      transaction
+      type: QueryTypes.SELECT
     }
   );
 
-  return {
-    source: 'lecturas',
-    rows: lecturaRows.map((row) => ({
-      sku: row.sku,
-      descripcion: row.descripcion || null,
-      cantidad: Number(row.cantidad || 0)
-    }))
-  };
-}
-
-function compareSnapshots(baseRows, comparedRows, zonaId, zonaNombre) {
-  const baseMap = new Map(baseRows.map((row) => [row.sku, row]));
-  const comparedMap = new Map(comparedRows.map((row) => [row.sku, row]));
-
-  const skus = [...new Set([...baseMap.keys(), ...comparedMap.keys()])].sort((a, b) =>
-    String(a).localeCompare(String(b))
+  const comparadoRows = await sequelize.query(
+    `
+    SELECT
+      l.sku AS "sku",
+      MAX(l."descripcionSnapshot") AS "descripcion",
+      COALESCE(SUM(l.cantidad), 0)::int AS "cantidad"
+    FROM lecturas l
+    WHERE l."inventarioId" = :inventarioComparadoId
+      AND l.estado = 'valida'
+      AND l.sku IS NOT NULL
+      ${filterComparado}
+    GROUP BY l.sku
+    ORDER BY l.sku ASC
+    `,
+    {
+      replacements: {
+        inventarioComparadoId,
+        allowedGroupIds,
+        zonaComparadaId
+      },
+      type: QueryTypes.SELECT
+    }
   );
 
-  return skus.map((sku) => {
+  const baseMap = new Map();
+  const comparadoMap = new Map();
+
+  for (const row of baseRows) {
+    baseMap.set(row.sku, {
+      sku: row.sku,
+      descripcion: row.descripcion || 'Sin descripción',
+      cantidad: Number(row.cantidad || 0)
+    });
+  }
+
+  for (const row of comparadoRows) {
+    comparadoMap.set(row.sku, {
+      sku: row.sku,
+      descripcion: row.descripcion || 'Sin descripción',
+      cantidad: Number(row.cantidad || 0)
+    });
+  }
+
+  const allSkus = Array.from(new Set([...baseMap.keys(), ...comparadoMap.keys()])).sort();
+
+  return allSkus.map((sku) => {
     const base = baseMap.get(sku);
-    const compared = comparedMap.get(sku);
+    const comparado = comparadoMap.get(sku);
 
     const cantidadBase = Number(base?.cantidad || 0);
-    const cantidadComparada = Number(compared?.cantidad || 0);
+    const cantidadComparada = Number(comparado?.cantidad || 0);
+    const diferencia = cantidadComparada - cantidadBase;
 
     return {
-      zonaId,
-      zona: zonaNombre,
       sku,
-      descripcion: base?.descripcion || compared?.descripcion || null,
+      descripcion: base?.descripcion || comparado?.descripcion || 'Sin descripción',
       cantidadBase,
       cantidadComparada,
-      diferencia: Math.abs(cantidadBase - cantidadComparada)
+      diferencia,
+      estado: diferencia === 0 ? 'coincide' : 'difiere'
     };
   });
 }
 
+async function getTotalesPorGrupo(inventarioId, allowedGroupIds, zonaId) {
+  const filter = buildLecturasFilterSql({
+    groupIds: allowedGroupIds,
+    zonaId,
+    alias: 'l',
+    groupParam: 'allowedGroupIds',
+    zonaParam: 'zonaId'
+  });
+
+  return sequelize.query(
+    `
+    SELECT
+      g.id AS "id",
+      g.nombre AS "nombre",
+      MAX(z.nombre) AS "zona",
+      COALESCE(SUM(l.cantidad), 0)::int AS "totalEscaneos",
+      COUNT(DISTINCT l.sku)::int AS "productosUnicos"
+    FROM lecturas l
+    LEFT JOIN grupos g
+      ON g.id = l."grupoId"
+    LEFT JOIN zonas z
+      ON z.id = l."zonaId"
+    WHERE l."inventarioId" = :inventarioId
+      AND l.estado = 'valida'
+      ${filter}
+    GROUP BY g.id, g.nombre
+    ORDER BY g.nombre ASC
+    `,
+    {
+      replacements: {
+        inventarioId,
+        allowedGroupIds,
+        zonaId
+      },
+      type: QueryTypes.SELECT
+    }
+  );
+}
+
+async function getTotalesPorZona(inventarioId, allowedGroupIds, zonaId) {
+  const filter = buildLecturasFilterSql({
+    groupIds: allowedGroupIds,
+    zonaId,
+    alias: 'l',
+    groupParam: 'allowedGroupIds',
+    zonaParam: 'zonaId'
+  });
+
+  return sequelize.query(
+    `
+    SELECT
+      z.id AS "id",
+      z.nombre AS "nombre",
+      z.codigo AS "codigo",
+      COALESCE(SUM(l.cantidad), 0)::int AS "totalEscaneos",
+      COUNT(DISTINCT l.sku)::int AS "productosUnicos"
+    FROM lecturas l
+    LEFT JOIN zonas z
+      ON z.id = l."zonaId"
+    WHERE l."inventarioId" = :inventarioId
+      AND l.estado = 'valida'
+      ${filter}
+    GROUP BY z.id, z.nombre, z.codigo
+    ORDER BY z.nombre ASC
+    `,
+    {
+      replacements: {
+        inventarioId,
+        allowedGroupIds,
+        zonaId
+      },
+      type: QueryTypes.SELECT
+    }
+  );
+}
+
+async function getTotalesPorMiembro(inventarioId, allowedGroupIds, zonaId) {
+  const filter = buildLecturasFilterSql({
+    groupIds: allowedGroupIds,
+    zonaId,
+    alias: 'l',
+    groupParam: 'allowedGroupIds',
+    zonaParam: 'zonaId'
+  });
+
+  return sequelize.query(
+    `
+    SELECT
+      u.id AS "id",
+      u.nombre AS "nombre",
+      u.email AS "email",
+      MAX(g.nombre) AS "grupo",
+      MAX(z.nombre) AS "zona",
+      COALESCE(SUM(l.cantidad), 0)::int AS "totalEscaneos",
+      COUNT(DISTINCT l.sku)::int AS "productosUnicos"
+    FROM lecturas l
+    LEFT JOIN usuarios u
+      ON u.id = l."usuarioId"
+    LEFT JOIN grupos g
+      ON g.id = l."grupoId"
+    LEFT JOIN zonas z
+      ON z.id = l."zonaId"
+    WHERE l."inventarioId" = :inventarioId
+      AND l.estado = 'valida'
+      ${filter}
+    GROUP BY u.id, u.nombre, u.email
+    ORDER BY u.nombre ASC
+    `,
+    {
+      replacements: {
+        inventarioId,
+        allowedGroupIds,
+        zonaId
+      },
+      type: QueryTypes.SELECT
+    }
+  );
+}
+
+async function buildComparisonData(
+  req,
+  inventarioBaseId,
+  inventarioComparadoId,
+  zonaBaseId,
+  zonaComparadaId
+) {
+  const allowedGroupIds = await getAllowedGroupIds(req);
+
+  let zonaBase = null;
+  let zonaComparada = null;
+
+  if ((zonaBaseId && !zonaComparadaId) || (!zonaBaseId && zonaComparadaId)) {
+    const error = new Error(
+      'Si vas a comparar por zona, debes seleccionar zona base y zona comparada.'
+    );
+    error.status = 400;
+    throw error;
+  }
+
+  if (zonaBaseId && zonaComparadaId) {
+    const zonas = await Promise.all([
+      Zona.findByPk(Number(zonaBaseId), { attributes: ['id', 'nombre', 'codigo'] }),
+      Zona.findByPk(Number(zonaComparadaId), { attributes: ['id', 'nombre', 'codigo'] })
+    ]);
+
+    zonaBase = zonas[0];
+    zonaComparada = zonas[1];
+
+    if (!zonaBase || !zonaComparada) {
+      const error = new Error('Una de las zonas seleccionadas no existe');
+      error.status = 404;
+      throw error;
+    }
+
+    if (!areEquivalentZones(zonaBase, zonaComparada)) {
+      const error = new Error(
+        `No se puede comparar la zona "${zonaBase.nombre}" con "${zonaComparada.nombre}" porque no son equivalentes.`
+      );
+      error.status = 400;
+      throw error;
+    }
+  }
+
+  const comparisonRows = await getSkuComparisonRows(
+    inventarioBaseId,
+    inventarioComparadoId,
+    allowedGroupIds,
+    zonaBaseId,
+    zonaComparadaId
+  );
+
+  const coinciden = comparisonRows.filter((row) => row.estado === 'coincide');
+  const diferencias = comparisonRows.filter((row) => row.estado === 'difiere');
+
+  const [
+    gruposBase,
+    gruposComparado,
+    zonasBase,
+    zonasComparado,
+    miembrosBase,
+    miembrosComparado
+  ] = await Promise.all([
+    getTotalesPorGrupo(inventarioBaseId, allowedGroupIds, zonaBaseId),
+    getTotalesPorGrupo(inventarioComparadoId, allowedGroupIds, zonaComparadaId),
+    getTotalesPorZona(inventarioBaseId, allowedGroupIds, zonaBaseId),
+    getTotalesPorZona(inventarioComparadoId, allowedGroupIds, zonaComparadaId),
+    getTotalesPorMiembro(inventarioBaseId, allowedGroupIds, zonaBaseId),
+    getTotalesPorMiembro(inventarioComparadoId, allowedGroupIds, zonaComparadaId)
+  ]);
+
+  return {
+    filtros: {
+      inventarioBaseId,
+      inventarioComparadoId,
+      zonaBase: zonaBase ? zonaBase.toJSON() : null,
+      zonaComparada: zonaComparada ? zonaComparada.toJSON() : null
+    },
+    resumen: {
+      inventarioBaseId,
+      inventarioComparadoId,
+      totalComparados: comparisonRows.length,
+      totalCoinciden: coinciden.length,
+      totalDifieren: diferencias.length
+    },
+    coinciden,
+    diferencias,
+    totales: {
+      base: {
+        grupos: gruposBase,
+        zonas: zonasBase,
+        miembros: miembrosBase
+      },
+      comparado: {
+        grupos: gruposComparado,
+        zonas: zonasComparado,
+        miembros: miembrosComparado
+      }
+    }
+  };
+}
+
 async function compareInventarios(req, res, next) {
   try {
-    const scope = await resolveComparisonScope({
-      inventarioBaseId: req.query.inventarioBaseId,
-      inventarioComparadoId: req.query.inventarioComparadoId,
-      grupoBaseIdParam: req.query.grupoBaseId,
-      grupoComparadoIdParam: req.query.grupoComparadoId,
-      zonaIdParam: req.query.zonaId
-    });
+    const { error, value } = compareSchema.validate(req.query);
 
-    const [snapshotBase, snapshotComparado] = await Promise.all([
-      getInventarioSnapshot({
-        inventarioId: scope.inventarioBaseId,
-        zonaId: scope.zonaId
-      }),
-      getInventarioSnapshot({
-        inventarioId: scope.inventarioComparadoId,
-        zonaId: scope.zonaId
-      })
-    ]);
+    if (error) {
+      return res.status(400).json({
+        ok: false,
+        message: error.details[0].message
+      });
+    }
 
-    const comparacion = compareSnapshots(
-      snapshotBase.rows,
-      snapshotComparado.rows,
-      scope.zonaId,
-      scope.zona.nombre
+    const data = await buildComparisonData(
+      req,
+      Number(value.inventarioBaseId),
+      Number(value.inventarioComparadoId),
+      value.zonaBaseId ? Number(value.zonaBaseId) : null,
+      value.zonaComparadaId ? Number(value.zonaComparadaId) : null
     );
-
-    const diferencias = comparacion.filter((row) => Number(row.diferencia) > 0);
 
     res.json({
       ok: true,
-      data: {
-        inventarioBaseId: scope.inventarioBaseId,
-        inventarioComparadoId: scope.inventarioComparadoId,
-        zona: scope.zona,
-        grupoBase: scope.grupoBase,
-        grupoComparado: scope.grupoComparado,
-        fuenteBase: snapshotBase.source,
-        fuenteComparada: snapshotComparado.source,
-        comparacion,
-        diferencias,
-        resumen: {
-          totalItemsComparados: comparacion.length,
-          totalDiferencias: diferencias.length,
-          totalDiferenciaUnidades: diferencias.reduce(
-            (sum, row) => sum + Number(row.diferencia || 0),
-            0
-          )
-        }
-      }
+      data
     });
   } catch (error) {
+    if (error.status) {
+      return res.status(error.status).json({
+        ok: false,
+        message: error.message
+      });
+    }
     next(error);
   }
 }
 
-async function generarRondaReconteoDesdeComparacion(req, res, next) {
-  const transaction = await sequelize.transaction();
-
+async function exportarComparacionExcel(req, res, next) {
   try {
-    const scope = await resolveComparisonScope({
-      inventarioBaseId: req.body.inventarioBaseId,
-      inventarioComparadoId: req.body.inventarioComparadoId,
-      grupoBaseIdParam: req.body.grupoBaseId,
-      grupoComparadoIdParam: req.body.grupoComparadoId,
-      zonaIdParam: req.body.zonaId,
-      transaction
-    });
+    const { error, value } = compareSchema.validate(req.query);
 
-    const [snapshotBase, snapshotComparado] = await Promise.all([
-      getInventarioSnapshot({
-        inventarioId: scope.inventarioBaseId,
-        zonaId: scope.zonaId,
-        transaction
-      }),
-      getInventarioSnapshot({
-        inventarioId: scope.inventarioComparadoId,
-        zonaId: scope.zonaId,
-        transaction
-      })
+    if (error) {
+      return res.status(400).json({
+        ok: false,
+        message: error.details[0].message
+      });
+    }
+
+    const data = await buildComparisonData(
+      req,
+      Number(value.inventarioBaseId),
+      Number(value.inventarioComparadoId),
+      value.zonaBaseId ? Number(value.zonaBaseId) : null,
+      value.zonaComparadaId ? Number(value.zonaComparadaId) : null
+    );
+
+    const workbook = new ExcelJS.Workbook();
+
+    const resumenSheet = workbook.addWorksheet('Resumen');
+    const coincidenSheet = workbook.addWorksheet('Coinciden');
+    const diferenciasSheet = workbook.addWorksheet('Difieren');
+    const gruposBaseSheet = workbook.addWorksheet('Grupos Base');
+    const gruposComparadoSheet = workbook.addWorksheet('Grupos Comparado');
+    const zonasBaseSheet = workbook.addWorksheet('Zonas Base');
+    const zonasComparadoSheet = workbook.addWorksheet('Zonas Comparado');
+    const miembrosBaseSheet = workbook.addWorksheet('Miembros Base');
+    const miembrosComparadoSheet = workbook.addWorksheet('Miembros Comparado');
+
+    resumenSheet.columns = [
+      { header: 'Concepto', key: 'concepto', width: 35 },
+      { header: 'Valor', key: 'valor', width: 25 }
+    ];
+
+    coincidenSheet.columns = [
+      { header: 'SKU', key: 'sku', width: 20 },
+      { header: 'Descripción', key: 'descripcion', width: 60 },
+      { header: 'Cantidad Base', key: 'cantidadBase', width: 18 },
+      { header: 'Cantidad Comparada', key: 'cantidadComparada', width: 20 }
+    ];
+
+    diferenciasSheet.columns = [
+      { header: 'SKU', key: 'sku', width: 20 },
+      { header: 'Descripción', key: 'descripcion', width: 60 },
+      { header: 'Cantidad Base', key: 'cantidadBase', width: 18 },
+      { header: 'Cantidad Comparada', key: 'cantidadComparada', width: 20 },
+      { header: 'Diferencia', key: 'diferencia', width: 15 }
+    ];
+
+    gruposBaseSheet.columns = [
+      { header: 'Grupo', key: 'nombre', width: 30 },
+      { header: 'Zona', key: 'zona', width: 25 },
+      { header: 'Total Escaneos', key: 'totalEscaneos', width: 18 },
+      { header: 'Productos Únicos', key: 'productosUnicos', width: 18 }
+    ];
+
+    gruposComparadoSheet.columns = [...gruposBaseSheet.columns];
+
+    zonasBaseSheet.columns = [
+      { header: 'Zona', key: 'nombre', width: 30 },
+      { header: 'Código', key: 'codigo', width: 15 },
+      { header: 'Total Escaneos', key: 'totalEscaneos', width: 18 },
+      { header: 'Productos Únicos', key: 'productosUnicos', width: 18 }
+    ];
+
+    zonasComparadoSheet.columns = [...zonasBaseSheet.columns];
+
+    miembrosBaseSheet.columns = [
+      { header: 'Miembro', key: 'nombre', width: 30 },
+      { header: 'Email', key: 'email', width: 35 },
+      { header: 'Grupo', key: 'grupo', width: 25 },
+      { header: 'Zona', key: 'zona', width: 25 },
+      { header: 'Total Escaneos', key: 'totalEscaneos', width: 18 },
+      { header: 'Productos Únicos', key: 'productosUnicos', width: 18 }
+    ];
+
+    miembrosComparadoSheet.columns = [...miembrosBaseSheet.columns];
+
+    resumenSheet.addRows([
+      { concepto: 'Inventario Base', valor: data.resumen.inventarioBaseId },
+      { concepto: 'Inventario Comparado', valor: data.resumen.inventarioComparadoId },
+      { concepto: 'Zona Base', valor: data.filtros.zonaBase?.nombre || 'Todas' },
+      { concepto: 'Zona Comparada', valor: data.filtros.zonaComparada?.nombre || 'Todas' },
+      { concepto: 'Total Comparados', valor: data.resumen.totalComparados },
+      { concepto: 'Total Coinciden', valor: data.resumen.totalCoinciden },
+      { concepto: 'Total Difieren', valor: data.resumen.totalDifieren }
     ]);
 
-    const comparacion = compareSnapshots(
-      snapshotBase.rows,
-      snapshotComparado.rows,
-      scope.zonaId,
-      scope.zona.nombre
+    coincidenSheet.addRows(data.coinciden);
+    diferenciasSheet.addRows(data.diferencias);
+
+    gruposBaseSheet.addRows(data.totales.base.grupos);
+    gruposComparadoSheet.addRows(data.totales.comparado.grupos);
+
+    zonasBaseSheet.addRows(data.totales.base.zonas);
+    zonasComparadoSheet.addRows(data.totales.comparado.zonas);
+
+    miembrosBaseSheet.addRows(data.totales.base.miembros);
+    miembrosComparadoSheet.addRows(data.totales.comparado.miembros);
+
+    [
+      resumenSheet,
+      coincidenSheet,
+      diferenciasSheet,
+      gruposBaseSheet,
+      gruposComparadoSheet,
+      zonasBaseSheet,
+      zonasComparadoSheet,
+      miembrosBaseSheet,
+      miembrosComparadoSheet
+    ].forEach((sheet) => {
+      sheet.getRow(1).font = { bold: true };
+      sheet.views = [{ state: 'frozen', ySplit: 1 }];
+    });
+
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename=diferencias_${value.inventarioBaseId}_vs_${value.inventarioComparadoId}.xlsx`
     );
 
-    const diferencias = comparacion.filter((row) => Number(row.diferencia) > 0);
-
-    if (diferencias.length === 0) {
-      await transaction.rollback();
-      return res.status(400).json({
-        ok: false,
-        message: 'No hay diferencias para generar reconteo'
-      });
-    }
-
-    const ultimaRonda = await RondaConteo.findOne({
-      where: {
-        inventarioId: scope.inventarioComparadoId,
-        zonaId: scope.zonaId
-      },
-      order: [['numeroRonda', 'DESC']],
-      transaction
-    });
-
-    const siguienteNumero = Number(ultimaRonda?.numeroRonda || 0) + 1;
-
-    const ronda = await RondaConteo.create(
-      {
-        inventarioId: scope.inventarioComparadoId,
-        zonaId: scope.zonaId,
-        numeroRonda: siguienteNumero,
-        tipoRonda: 'reconteo',
-        estado: 'borrador',
-        generadaDesdeRondaId: ultimaRonda?.id || null,
-        observaciones: `Reconteo generado por diferencias entre inventario ${scope.inventarioBaseId} e inventario ${scope.inventarioComparadoId}`,
-        totalEscaneos: 0
-      },
-      { transaction }
-    );
-
-    for (const item of diferencias) {
-      const existente = await DiscrepanciaConteo.findOne({
-        where: {
-          inventarioId: scope.inventarioComparadoId,
-          zonaId: scope.zonaId,
-          sku: item.sku
-        },
-        transaction
-      });
-
-      if (existente) {
-        await existente.update(
-          {
-            descripcionSnapshot: item.descripcion || existente.descripcionSnapshot,
-            cantidadBase: Number(item.cantidadBase || 0),
-            cantidadUltima: Number(item.cantidadComparada || 0),
-            diferencia: Number(item.diferencia || 0),
-            ultimaRondaId: ronda.id,
-            proximaRondaNumero: ronda.numeroRonda,
-            estado: 'pendiente_reconteo',
-            cantidadFinal: null,
-            criterioCierre: null,
-            cerradoEn: null
-          },
-          { transaction }
-        );
-      } else {
-        await DiscrepanciaConteo.create(
-          {
-            inventarioId: scope.inventarioComparadoId,
-            zonaId: scope.zonaId,
-            productoId: null,
-            sku: item.sku,
-            descripcionSnapshot: item.descripcion || null,
-            rondaBaseId: ronda.id,
-            ultimaRondaId: ronda.id,
-            cantidadBase: Number(item.cantidadBase || 0),
-            cantidadUltima: Number(item.cantidadComparada || 0),
-            diferencia: Number(item.diferencia || 0),
-            estado: 'pendiente_reconteo',
-            proximaRondaNumero: ronda.numeroRonda,
-            cantidadFinal: null,
-            criterioCierre: null,
-            cerradoEn: null
-          },
-          { transaction }
-        );
-      }
-    }
-
-    await transaction.commit();
-
-    res.status(201).json({
-      ok: true,
-      message: 'Ronda de reconteo generada correctamente',
-      data: {
-        ronda,
-        zona: scope.zona,
-        grupoBase: scope.grupoBase,
-        grupoComparado: scope.grupoComparado,
-        totalDiscrepancias: diferencias.length
-      }
-    });
+    await workbook.xlsx.write(res);
+    res.end();
   } catch (error) {
-    await transaction.rollback();
-    next(error);
-  }
-}
-
-async function updateDiscrepanciaManual(req, res, next) {
-  try {
-    const inventarioId = Number(req.body.inventarioId);
-    const zonaId = Number(req.body.zonaId);
-    const sku = req.body.sku ? String(req.body.sku).trim() : '';
-    const cantidadFinal = Number(req.body.cantidadFinal);
-    const observacion = req.body.observacion
-      ? String(req.body.observacion).trim()
-      : 'ajuste_manual_supervisor';
-
-    if (!inventarioId || !zonaId || !sku || Number.isNaN(cantidadFinal)) {
-      return res.status(400).json({
+    if (error.status) {
+      return res.status(error.status).json({
         ok: false,
-        message: 'inventarioId, zonaId, sku y cantidadFinal son requeridos'
+        message: error.message
       });
     }
-
-    const discrepancia = await DiscrepanciaConteo.findOne({
-      where: {
-        inventarioId,
-        zonaId,
-        sku
-      },
-      order: [['id', 'DESC']]
-    });
-
-    if (!discrepancia) {
-      return res.status(404).json({
-        ok: false,
-        message: 'No se encontró una discrepancia para ese inventario, zona y SKU'
-      });
-    }
-
-    await discrepancia.update({
-      cantidadFinal,
-      cantidadUltima: cantidadFinal,
-      diferencia: 0,
-      estado: 'cerrada',
-      criterioCierre: observacion,
-      cerradoEn: new Date()
-    });
-
-    res.json({
-      ok: true,
-      message: 'Discrepancia ajustada manualmente',
-      data: discrepancia
-    });
-  } catch (error) {
     next(error);
   }
 }
 
 module.exports = {
   compareInventarios,
-  generarRondaReconteoDesdeComparacion,
-  updateDiscrepanciaManual
+  exportarComparacionExcel
 };

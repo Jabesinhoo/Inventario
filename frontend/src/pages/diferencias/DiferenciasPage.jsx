@@ -1,52 +1,119 @@
 import { useEffect, useMemo, useState } from 'react';
-import {
-  GitCompareArrows,
-  AlertTriangle,
-  CheckCircle,
-  RefreshCw,
-  Layers3,
-  Users,
-  Repeat
-} from 'lucide-react';
+import { FileSpreadsheet, GitCompareArrows, Download, Users, MapPin, User } from 'lucide-react';
 import { getInventarios } from '../../services/inventarios.service';
 import { getGrupos } from '../../services/grupos.service';
 import {
-  compareInventarios,
-  generarRondaReconteoDesdeComparacion
+  compareInventariosDiferencias,
+  exportarDiferenciasExcel
 } from '../../services/diferencias.service';
+
+function getEscaneos(item) {
+  return item?.totalEscaneos ?? item?.totalescaneos ?? 0;
+}
+
+function getProductos(item) {
+  return item?.productosUnicos ?? item?.productosunicos ?? 0;
+}
+
+function normalizeZoneText(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+function zonesAreEquivalent(zonaA, zonaB) {
+  if (!zonaA || !zonaB) return false;
+
+  const codigoA = normalizeZoneText(zonaA.codigo);
+  const codigoB = normalizeZoneText(zonaB.codigo);
+
+  if (codigoA && codigoB) {
+    return codigoA === codigoB;
+  }
+
+  const nombreA = normalizeZoneText(zonaA.nombre);
+  const nombreB = normalizeZoneText(zonaB.nombre);
+
+  return nombreA === nombreB;
+}
+
+function buildZoneOptions(groups) {
+  const map = new Map();
+
+  for (const grupo of groups || []) {
+    const zona = grupo?.zonaAsignada;
+    if (!zona?.id) continue;
+
+    if (!map.has(zona.id)) {
+      map.set(zona.id, {
+        id: zona.id,
+        nombre: zona.nombre,
+        codigo: zona.codigo || '',
+        grupos: [grupo.nombre]
+      });
+    } else {
+      const current = map.get(zona.id);
+      current.grupos.push(grupo.nombre);
+    }
+  }
+
+  return Array.from(map.values()).sort((a, b) =>
+    String(a.nombre).localeCompare(String(b.nombre))
+  );
+}
+
+function getZonaLabel(zona) {
+  const grupos = zona.grupos?.length ? ` · ${zona.grupos.join(', ')}` : '';
+  return `${zona.nombre}${zona.codigo ? ` (${zona.codigo})` : ''}${grupos}`;
+}
 
 export default function DiferenciasPage() {
   const [inventarios, setInventarios] = useState([]);
-
   const [inventarioBaseId, setInventarioBaseId] = useState('');
   const [inventarioComparadoId, setInventarioComparadoId] = useState('');
 
   const [gruposBase, setGruposBase] = useState([]);
   const [gruposComparado, setGruposComparado] = useState([]);
 
-  const [grupoBaseId, setGrupoBaseId] = useState('');
-  const [grupoComparadoId, setGrupoComparadoId] = useState('');
+  const [zonaBaseId, setZonaBaseId] = useState('');
+  const [zonaComparadaId, setZonaComparadaId] = useState('');
 
-  const [resultado, setResultado] = useState(null);
-
+  const [data, setData] = useState(null);
+  const [tab, setTab] = useState('diferencias');
   const [loading, setLoading] = useState(true);
   const [comparing, setComparing] = useState(false);
-  const [generating, setGenerating] = useState(false);
-
+  const [exporting, setExporting] = useState(false);
   const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
+
+  const zonasBaseOptions = useMemo(() => buildZoneOptions(gruposBase), [gruposBase]);
+  const zonasComparadoOptions = useMemo(() => buildZoneOptions(gruposComparado), [gruposComparado]);
+
+  const zonaBaseSeleccionada =
+    zonasBaseOptions.find((z) => Number(z.id) === Number(zonaBaseId)) || null;
+
+  const zonaComparadaSeleccionada =
+    zonasComparadoOptions.find((z) => Number(z.id) === Number(zonaComparadaId)) || null;
+
+  const zonasComparadoFiltradas = zonaBaseSeleccionada
+    ? zonasComparadoOptions.filter((z) => zonesAreEquivalent(zonaBaseSeleccionada, z))
+    : zonasComparadoOptions;
+
+  const zonasBaseFiltradas = zonaComparadaSeleccionada
+    ? zonasBaseOptions.filter((z) => zonesAreEquivalent(z, zonaComparadaSeleccionada))
+    : zonasBaseOptions;
 
   async function loadInventariosData() {
     try {
-      const data = await getInventarios();
-      setInventarios(data);
+      const rows = await getInventarios();
+      setInventarios(rows || []);
 
-      if (data.length >= 2) {
-        setInventarioComparadoId(data[0].id);
-        setInventarioBaseId(data[1].id);
-      } else if (data.length === 1) {
-        setInventarioBaseId(data[0].id);
-        setInventarioComparadoId(data[0].id);
+      if (rows?.length >= 2) {
+        setInventarioBaseId(rows[0].id);
+        setInventarioComparadoId(rows[1].id);
+      } else if (rows?.length === 1) {
+        setInventarioBaseId(rows[0].id);
       }
     } catch (err) {
       setError('No se pudieron cargar los inventarios');
@@ -55,55 +122,33 @@ export default function DiferenciasPage() {
     }
   }
 
-  async function loadGruposBase(id) {
-    if (!id) {
+  async function loadGruposBase(inventarioId) {
+    if (!inventarioId) {
       setGruposBase([]);
-      setGrupoBaseId('');
+      setZonaBaseId('');
       return;
     }
 
     try {
-      const data = await getGrupos(id);
-      setGruposBase(data || []);
-
-      if (data?.length > 0) {
-        setGrupoBaseId((prev) => {
-          const existe = data.some((g) => g.id === Number(prev));
-          return existe ? prev : data[0].id;
-        });
-      } else {
-        setGrupoBaseId('');
-      }
-    } catch (err) {
-      setError('No se pudieron cargar los grupos del inventario base');
+      const rows = await getGrupos(inventarioId);
+      setGruposBase(rows || []);
+    } catch {
       setGruposBase([]);
-      setGrupoBaseId('');
     }
   }
 
-  async function loadGruposComparado(id) {
-    if (!id) {
+  async function loadGruposComparado(inventarioId) {
+    if (!inventarioId) {
       setGruposComparado([]);
-      setGrupoComparadoId('');
+      setZonaComparadaId('');
       return;
     }
 
     try {
-      const data = await getGrupos(id);
-      setGruposComparado(data || []);
-
-      if (data?.length > 0) {
-        setGrupoComparadoId((prev) => {
-          const existe = data.some((g) => g.id === Number(prev));
-          return existe ? prev : data[0].id;
-        });
-      } else {
-        setGrupoComparadoId('');
-      }
-    } catch (err) {
-      setError('No se pudieron cargar los grupos del inventario comparado');
+      const rows = await getGrupos(inventarioId);
+      setGruposComparado(rows || []);
+    } catch {
       setGruposComparado([]);
-      setGrupoComparadoId('');
     }
   }
 
@@ -112,95 +157,104 @@ export default function DiferenciasPage() {
   }, []);
 
   useEffect(() => {
-    if (inventarioBaseId) {
-      loadGruposBase(inventarioBaseId);
-    }
+    loadGruposBase(inventarioBaseId);
+    setZonaBaseId('');
   }, [inventarioBaseId]);
 
   useEffect(() => {
-    if (inventarioComparadoId) {
-      loadGruposComparado(inventarioComparadoId);
-    }
+    loadGruposComparado(inventarioComparadoId);
+    setZonaComparadaId('');
   }, [inventarioComparadoId]);
 
-  const grupoBase = useMemo(
-    () => gruposBase.find((g) => g.id === Number(grupoBaseId)) || null,
-    [gruposBase, grupoBaseId]
-  );
-
-  const grupoComparado = useMemo(
-    () => gruposComparado.find((g) => g.id === Number(grupoComparadoId)) || null,
-    [gruposComparado, grupoComparadoId]
-  );
-
-  const zonaBase = grupoBase?.zonaAsignada || null;
-  const zonaComparada = grupoComparado?.zonaAsignada || null;
-
-  const mismaZona =
-    Boolean(zonaBase?.id) &&
-    Boolean(zonaComparada?.id) &&
-    Number(zonaBase.id) === Number(zonaComparada.id);
-
-  const canCompare =
-    Boolean(inventarioBaseId) &&
-    Boolean(inventarioComparadoId) &&
-    Boolean(grupoBaseId) &&
-    Boolean(grupoComparadoId) &&
-    Number(inventarioBaseId) !== Number(inventarioComparadoId) &&
-    mismaZona;
-
   async function handleComparar() {
-    if (!canCompare) return;
-
-    setComparing(true);
-    setError('');
-    setMessage('');
-    setResultado(null);
-
     try {
-      const data = await compareInventarios({
-        inventarioBaseId: Number(inventarioBaseId),
-        inventarioComparadoId: Number(inventarioComparadoId),
-        grupoBaseId: Number(grupoBaseId),
-        grupoComparadoId: Number(grupoComparadoId)
+      setComparing(true);
+      setError('');
+
+      if (!inventarioBaseId || !inventarioComparadoId) {
+        setError('Debes seleccionar ambos inventarios');
+        return;
+      }
+
+      if (Number(inventarioBaseId) === Number(inventarioComparadoId)) {
+        setError('Debes seleccionar inventarios distintos');
+        return;
+      }
+
+      if ((zonaBaseId && !zonaComparadaId) || (!zonaBaseId && zonaComparadaId)) {
+        setError('Si comparas por zona, debes seleccionar zona base y zona comparada.');
+        return;
+      }
+
+      if (zonaBaseSeleccionada && zonaComparadaSeleccionada) {
+        if (!zonesAreEquivalent(zonaBaseSeleccionada, zonaComparadaSeleccionada)) {
+          setError('No puedes comparar zonas distintas.');
+          return;
+        }
+      }
+
+      const response = await compareInventariosDiferencias({
+        inventarioBaseId,
+        inventarioComparadoId,
+        zonaBaseId: zonaBaseId || undefined,
+        zonaComparadaId: zonaComparadaId || undefined
       });
 
-      setResultado(data);
+      setData(response);
     } catch (err) {
-      setError(err.response?.data?.message || 'No se pudo realizar la comparación');
+      setError(err.response?.data?.message || 'No se pudo comparar los inventarios');
     } finally {
       setComparing(false);
     }
   }
 
-  async function handleGenerarReconteo() {
-    if (!resultado || !resultado.diferencias?.length) return;
-
-    setGenerating(true);
-    setError('');
-    setMessage('');
-
+  async function handleExportar() {
     try {
-      const response = await generarRondaReconteoDesdeComparacion({
-        inventarioBaseId: Number(inventarioBaseId),
-        inventarioComparadoId: Number(inventarioComparadoId),
-        grupoBaseId: Number(grupoBaseId),
-        grupoComparadoId: Number(grupoComparadoId)
-      });
+      setExporting(true);
+      setError('');
 
-      setMessage(
-        `${response.message}. Ronda #${response.data?.ronda?.numeroRonda || ''} generada para ${response.data?.totalDiscrepancias || 0} SKU.`
-      );
+      if ((zonaBaseId && !zonaComparadaId) || (!zonaBaseId && zonaComparadaId)) {
+        setError('Si comparas por zona, debes seleccionar zona base y zona comparada.');
+        return;
+      }
+
+      if (zonaBaseSeleccionada && zonaComparadaSeleccionada) {
+        if (!zonesAreEquivalent(zonaBaseSeleccionada, zonaComparadaSeleccionada)) {
+          setError('No puedes exportar comparación entre zonas distintas.');
+          return;
+        }
+      }
+
+      await exportarDiferenciasExcel({
+        inventarioBaseId,
+        inventarioComparadoId,
+        zonaBaseId: zonaBaseId || undefined,
+        zonaComparadaId: zonaComparadaId || undefined
+      });
     } catch (err) {
-      setError(err.response?.data?.message || 'No se pudo generar la ronda de reconteo');
+      setError(err.response?.data?.message || 'No se pudo exportar el Excel');
     } finally {
-      setGenerating(false);
+      setExporting(false);
     }
   }
 
-  const totalDiferencias = resultado?.resumen?.totalDiferencias || 0;
-  const totalDiferenciaUnidades = resultado?.resumen?.totalDiferenciaUnidades || 0;
-  const totalItemsComparados = resultado?.resumen?.totalItemsComparados || 0;
+  const resumen = data?.resumen || {
+    totalComparados: 0,
+    totalCoinciden: 0,
+    totalDifieren: 0
+  };
+
+  const rowsActivos = useMemo(() => {
+    if (!data) return [];
+    return tab === 'coinciden' ? data.coinciden || [] : data.diferencias || [];
+  }, [data, tab]);
+
+  const gruposBaseTotales = data?.totales?.base?.grupos || [];
+  const gruposComparadoTotales = data?.totales?.comparado?.grupos || [];
+  const zonasBase = data?.totales?.base?.zonas || [];
+  const zonasComparado = data?.totales?.comparado?.zonas || [];
+  const miembrosBase = data?.totales?.base?.miembros || [];
+  const miembrosComparado = data?.totales?.comparado?.miembros || [];
 
   if (loading) {
     return <div className="card">Cargando diferencias...</div>;
@@ -208,40 +262,28 @@ export default function DiferenciasPage() {
 
   return (
     <div className="dashboard-container">
-      <div className="card filters-card">
-        <div className="filters-form">
+      <div className="card">
+        <div className="list-header">
+          <h2 className="section-title">
+            <GitCompareArrows size={20} />
+            <span>Comparar inventarios o zonas</span>
+          </h2>
+        </div>
+
+        <div className="grid-2">
           <div className="form-group">
             <label>Inventario base</label>
             <select
               value={inventarioBaseId}
               onChange={(e) => setInventarioBaseId(Number(e.target.value))}
             >
-              {inventarios.map((inv) => (
-                <option key={inv.id} value={inv.id}>
-                  {inv.nombre} - {inv.fecha}
+              <option value="">Selecciona</option>
+              {inventarios.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.nombre} - {item.fecha}
                 </option>
               ))}
             </select>
-          </div>
-
-          <div className="form-group">
-            <label>Grupo base</label>
-            <select
-              value={grupoBaseId}
-              onChange={(e) => setGrupoBaseId(Number(e.target.value))}
-              disabled={gruposBase.length === 0}
-            >
-              {gruposBase.map((grupo) => (
-                <option key={grupo.id} value={grupo.id}>
-                  {grupo.nombre}
-                </option>
-              ))}
-            </select>
-            {zonaBase ? (
-              <small className="text-muted">
-                Zona: {zonaBase.nombre} ({zonaBase.codigo})
-              </small>
-            ) : null}
           </div>
 
           <div className="form-group">
@@ -250,204 +292,339 @@ export default function DiferenciasPage() {
               value={inventarioComparadoId}
               onChange={(e) => setInventarioComparadoId(Number(e.target.value))}
             >
-              {inventarios.map((inv) => (
-                <option key={inv.id} value={inv.id}>
-                  {inv.nombre} - {inv.fecha}
+              <option value="">Selecciona</option>
+              {inventarios.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.nombre} - {item.fecha}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div className="grid-2">
+          <div className="form-group">
+            <label>Zona base (opcional)</label>
+            <select
+              value={zonaBaseId}
+              onChange={(e) => setZonaBaseId(Number(e.target.value) || '')}
+            >
+              <option value="">Todas las zonas</option>
+              {zonasBaseFiltradas.map((zona) => (
+                <option key={zona.id} value={zona.id}>
+                  {getZonaLabel(zona)}
                 </option>
               ))}
             </select>
           </div>
 
           <div className="form-group">
-            <label>Grupo comparado</label>
+            <label>Zona comparada (opcional)</label>
             <select
-              value={grupoComparadoId}
-              onChange={(e) => setGrupoComparadoId(Number(e.target.value))}
-              disabled={gruposComparado.length === 0}
+              value={zonaComparadaId}
+              onChange={(e) => setZonaComparadaId(Number(e.target.value) || '')}
             >
-              {gruposComparado.map((grupo) => (
-                <option key={grupo.id} value={grupo.id}>
-                  {grupo.nombre}
+              <option value="">Todas las zonas</option>
+              {zonasComparadoFiltradas.map((zona) => (
+                <option key={zona.id} value={zona.id}>
+                  {getZonaLabel(zona)}
                 </option>
               ))}
             </select>
-            {zonaComparada ? (
-              <small className="text-muted">
-                Zona: {zonaComparada.nombre} ({zonaComparada.codigo})
-              </small>
-            ) : null}
           </div>
+        </div>
 
-          <button
-            className="btn btn-primary"
-            onClick={handleComparar}
-            disabled={!canCompare || comparing}
-          >
+        {error ? <div className="alert-error">{error}</div> : null}
+
+        <div className="form-actions">
+          <button className="btn btn-primary" onClick={handleComparar} disabled={comparing}>
             <GitCompareArrows size={16} />
             <span>{comparing ? 'Comparando...' : 'Comparar'}</span>
           </button>
+
+          <button
+            className="btn btn-outline"
+            onClick={handleExportar}
+            disabled={!data || exporting}
+          >
+            <Download size={16} />
+            <span>{exporting ? 'Exportando...' : 'Exportar Excel'}</span>
+          </button>
         </div>
-
-        {inventarioBaseId && inventarioComparadoId && Number(inventarioBaseId) === Number(inventarioComparadoId) ? (
-          <div className="alert-warning" style={{ marginTop: '12px' }}>
-            <AlertTriangle size={16} />
-            <span>Debes seleccionar dos inventarios distintos.</span>
-          </div>
-        ) : null}
-
-        {grupoBaseId && grupoComparadoId && !mismaZona ? (
-          <div className="alert-warning" style={{ marginTop: '12px' }}>
-            <AlertTriangle size={16} />
-            <span>Los grupos seleccionados no pertenecen a la misma zona.</span>
-          </div>
-        ) : null}
       </div>
 
-      {message ? <div className="alert-success">{message}</div> : null}
-      {error ? <div className="alert-error">{error}</div> : null}
+      <div className="kpi-grid">
+        <div className="card kpi-card">
+          <div className="kpi-icon">
+            <FileSpreadsheet size={24} />
+          </div>
+          <div className="kpi-content">
+            <p className="kpi-title">Comparados</p>
+            <h3 className="kpi-value">{resumen.totalComparados}</h3>
+          </div>
+        </div>
 
-      {resultado ? (
+        <div className="card kpi-card">
+          <div className="kpi-icon">
+            <GitCompareArrows size={24} />
+          </div>
+          <div className="kpi-content">
+            <p className="kpi-title">Coinciden</p>
+            <h3 className="kpi-value">{resumen.totalCoinciden}</h3>
+          </div>
+        </div>
+
+        <div className="card kpi-card">
+          <div className="kpi-icon">
+            <GitCompareArrows size={24} />
+          </div>
+          <div className="kpi-content">
+            <p className="kpi-title">Difieren</p>
+            <h3 className="kpi-value">{resumen.totalDifieren}</h3>
+          </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="form-actions" style={{ marginBottom: '16px' }}>
+          <button
+            className={`btn ${tab === 'diferencias' ? 'btn-primary' : 'btn-outline'}`}
+            onClick={() => setTab('diferencias')}
+          >
+            Ver diferencias
+          </button>
+
+          <button
+            className={`btn ${tab === 'coinciden' ? 'btn-primary' : 'btn-outline'}`}
+            onClick={() => setTab('coinciden')}
+          >
+            Ver coincidencias
+          </button>
+        </div>
+
+        {!data ? (
+          <p className="muted">Selecciona dos inventarios y compara.</p>
+        ) : rowsActivos.length === 0 ? (
+          <p className="muted">
+            {tab === 'coinciden' ? 'No hay coincidencias.' : 'No hay diferencias.'}
+          </p>
+        ) : (
+          <div className="table-container">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>SKU</th>
+                  <th>Descripción</th>
+                  <th>Base</th>
+                  <th>Comparado</th>
+                  {tab === 'diferencias' ? <th>Diferencia</th> : null}
+                </tr>
+              </thead>
+              <tbody>
+                {rowsActivos.map((row) => (
+                  <tr key={row.sku}>
+                    <td>{row.sku}</td>
+                    <td>{row.descripcion}</td>
+                    <td>{row.cantidadBase}</td>
+                    <td>{row.cantidadComparada}</td>
+                    {tab === 'diferencias' ? <td>{row.diferencia}</td> : null}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {data ? (
         <>
-          <div className="kpi-grid">
-            <div className="card kpi-card">
-              <div className="kpi-icon">
-                <AlertTriangle size={24} />
-              </div>
-              <div className="kpi-content">
-                <p className="kpi-title">SKU con diferencia</p>
-                <h3 className="kpi-value">{totalDiferencias}</h3>
-              </div>
-            </div>
+          <div className="grid-2">
+            <div className="card">
+              <h3 className="section-title">
+                <Users size={18} />
+                <span>Totales por grupo - Base</span>
+              </h3>
 
-            <div className="card kpi-card">
-              <div className="kpi-icon">
-                <Layers3 size={24} />
-              </div>
-              <div className="kpi-content">
-                <p className="kpi-title">Items comparados</p>
-                <h3 className="kpi-value">{totalItemsComparados}</h3>
-              </div>
-            </div>
-
-            <div className="card kpi-card">
-              <div className="kpi-icon">
-                <Users size={24} />
-              </div>
-              <div className="kpi-content">
-                <p className="kpi-title">Diferencia total</p>
-                <h3 className="kpi-value">{totalDiferenciaUnidades}</h3>
-              </div>
-            </div>
-          </div>
-
-          <div className="card" style={{ marginBottom: '16px' }}>
-            <div className="list-header">
-              <h2 className="section-title">
-                <GitCompareArrows size={20} />
-                <span>Resumen de comparación</span>
-              </h2>
-
-              {resultado.diferencias?.length > 0 ? (
-                <button
-                  className="btn btn-primary"
-                  onClick={handleGenerarReconteo}
-                  disabled={generating}
-                >
-                  <Repeat size={16} />
-                  <span>{generating ? 'Generando...' : 'Generar ronda de reconteo'}</span>
-                </button>
-              ) : null}
-            </div>
-
-            <div className="table-list">
-              <div className="list-row">
-                <div>
-                  <strong>Zona</strong>
-                  <p className="muted">
-                    {resultado.zona?.nombre} ({resultado.zona?.codigo})
-                  </p>
-                </div>
-              </div>
-
-              <div className="list-row">
-                <div>
-                  <strong>Base</strong>
-                  <p className="muted">
-                    Grupo: {resultado.grupoBase?.nombre || 'Sin grupo'} | Fuente:{' '}
-                    {resultado.fuenteBase === 'conteo_inicial' ? 'Conteo inicial' : 'Lecturas válidas'}
-                  </p>
-                </div>
-              </div>
-
-              <div className="list-row">
-                <div>
-                  <strong>Comparado</strong>
-                  <p className="muted">
-                    Grupo: {resultado.grupoComparado?.nombre || 'Sin grupo'} | Fuente:{' '}
-                    {resultado.fuenteComparada === 'conteo_inicial' ? 'Conteo inicial' : 'Lecturas válidas'}
-                  </p>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <div className="card">
-            <div className="list-header">
-              <h2 className="section-title">
-                <AlertTriangle size={20} />
-                <span>Diferencias encontradas</span>
-              </h2>
-
-              <button className="btn btn-outline" onClick={handleComparar} disabled={comparing}>
-                <RefreshCw size={16} />
-                <span>Actualizar</span>
-              </button>
-            </div>
-
-            {resultado.diferencias?.length === 0 ? (
-              <div className="alert-success">
-                <CheckCircle size={18} />
-                <span>No hay diferencias. Los dos inventarios coinciden para esta zona.</span>
-              </div>
-            ) : (
               <div className="table-container">
                 <table className="data-table">
                   <thead>
                     <tr>
+                      <th>Grupo</th>
                       <th>Zona</th>
-                      <th>SKU</th>
-                      <th>Descripción</th>
-                      <th>Base</th>
-                      <th>Comparado</th>
-                      <th>Diferencia</th>
+                      <th>Escaneos</th>
+                      <th>Productos</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {resultado.diferencias.map((item) => (
-                      <tr key={`${item.zonaId}-${item.sku}`} className="row-warning">
-                        <td>{item.zona}</td>
-                        <td>
-                          <strong>{item.sku}</strong>
-                        </td>
-                        <td>{item.descripcion || 'Sin descripción'}</td>
-                        <td>{item.cantidadBase}</td>
-                        <td>{item.cantidadComparada}</td>
-                        <td className="text-danger">+{item.diferencia}</td>
+                    {gruposBaseTotales.map((item, index) => (
+                      <tr key={`gb-${item.id ?? index}`}>
+                        <td>{item.nombre || 'N/A'}</td>
+                        <td>{item.zona || 'N/A'}</td>
+                        <td>{getEscaneos(item)}</td>
+                        <td>{getProductos(item)}</td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
-            )}
+            </div>
+
+            <div className="card">
+              <h3 className="section-title">
+                <Users size={18} />
+                <span>Totales por grupo - Comparado</span>
+              </h3>
+
+              <div className="table-container">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Grupo</th>
+                      <th>Zona</th>
+                      <th>Escaneos</th>
+                      <th>Productos</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {gruposComparadoTotales.map((item, index) => (
+                      <tr key={`gc-${item.id ?? index}`}>
+                        <td>{item.nombre || 'N/A'}</td>
+                        <td>{item.zona || 'N/A'}</td>
+                        <td>{getEscaneos(item)}</td>
+                        <td>{getProductos(item)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid-2">
+            <div className="card">
+              <h3 className="section-title">
+                <MapPin size={18} />
+                <span>Totales por zona - Base</span>
+              </h3>
+
+              <div className="table-container">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Zona</th>
+                      <th>Código</th>
+                      <th>Escaneos</th>
+                      <th>Productos</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {zonasBase.map((item, index) => (
+                      <tr key={`zb-${item.id ?? index}`}>
+                        <td>{item.nombre || 'N/A'}</td>
+                        <td>{item.codigo || 'N/A'}</td>
+                        <td>{getEscaneos(item)}</td>
+                        <td>{getProductos(item)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="card">
+              <h3 className="section-title">
+                <MapPin size={18} />
+                <span>Totales por zona - Comparado</span>
+              </h3>
+
+              <div className="table-container">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Zona</th>
+                      <th>Código</th>
+                      <th>Escaneos</th>
+                      <th>Productos</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {zonasComparado.map((item, index) => (
+                      <tr key={`zc-${item.id ?? index}`}>
+                        <td>{item.nombre || 'N/A'}</td>
+                        <td>{item.codigo || 'N/A'}</td>
+                        <td>{getEscaneos(item)}</td>
+                        <td>{getProductos(item)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+
+          <div className="grid-2">
+            <div className="card">
+              <h3 className="section-title">
+                <User size={18} />
+                <span>Totales por miembro - Base</span>
+              </h3>
+
+              <div className="table-container">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Miembro</th>
+                      <th>Grupo</th>
+                      <th>Zona</th>
+                      <th>Escaneos</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {miembrosBase.map((item, index) => (
+                      <tr key={`mb-${item.id ?? index}`}>
+                        <td>{item.nombre || 'N/A'}</td>
+                        <td>{item.grupo || 'N/A'}</td>
+                        <td>{item.zona || 'N/A'}</td>
+                        <td>{getEscaneos(item)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="card">
+              <h3 className="section-title">
+                <User size={18} />
+                <span>Totales por miembro - Comparado</span>
+              </h3>
+
+              <div className="table-container">
+                <table className="data-table">
+                  <thead>
+                    <tr>
+                      <th>Miembro</th>
+                      <th>Grupo</th>
+                      <th>Zona</th>
+                      <th>Escaneos</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {miembrosComparado.map((item, index) => (
+                      <tr key={`mc-${item.id ?? index}`}>
+                        <td>{item.nombre || 'N/A'}</td>
+                        <td>{item.grupo || 'N/A'}</td>
+                        <td>{item.zona || 'N/A'}</td>
+                        <td>{getEscaneos(item)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </div>
         </>
-      ) : (
-        <div className="card">
-          <p className="muted">
-            Selecciona inventario base, inventario comparado y los grupos de la misma zona para iniciar la comparación.
-          </p>
-        </div>
-      )}
+      ) : null}
     </div>
   );
 }
