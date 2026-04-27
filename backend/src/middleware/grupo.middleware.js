@@ -1,60 +1,74 @@
-const { Op } = require('sequelize');
-const { UsuarioGrupo, AsignacionRonda } = require('../models');
+const { QueryTypes } = require('sequelize');
+const { sequelize, AsignacionRonda } = require('../models');
 
-async function resolverGrupoDesdeSolicitud(req) {
-  const userId = req.user.id;
-
-  const grupoIdDirecto =
-    req.body?.grupoId ||
-    req.query?.grupoId ||
-    req.params?.grupoId ||
-    null;
-
-  if (grupoIdDirecto) {
-    const membresia = await UsuarioGrupo.findOne({
-      where: {
-        usuarioId: userId,
-        grupoId: Number(grupoIdDirecto)
-      }
-    });
-
-    if (membresia) {
-      return Number(membresia.grupoId);
+async function buscarMembresiaDirecta(usuarioId, grupoId) {
+  const rows = await sequelize.query(
+    `
+    SELECT "grupoId"
+    FROM usuario_grupo
+    WHERE "usuarioId" = :usuarioId
+      AND "grupoId" = :grupoId
+    LIMIT 1
+    `,
+    {
+      replacements: {
+        usuarioId: Number(usuarioId),
+        grupoId: Number(grupoId)
+      },
+      type: QueryTypes.SELECT
     }
-  }
+  );
 
-  const rondaId =
-    req.body?.rondaId ||
-    req.query?.rondaId ||
-    req.params?.rondaId ||
-    null;
+  return rows[0] ? Number(rows[0].grupoId) : null;
+}
 
-  if (rondaId) {
-    const asignaciones = await AsignacionRonda.findAll({
-      where: {
-        rondaId: Number(rondaId)
-      }
-    });
-
-    if (asignaciones.length) {
-      const grupoIds = asignaciones.map((a) => Number(a.grupoId));
-
-      const membresia = await UsuarioGrupo.findOne({
-        where: {
-          usuarioId: userId,
-          grupoId: {
-            [Op.in]: grupoIds
-          }
-        }
-      });
-
-      if (membresia) {
-        return Number(membresia.grupoId);
-      }
+async function buscarPrimerGrupoUsuario(usuarioId) {
+  const rows = await sequelize.query(
+    `
+    SELECT "grupoId"
+    FROM usuario_grupo
+    WHERE "usuarioId" = :usuarioId
+    ORDER BY "grupoId" ASC
+    LIMIT 1
+    `,
+    {
+      replacements: { usuarioId: Number(usuarioId) },
+      type: QueryTypes.SELECT
     }
-  }
+  );
 
-  return null;
+  return rows[0] ? Number(rows[0].grupoId) : null;
+}
+
+async function resolverGrupoDesdeRonda(usuarioId, rondaId) {
+  const asignaciones = await AsignacionRonda.findAll({
+    where: { rondaId: Number(rondaId) }
+  });
+
+  if (!asignaciones.length) return null;
+
+  const grupoIds = asignaciones.map((a) => Number(a.grupoId)).filter(Boolean);
+
+  if (!grupoIds.length) return null;
+
+  const rows = await sequelize.query(
+    `
+    SELECT "grupoId"
+    FROM usuario_grupo
+    WHERE "usuarioId" = :usuarioId
+      AND "grupoId" IN (:grupoIds)
+    LIMIT 1
+    `,
+    {
+      replacements: {
+        usuarioId: Number(usuarioId),
+        grupoIds
+      },
+      type: QueryTypes.SELECT
+    }
+  );
+
+  return rows[0] ? Number(rows[0].grupoId) : null;
 }
 
 async function injectGrupoId(req, res, next) {
@@ -65,19 +79,52 @@ async function injectGrupoId(req, res, next) {
       return next();
     }
 
-    const grupoId = await resolverGrupoDesdeSolicitud(req);
+    const usuarioId = req.user?.id;
 
-    if (!grupoId) {
-      return res.status(403).json({
-        ok: false,
-        message: 'No fue posible identificar el grupo del usuario para esta ronda.'
-      });
+    const grupoIdDirecto =
+      req.body?.grupoId ||
+      req.query?.grupoId ||
+      req.params?.grupoId ||
+      null;
+
+    if (grupoIdDirecto) {
+      const grupoId = await buscarMembresiaDirecta(usuarioId, grupoIdDirecto);
+
+      if (grupoId) {
+        req.grupoId = grupoId;
+        req.canViewAllGroups = false;
+        return next();
+      }
     }
 
-    req.grupoId = Number(grupoId);
-    req.canViewAllGroups = false;
+    const rondaId =
+      req.body?.rondaId ||
+      req.query?.rondaId ||
+      req.params?.rondaId ||
+      null;
 
-    return next();
+    if (rondaId) {
+      const grupoId = await resolverGrupoDesdeRonda(usuarioId, rondaId);
+
+      if (grupoId) {
+        req.grupoId = grupoId;
+        req.canViewAllGroups = false;
+        return next();
+      }
+    }
+
+    const fallbackGrupoId = await buscarPrimerGrupoUsuario(usuarioId);
+
+    if (fallbackGrupoId) {
+      req.grupoId = fallbackGrupoId;
+      req.canViewAllGroups = false;
+      return next();
+    }
+
+    return res.status(403).json({
+      ok: false,
+      message: 'No fue posible identificar el grupo del usuario para esta ronda.'
+    });
   } catch (error) {
     return next(error);
   }
