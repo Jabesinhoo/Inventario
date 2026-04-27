@@ -8,6 +8,33 @@ const controller = require('../controllers/rondas.controller');
 router.get('/activa', authMiddleware, controller.getRondaActivaDelGrupo);
 
 router.get('/', authMiddleware, injectGrupoId, controller.getRondas);
+router.patch(
+    '/inventario/:inventarioId/abrir-todas',
+    authMiddleware,
+    allowRoles('admin', 'supervisor'),
+    controller.abrirTodasRondasInventario
+);
+
+router.patch(
+    '/inventario/:inventarioId/pausar-todas',
+    authMiddleware,
+    allowRoles('admin', 'supervisor'),
+    controller.pausarTodasRondasInventario
+);
+
+router.patch(
+    '/inventario/:inventarioId/cerrar-todas',
+    authMiddleware,
+    allowRoles('admin', 'supervisor'),
+    controller.cerrarTodasRondasInventario
+);
+
+router.delete(
+    '/:id',
+    authMiddleware,
+    allowRoles('admin', 'supervisor'),
+    controller.deleteRonda
+);
 router.get('/:id/pendientes', authMiddleware, injectGrupoId, controller.getPendientesRonda);
 
 router.post('/', authMiddleware, allowRoles('admin', 'supervisor'), controller.createRonda);
@@ -20,10 +47,10 @@ router.patch('/:id/cerrar', authMiddleware, allowRoles('admin', 'supervisor'), c
 router.patch('/:id/reabrir', authMiddleware, allowRoles('admin', 'supervisor'), controller.reabrirRonda);
 router.get('/mis-rondas', authMiddleware, controller.getMisRondasParaEscaneo);
 router.post(
-  '/:inventarioId/:zonaId/:sku/ajuste-manual',
-  authMiddleware,
-  allowRoles('admin', 'supervisor'),
-  controller.ajusteManual
+    '/:inventarioId/:zonaId/:sku/ajuste-manual',
+    authMiddleware,
+    allowRoles('admin', 'supervisor'),
+    controller.ajusteManual
 );
 
 module.exports = router;

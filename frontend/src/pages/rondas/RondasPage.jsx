@@ -9,11 +9,14 @@ import {
   Lock,
   MapPin,
   Boxes,
-  Users
+  Users,
+  Trash2,
+  FolderOpen,
+  PauseCircle
 } from 'lucide-react';
+
 import { getInventarios } from '../../services/inventarios.service';
 import { getGrupos } from '../../services/grupos.service';
-
 import {
   getRondas,
   createRonda,
@@ -21,8 +24,13 @@ import {
   pausarRonda,
   reanudarRonda,
   cerrarRonda,
-  reabrirRonda
+  reabrirRonda,
+  abrirTodasRondas,
+  pausarTodasRondas,
+  cerrarTodasRondas,
+  deleteRonda
 } from '../../services/rondas.service';
+
 export default function RondasPage() {
   const [inventarios, setInventarios] = useState([]);
   const [grupos, setGrupos] = useState([]);
@@ -168,6 +176,59 @@ export default function RondasPage() {
       await loadData(inventarioFiltro, { silent: true });
     } catch (err) {
       setError(err.response?.data?.message || 'No se pudo actualizar la ronda');
+    }
+  }
+
+  async function handleAccionMasiva(accion) {
+    if (!inventarioFiltro) {
+      setError('Selecciona un inventario primero');
+      return;
+    }
+
+    const mensajes = {
+      abrir: '¿Abrir todas las rondas en borrador o pausadas de este inventario?',
+      pausar: '¿Frenar todas las rondas activas de este inventario?',
+      cerrar: '¿Cerrar todas las rondas abiertas de este inventario?'
+    };
+
+    const confirmado = window.confirm(mensajes[accion]);
+    if (!confirmado) return;
+
+    try {
+      if (accion === 'abrir') {
+        const resp = await abrirTodasRondas(inventarioFiltro);
+        setMessage(resp.message || 'Rondas abiertas correctamente');
+      }
+
+      if (accion === 'pausar') {
+        const resp = await pausarTodasRondas(inventarioFiltro);
+        setMessage(resp.message || 'Rondas pausadas correctamente');
+      }
+
+      if (accion === 'cerrar') {
+        const resp = await cerrarTodasRondas(inventarioFiltro);
+        setMessage(resp.message || 'Rondas cerradas correctamente');
+      }
+
+      await loadData(inventarioFiltro, { silent: true });
+    } catch (err) {
+      setError(err.response?.data?.message || 'No se pudo ejecutar la acción masiva');
+    }
+  }
+
+  async function handleDeleteRonda(ronda) {
+    const confirmado = window.confirm(
+      `¿Eliminar la ronda ${ronda.numeroRonda} de la zona ${ronda.zona?.nombre || ''}?`
+    );
+
+    if (!confirmado) return;
+
+    try {
+      const resp = await deleteRonda(ronda.id);
+      setMessage(resp.message || 'Ronda eliminada correctamente');
+      await loadData(inventarioFiltro, { silent: true });
+    } catch (err) {
+      setError(err.response?.data?.message || 'No se pudo eliminar la ronda');
     }
   }
 
@@ -344,50 +405,83 @@ export default function RondasPage() {
         </div>
       </div>
 
+      <div className="card" style={{ marginBottom: 16 }}>
+        <div className="filters-header">
+          <div>
+            <h3 className="section-title">Acciones masivas</h3>
+            <p className="muted">Estas acciones afectan las rondas del inventario seleccionado.</p>
+          </div>
+
+          <div className="zona-actions" style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button
+              className="btn btn-primary"
+              onClick={() => handleAccionMasiva('abrir')}
+              disabled={!inventarioFiltro}
+            >
+              <FolderOpen size={16} />
+              <span>Abrir todas</span>
+            </button>
+
+            <button
+              className="btn btn-outline"
+              onClick={() => handleAccionMasiva('pausar')}
+              disabled={!inventarioFiltro}
+            >
+              <PauseCircle size={16} />
+              <span>Frenar todas</span>
+            </button>
+
+            <button
+              className="btn btn-danger"
+              onClick={() => handleAccionMasiva('cerrar')}
+              disabled={!inventarioFiltro}
+            >
+              <Lock size={16} />
+              <span>Cerrar todas</span>
+            </button>
+          </div>
+        </div>
+      </div>
+
       <div className="card">
         <div className="list-header">
           <h2 className="section-title">
-            <Layers3 size={20} />
-            <span>Rondas registradas</span>
+            <MapPin size={20} />
+            <span>Rondas creadas</span>
           </h2>
         </div>
 
         {rondas.length === 0 ? (
-          <p className="muted">No hay rondas creadas para este inventario.</p>
+          <div className="empty-state">
+            <p>No hay rondas creadas para este inventario.</p>
+          </div>
         ) : (
-          <div className="table-list">
+          <div className="zonas-grid">
             {rondas.map((ronda) => (
-              <div key={ronda.id} className="list-row compact-row">
-                <div className="flex-1">
-                  <div className="grupo-header">
-                    <strong>Ronda {ronda.numeroRonda}</strong>
-                    <span className={`status-badge ${getEstadoBadgeClass(ronda.estado)}`}>
-                      {ronda.estado}
-                    </span>
-                    <span className="codigo-badge">
-                      {ronda.tipoRonda === 'reconteo' ? 'Reconteo' : 'Completa'}
-                    </span>
-                  </div>
-
-                  <div className="zona-meta" style={{ marginTop: '8px' }}>
-                    <span className="zona-nombre">
-                      Zona: {ronda.zona?.nombre || 'Sin zona'}
-                    </span>
-                    <span className="zona-codigo">
-                      {ronda.zona?.codigo || 'Sin código'}
-                    </span>
-                  </div>
-
-                  <p className="muted" style={{ marginTop: '6px' }}>
-                    Grupo asignado:{' '}
-                    <strong>{ronda.asignacion?.grupo?.nombre || 'Sin grupo'}</strong>
-                  </p>
-
-                  {ronda.observaciones ? (
-                    <p className="muted" style={{ marginTop: '4px' }}>
-                      {ronda.observaciones}
+              <div key={ronda.id} className="zona-card">
+                <div className="zona-card-header">
+                  <div>
+                    <h3>{ronda.zona?.nombre || `Zona ${ronda.zonaId}`}</h3>
+                    <p>
+                      Ronda {ronda.numeroRonda} · {ronda.tipoRonda}
                     </p>
-                  ) : null}
+                  </div>
+
+                  <span className={`status-badge ${getEstadoBadgeClass(ronda.estado)}`}>
+                    {ronda.estado}
+                  </span>
+                </div>
+
+                <div className="zona-card-body">
+                  <div className="zona-detail">
+                    <strong>Grupo:</strong> {ronda.asignacion?.grupo?.nombre || 'Sin grupo'}
+                  </div>
+                  <div className="zona-detail">
+                    <strong>Código zona:</strong> {ronda.zona?.codigo || '—'}
+                  </div>
+                  <div className="zona-detail">
+                    <strong>Observaciones:</strong> {ronda.observaciones || '—'}
+                  </div>
                 </div>
 
                 <div className="zona-actions">
@@ -450,6 +544,14 @@ export default function RondasPage() {
                       <span>Reabrir</span>
                     </button>
                   ) : null}
+
+                  <button
+                    className="btn btn-outline"
+                    onClick={() => handleDeleteRonda(ronda)}
+                  >
+                    <Trash2 size={16} />
+                    <span>Eliminar</span>
+                  </button>
                 </div>
               </div>
             ))}

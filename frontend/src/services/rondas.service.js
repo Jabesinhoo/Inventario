@@ -61,7 +61,25 @@ export async function getMisRondasParaEscaneo(inventarioId) {
   });
   return response.data.data;
 }
+export async function deleteRonda(id) {
+  const { data } = await api.delete(`/rondas/${id}`);
+  return data;
+}
 
+export async function abrirTodasRondas(inventarioId) {
+  const { data } = await api.patch(`/rondas/inventario/${inventarioId}/abrir-todas`);
+  return data;
+}
+
+export async function pausarTodasRondas(inventarioId) {
+  const { data } = await api.patch(`/rondas/inventario/${inventarioId}/pausar-todas`);
+  return data;
+}
+
+export async function cerrarTodasRondas(inventarioId) {
+  const { data } = await api.patch(`/rondas/inventario/${inventarioId}/cerrar-todas`);
+  return data;
+}
 
 export async function getRondaActivaDelGrupo(inventarioId, grupoId = null) {
   const params = {};

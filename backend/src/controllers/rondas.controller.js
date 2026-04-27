@@ -1,8 +1,8 @@
 const Joi = require('joi');
-const { QueryTypes } = require('sequelize');
+const { QueryTypes, Op } = require('sequelize');
+
 const {
   sequelize,
-  Op,
   RondaConteo,
   Inventario,
   Zona,
@@ -106,6 +106,7 @@ async function getRondaConAcceso(rondaId, req, extraOptions = {}) {
 
   return ronda;
 }
+
 
 // ==================== CRUD BÁSICO ====================
 
@@ -1014,7 +1015,218 @@ async function getRondaActivaDelGrupo(req, res, next) {
     next(error);
   }
 }
+async function deleteRonda(req, res, next) {
+  const transaction = await sequelize.transaction();
 
+  try {
+    const { id } = req.params;
+
+    const ronda = await RondaConteo.findByPk(id, { transaction });
+
+    if (!ronda) {
+      await transaction.rollback();
+      return res.status(404).json({
+        ok: false,
+        message: 'Ronda no encontrada'
+      });
+    }
+
+    const totalLecturas = await Lectura.count({
+      where: { rondaId: ronda.id },
+      transaction
+    });
+
+    if (totalLecturas > 0) {
+      await transaction.rollback();
+      return res.status(409).json({
+        ok: false,
+        message: 'No se puede eliminar la ronda porque ya tiene lecturas registradas'
+      });
+    }
+
+    await AsignacionRonda.destroy({
+      where: { rondaId: ronda.id },
+      transaction
+    });
+
+    await ronda.destroy({ transaction });
+
+    await transaction.commit();
+
+    return res.json({
+      ok: true,
+      message: 'Ronda eliminada correctamente'
+    });
+  } catch (error) {
+    await transaction.rollback();
+    next(error);
+  }
+}
+
+async function abrirTodasRondasInventario(req, res, next) {
+  const transaction = await sequelize.transaction();
+
+  try {
+    const inventarioId = Number(req.params.inventarioId);
+
+    const inventario = await Inventario.findByPk(inventarioId, { transaction });
+
+    if (!inventario) {
+      await transaction.rollback();
+      return res.status(404).json({
+        ok: false,
+        message: 'Inventario no encontrado'
+      });
+    }
+
+    const rondas = await RondaConteo.findAll({
+      where: {
+        inventarioId,
+        estado: {
+          [Op.in]: ['borrador', 'pausada']
+        }
+      },
+      transaction
+    });
+
+    if (!rondas.length) {
+      await transaction.rollback();
+      return res.status(400).json({
+        ok: false,
+        message: 'No hay rondas en borrador o pausadas para abrir'
+      });
+    }
+
+    for (const ronda of rondas) {
+      await ronda.update(
+        {
+          estado: 'activa',
+          tiempoInicio: ronda.tiempoInicio || new Date()
+        },
+        { transaction }
+      );
+    }
+
+    await transaction.commit();
+
+    return res.json({
+      ok: true,
+      message: `${rondas.length} ronda(s) abiertas correctamente`
+    });
+  } catch (error) {
+    await transaction.rollback();
+    next(error);
+  }
+}
+
+async function pausarTodasRondasInventario(req, res, next) {
+  const transaction = await sequelize.transaction();
+
+  try {
+    const inventarioId = Number(req.params.inventarioId);
+
+    const inventario = await Inventario.findByPk(inventarioId, { transaction });
+
+    if (!inventario) {
+      await transaction.rollback();
+      return res.status(404).json({
+        ok: false,
+        message: 'Inventario no encontrado'
+      });
+    }
+
+    const rondas = await RondaConteo.findAll({
+      where: {
+        inventarioId,
+        estado: 'activa'
+      },
+      transaction
+    });
+
+    if (!rondas.length) {
+      await transaction.rollback();
+      return res.status(400).json({
+        ok: false,
+        message: 'No hay rondas activas para frenar'
+      });
+    }
+
+    for (const ronda of rondas) {
+      await ronda.update(
+        {
+          estado: 'pausada'
+        },
+        { transaction }
+      );
+    }
+
+    await transaction.commit();
+
+    return res.json({
+      ok: true,
+      message: `${rondas.length} ronda(s) pausadas correctamente`
+    });
+  } catch (error) {
+    await transaction.rollback();
+    next(error);
+  }
+}
+
+async function cerrarTodasRondasInventario(req, res, next) {
+  const transaction = await sequelize.transaction();
+
+  try {
+    const inventarioId = Number(req.params.inventarioId);
+
+    const inventario = await Inventario.findByPk(inventarioId, { transaction });
+
+    if (!inventario) {
+      await transaction.rollback();
+      return res.status(404).json({
+        ok: false,
+        message: 'Inventario no encontrado'
+      });
+    }
+
+    const rondas = await RondaConteo.findAll({
+      where: {
+        inventarioId,
+        estado: {
+          [Op.in]: ['borrador', 'activa', 'pausada']
+        }
+      },
+      transaction
+    });
+
+    if (!rondas.length) {
+      await transaction.rollback();
+      return res.status(400).json({
+        ok: false,
+        message: 'No hay rondas abiertas para cerrar'
+      });
+    }
+
+    for (const ronda of rondas) {
+      await ronda.update(
+        {
+          estado: 'cerrada',
+          tiempoFin: new Date()
+        },
+        { transaction }
+      );
+    }
+
+    await transaction.commit();
+
+    return res.json({
+      ok: true,
+      message: `${rondas.length} ronda(s) cerradas correctamente`
+    });
+  } catch (error) {
+    await transaction.rollback();
+    next(error);
+  }
+}
 
 async function getMisRondasParaEscaneo(req, res, next) {
   try {
@@ -1125,5 +1337,9 @@ module.exports = {
   ajusteManual,
   getRondaActivaDelGrupo,
   reabrirRonda,
-  getMisRondasParaEscaneo
+  getMisRondasParaEscaneo,
+  deleteRonda,
+  abrirTodasRondasInventario,
+  pausarTodasRondasInventario,
+  cerrarTodasRondasInventario
 };
