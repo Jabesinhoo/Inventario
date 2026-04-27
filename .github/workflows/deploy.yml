@@ -1,0 +1,72 @@
+name: Deploy Inventario VPS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-inventario-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repositorio
+        uses: actions/checkout@v4
+
+      - name: Configurar SSH
+        shell: bash
+        env:
+          VPS_SSH_KEY_B64: ${{ secrets.VPS_SSH_KEY_B64 }}
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+        run: |
+          set -e
+          mkdir -p ~/.ssh
+
+          printf '%s' "$VPS_SSH_KEY_B64" | base64 -d > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+          ssh-keygen -y -f ~/.ssh/id_ed25519 > /dev/null
+
+          HOST_CLEAN="$(printf '%s' "$VPS_HOST" | tr -d '\r\n' | xargs)"
+          PORT_CLEAN="$(printf '%s' "$VPS_PORT" | tr -d '\r\n' | xargs)"
+
+          ssh-keyscan -p "$PORT_CLEAN" -H "$HOST_CLEAN" >> ~/.ssh/known_hosts
+
+      - name: Deploy en VPS
+        shell: bash
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PORT: ${{ secrets.VPS_PORT }}
+        run: |
+          set -e
+
+          HOST_CLEAN="$(printf '%s' "$VPS_HOST" | tr -d '\r\n' | xargs)"
+          USER_CLEAN="$(printf '%s' "$VPS_USER" | tr -d '\r\n' | xargs)"
+          PORT_CLEAN="$(printf '%s' "$VPS_PORT" | tr -d '\r\n' | xargs)"
+
+          ssh -i ~/.ssh/id_ed25519 -o StrictHostKeyChecking=yes -p "$PORT_CLEAN" "$USER_CLEAN@$HOST_CLEAN" << 'EOF'
+            set -e
+
+            cd /var/www/inventario-app
+
+            git fetch origin
+            git reset --hard origin/main
+
+            cd /var/www/inventario-app/backend
+            npm ci
+            pm2 restart inventario-backend --update-env
+
+            cd /var/www/inventario-app/frontend
+            npm ci
+            npm run build
+
+            sudo nginx -t
+            sudo systemctl reload nginx
+          EOF
