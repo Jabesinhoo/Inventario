@@ -1,73 +1,119 @@
 import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Navigate } from 'react-router-dom';
+import { LockKeyhole, UserRound } from 'lucide-react';
+import { authService } from '../../services/auth.service';
+import { saveSession } from '../../utils/storage';
 
 export default function LoginPage({ auth }) {
-  const navigate = useNavigate();
-  const [form, setForm] = useState({
-    email: '',
-    password: ''
-  });
+  const [identificador, setIdentificador] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
-  const handleChange = (e) => {
-    setForm((prev) => ({
-      ...prev,
-      [e.target.name]: e.target.value
-    }));
-  };
+  if (auth?.isAuthenticated) {
+    return <Navigate to="/" replace />;
+  }
 
-  const handleSubmit = async (e) => {
+  async function handleSubmit(e) {
     e.preventDefault();
-    setError('');
-    setLoading(true);
 
     try {
-      await auth.login(form.email, form.password);
-      navigate('/');
+      setLoading(true);
+      setError('');
+
+      const response = await authService.login(identificador, password);
+
+      const token = response?.data?.token;
+      const user = response?.data?.user;
+
+      if (!token || !user) {
+        throw new Error('La respuesta del login no es válida');
+      }
+
+      saveSession(token, user);
+
+      window.location.href = '/';
     } catch (err) {
-      setError(err.response?.data?.message || 'Error al iniciar sesión');
+      setError(
+        err?.response?.data?.message ||
+          err?.message ||
+          'No fue posible iniciar sesión'
+      );
     } finally {
       setLoading(false);
     }
-  };
+  }
 
   return (
     <div className="login-page">
-      <form className="card login-card" onSubmit={handleSubmit}>
-        <h2>Iniciar sesión</h2>
-        <p className="muted">Ingresa con tu usuario del sistema</p>
+      <div className="login-shell">
+        <div className="login-card">
+          <div className="login-brand">
+            <h1>Inventario Tecnonacho</h1>
+            <p>Ingresa con tu correo, usuario o nombre.</p>
+          </div>
 
-        <div className="form-group">
-          <label>Correo</label>
-          <input
-            type="email"
-            name="email"
-            value={form.email}
-            onChange={handleChange}
-            placeholder="admin@inventario.com"
-            required
-          />
+          <form onSubmit={handleSubmit} className="login-form">
+            <div className="form-group">
+              <label htmlFor="identificador">Correo, usuario o nombre</label>
+              <div className="input-with-icon">
+                <span className="input-icon">
+                  <UserRound size={18} />
+                </span>
+                <input
+                  id="identificador"
+                  type="text"
+                  value={identificador}
+                  onChange={(e) => setIdentificador(e.target.value)}
+                  placeholder="Ingresa tu correo, usuario o nombre"
+                  autoComplete="username"
+                  required
+                />
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label htmlFor="password">Contraseña</label>
+              <div className="input-with-icon">
+                <span className="input-icon">
+                  <LockKeyhole size={18} />
+                </span>
+                <input
+                  id="password"
+                  type={showPassword ? 'text' : 'password'}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Ingresa tu contraseña"
+                  autoComplete="current-password"
+                  required
+                />
+              </div>
+            </div>
+
+            <div className="form-group">
+              <label className="checkbox-inline">
+                <input
+                  type="checkbox"
+                  checked={showPassword}
+                  onChange={() => setShowPassword((prev) => !prev)}
+                />
+                <span>Mostrar contraseña</span>
+              </label>
+            </div>
+
+            {error ? <div className="alert-error">{error}</div> : null}
+
+            <button
+              type="submit"
+              className="btn btn-primary login-submit"
+              disabled={loading}
+            >
+              {loading ? 'Ingresando...' : 'Iniciar sesión'}
+            </button>
+          </form>
         </div>
-
-        <div className="form-group">
-          <label>Contraseña</label>
-          <input
-            type="password"
-            name="password"
-            value={form.password}
-            onChange={handleChange}
-            placeholder="********"
-            required
-          />
-        </div>
-
-        {error ? <div className="alert-error">{error}</div> : null}
-
-        <button className="btn btn-primary" type="submit" disabled={loading}>
-          {loading ? 'Entrando...' : 'Entrar'}
-        </button>
-      </form>
+      </div>
     </div>
   );
 }

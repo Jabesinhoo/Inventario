@@ -60,14 +60,12 @@ async function createAdmin() {
       config.bcrypt?.rounds || 10
     );
 
-    // ✅ SIN grupoId - la columna ya no existe
     const usuario = await Usuario.create({
       nombre,
       email,
       passwordHash,
       rolId: rolAdmin.id,
       activo: true
-      // ❌ NO incluir grupoId
     });
 
     console.log('\n[SUCCESS] Administrador creado exitosamente');

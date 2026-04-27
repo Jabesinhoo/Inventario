@@ -8,7 +8,8 @@ export const authService = {
   getCurrentUser: () => api.get('/auth/me'),
 
   logout: () => {
-    localStorage.removeItem('token');
+    localStorage.removeItem('inventario_token');
+    localStorage.removeItem('inventario_user');
     delete api.defaults.headers.common['Authorization'];
   }
 };

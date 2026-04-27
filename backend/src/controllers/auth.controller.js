@@ -1,10 +1,11 @@
 const bcrypt = require('bcryptjs');
 const Joi = require('joi');
+const { Op } = require('sequelize');
 const { Usuario, Rol } = require('../models');
 const { generateToken } = require('../utils/jwt');
 
 const loginSchema = Joi.object({
-  email: Joi.string().email().required(),
+  identificador: Joi.string().trim().required(),
   password: Joi.string().min(4).required()
 });
 
@@ -19,8 +20,15 @@ async function login(req, res, next) {
       });
     }
 
+    const identificador = value.identificador.trim();
+
     const usuario = await Usuario.findOne({
-      where: { email: value.email },
+      where: {
+        [Op.or]: [
+          { email: { [Op.iLike]: identificador.toLowerCase() } },
+          { nombre: { [Op.iLike]: identificador } }
+        ]
+      },
       include: [{ model: Rol, as: 'rol', attributes: ['id', 'nombre'] }]
     });
 
@@ -31,7 +39,17 @@ async function login(req, res, next) {
       });
     }
 
-    const isValidPassword = await bcrypt.compare(value.password, usuario.passwordHash);
+    if (!usuario.activo) {
+      return res.status(403).json({
+        ok: false,
+        message: 'Usuario inactivo'
+      });
+    }
+
+    const isValidPassword = await bcrypt.compare(
+      value.password,
+      usuario.passwordHash
+    );
 
     if (!isValidPassword) {
       return res.status(401).json({

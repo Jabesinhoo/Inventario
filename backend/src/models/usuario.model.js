@@ -11,6 +11,11 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.STRING(120),
         allowNull: false
       },
+      username: {
+        type: DataTypes.STRING(60),
+        allowNull: false,
+        unique: true
+      },
       email: {
         type: DataTypes.STRING(120),
         allowNull: false,
@@ -29,7 +34,6 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.INTEGER,
         allowNull: false
       }
-      // ✅ NO DEBE TENER grupoId AQUÍ
     },
     {
       tableName: 'usuarios',

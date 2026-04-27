@@ -2,6 +2,7 @@ const Joi = require('joi');
 const bcrypt = require('bcryptjs');
 const { Op } = require('sequelize');
 const { Usuario, Rol } = require('../models');
+const config = require('../../config/config');
 
 const createUsuarioSchema = Joi.object({
   nombre: Joi.string().trim().max(120).required(),
@@ -23,6 +24,56 @@ const updateEstadoSchema = Joi.object({
   activo: Joi.boolean().required()
 });
 
+function normalizarUsername(texto) {
+  return String(texto || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .replace(/_+/g, '_');
+}
+
+async function generarUsernameUnico(nombre, excluirId = null) {
+  const base = normalizarUsername(nombre) || 'usuario';
+
+  const whereBase = {
+    username: { [Op.iLike]: base }
+  };
+
+  if (excluirId) {
+    whereBase.id = { [Op.ne]: excluirId };
+  }
+
+  const exacto = await Usuario.findOne({ where: whereBase });
+
+  if (!exacto) {
+    return base;
+  }
+
+  let contador = 1;
+
+  while (true) {
+    const candidato = `${base}_${contador}`;
+    const where = {
+      username: { [Op.iLike]: candidato }
+    };
+
+    if (excluirId) {
+      where.id = { [Op.ne]: excluirId };
+    }
+
+    const existe = await Usuario.findOne({ where });
+
+    if (!existe) {
+      return candidato;
+    }
+
+    contador += 1;
+  }
+}
+
 async function getUsuarios(req, res, next) {
   try {
     const usuarios = await Usuario.findAll({
@@ -33,11 +84,11 @@ async function getUsuarios(req, res, next) {
           attributes: ['id', 'nombre']
         }
       ],
-      attributes: { exclude: ['password'] },
+      attributes: { exclude: ['passwordHash'] },
       order: [['nombre', 'ASC']]
     });
 
-    res.json({
+    return res.json({
       ok: true,
       data: usuarios
     });
@@ -52,7 +103,7 @@ async function getRoles(req, res, next) {
       order: [['nombre', 'ASC']]
     });
 
-    res.json({
+    return res.json({
       ok: true,
       data: roles
     });
@@ -88,6 +139,7 @@ async function createUsuario(req, res, next) {
     }
 
     const rol = await Rol.findByPk(value.rolId);
+
     if (!rol) {
       return res.status(404).json({
         ok: false,
@@ -95,13 +147,18 @@ async function createUsuario(req, res, next) {
       });
     }
 
-    const rounds = Number(process.env.BCRYPT_ROUNDS || 10);
-    const passwordHash = await bcrypt.hash(value.password, rounds);
+    const username = await generarUsernameUnico(value.nombre);
+
+    const passwordHash = await bcrypt.hash(
+      value.password,
+      config.bcrypt?.rounds || 10
+    );
 
     const usuario = await Usuario.create({
       nombre: value.nombre.trim(),
+      username,
       email,
-      password: passwordHash,
+      passwordHash,
       rolId: value.rolId,
       activo: value.activo
     });
@@ -114,10 +171,10 @@ async function createUsuario(req, res, next) {
           attributes: ['id', 'nombre']
         }
       ],
-      attributes: { exclude: ['password'] }
+      attributes: { exclude: ['passwordHash'] }
     });
 
-    res.status(201).json({
+    return res.status(201).json({
       ok: true,
       message: 'Usuario creado correctamente',
       data: usuarioCreado
@@ -165,6 +222,7 @@ async function updateUsuario(req, res, next) {
     }
 
     const rol = await Rol.findByPk(value.rolId);
+
     if (!rol) {
       return res.status(404).json({
         ok: false,
@@ -172,16 +230,21 @@ async function updateUsuario(req, res, next) {
       });
     }
 
+    const username = await generarUsernameUnico(value.nombre, id);
+
     const dataToUpdate = {
       nombre: value.nombre.trim(),
+      username,
       email,
       rolId: value.rolId,
       activo: value.activo
     };
 
     if (value.password && String(value.password).trim()) {
-      const rounds = Number(process.env.BCRYPT_ROUNDS || 10);
-      dataToUpdate.password = await bcrypt.hash(value.password, rounds);
+      dataToUpdate.passwordHash = await bcrypt.hash(
+        value.password,
+        config.bcrypt?.rounds || 10
+      );
     }
 
     await usuario.update(dataToUpdate);
@@ -194,10 +257,10 @@ async function updateUsuario(req, res, next) {
           attributes: ['id', 'nombre']
         }
       ],
-      attributes: { exclude: ['password'] }
+      attributes: { exclude: ['passwordHash'] }
     });
 
-    res.json({
+    return res.json({
       ok: true,
       message: 'Usuario actualizado correctamente',
       data: usuarioActualizado
@@ -237,7 +300,7 @@ async function updateEstadoUsuario(req, res, next) {
 
     await usuario.update({ activo: value.activo });
 
-    res.json({
+    return res.json({
       ok: true,
       message: value.activo
         ? 'Usuario activado correctamente'

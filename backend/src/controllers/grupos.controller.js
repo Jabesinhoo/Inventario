@@ -358,15 +358,37 @@ async function deleteGrupo(req, res, next) {
       });
     }
 
-    // Eliminar relaciones en tabla intermedia
-    await sequelize.query(`
-      DELETE FROM usuario_grupo WHERE "grupoId" = :grupoId
-    `, {
-      replacements: { grupoId: id },
-      type: QueryTypes.DELETE
-    });
+    const lecturas = await sequelize.query(
+      `
+      SELECT COUNT(*)::int AS total
+      FROM lecturas
+      WHERE "grupoId" = :grupoId
+      `,
+      {
+        replacements: { grupoId: id },
+        type: QueryTypes.SELECT
+      }
+    );
 
-    // Eliminar asignaciones
+    const totalLecturas = Number(lecturas?.[0]?.total || 0);
+
+    if (totalLecturas > 0) {
+      return res.status(409).json({
+        ok: false,
+        message: 'No puedes eliminar este grupo porque ya tiene lecturas registradas. Crea otro grupo o déjalo sin uso.'
+      });
+    }
+
+    await sequelize.query(
+      `
+      DELETE FROM usuario_grupo WHERE "grupoId" = :grupoId
+      `,
+      {
+        replacements: { grupoId: id },
+        type: QueryTypes.DELETE
+      }
+    );
+
     await AsignacionConteo.destroy({
       where: { grupoId: id }
     });
@@ -381,7 +403,6 @@ async function deleteGrupo(req, res, next) {
     next(error);
   }
 }
-
 // ==================== ESTADÍSTICAS ====================
 
 async function getGrupoEstadisticas(req, res, next) {
