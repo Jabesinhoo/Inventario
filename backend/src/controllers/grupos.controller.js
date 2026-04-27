@@ -1,836 +1,940 @@
 const { Op } = require('sequelize');
 const Joi = require('joi');
-const { QueryTypes } = require('sequelize');
-const { Grupo, Inventario, Usuario, Rol, Zona, AsignacionConteo, sequelize } = require('../models');
+const {
+  sequelize,
+  Lectura,
+  Inventario,
+  Grupo,
+  Zona,
+  AsignacionConteo,
+  RondaConteo,
+  AsignacionRonda,
+  DiscrepanciaConteo,
+  ConteoInicialDetalle,
+  Usuario
+} = require('../models');
 
-const createGrupoSchema = Joi.object({
+// ==================== SCHEMAS ====================
+
+const scanSchema = Joi.object({
   inventarioId: Joi.number().integer().required(),
-  nombre: Joi.string().max(120).required(),
-  liderId: Joi.number().integer().allow(null),
-  color: Joi.string().max(20).default('#3b82f6'),
-  zonaId: Joi.number().integer().allow(null)
+  conteoTipo: Joi.number().integer().min(1).required(),
+  zonaId: Joi.number().integer().required(),
+  grupoId: Joi.number().integer().required(),
+  codigo: Joi.string().trim().required()
 });
 
-// ==================== CRUD BÁSICO ====================
+const scanRondaSchema = Joi.object({
+  rondaId: Joi.number().integer().required(),
+  grupoId: Joi.number().integer().required(),
+  codigo: Joi.string().trim().required()
+});
 
-async function createGrupo(req, res, next) {
+// ==================== HELPERS ====================
+
+const CODIGOS_ZONA_BASE = new Set(['BOD', 'BP', 'EXH']);
+const NOMBRES_ZONA_BASE = ['bodega principal', 'exhibicion', 'exhibición'];
+
+function normalizarTexto(valor) {
+  return String(valor || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
+}
+
+function esZonaBase(infoZona) {
+  const codigo = String(infoZona?.codigo || '').trim().toUpperCase();
+  const nombre = normalizarTexto(infoZona?.nombre);
+
+  if (CODIGOS_ZONA_BASE.has(codigo)) {
+    return true;
+  }
+
+  return NOMBRES_ZONA_BASE.some((item) =>
+    nombre.includes(normalizarTexto(item))
+  );
+}
+
+async function findProductoLocal(inventarioId, zonaId, codigoLimpio, transaction) {
+  const whereCodigo = {
+    [Op.or]: [
+      { codigoLeido: codigoLimpio },
+      { sku: codigoLimpio }
+    ]
+  };
+
+  const candidatos = await ConteoInicialDetalle.findAll({
+    where: whereCodigo,
+    transaction
+  });
+
+  if (!candidatos.length) return null;
+
+  const tieneDescripcionReal = (item) => {
+    const d = normalizarTexto(item.descripcionSnapshot);
+    return d && d !== 'sin descripción' && d !== 'sin descripcion';
+  };
+
+  const score = (item) => {
+    let puntos = 0;
+
+    if (Number(item.inventarioId) === Number(inventarioId)) puntos += 100;
+    if (Number(item.zonaId) === Number(zonaId)) puntos += 50;
+    if (tieneDescripcionReal(item)) puntos += 25;
+    if (normalizarTexto(item.codigoLeido) === normalizarTexto(codigoLimpio)) puntos += 10;
+
+    return puntos;
+  };
+
+  candidatos.sort((a, b) => score(b) - score(a));
+
+  return candidatos[0];
+}
+
+function validarCodigo(codigo) {
+  const codigoLimpio = String(codigo || '').trim();
+
+  if (codigoLimpio.length < 5 || codigoLimpio.length > 7) {
+    return {
+      ok: false,
+      codigoLimpio,
+      message: 'Código inválido. Debe tener entre 5 y 7 dígitos.'
+    };
+  }
+
+  return {
+    ok: true,
+    codigoLimpio
+  };
+}
+
+function obtenerCantidadEsperadaDetalle(detalle) {
+  const cantidadTotal = Number(detalle?.cantidadTotal || 0);
+  const cantidadBodega = Number(detalle?.cantidadBodega || 0);
+  const cantidadExhibicion = Number(detalle?.cantidadExhibicion || 0);
+
+  return cantidadTotal || cantidadBodega || cantidadExhibicion || 0;
+}
+
+async function obtenerAlertaZonaPorSku({ inventarioId, sku, zonaActualId, transaction }) {
+  if (!inventarioId || !sku || !zonaActualId) return null;
+
+  const detalles = await ConteoInicialDetalle.findAll({
+    where: {
+      inventarioId,
+      sku
+    },
+    transaction
+  });
+
+  if (!detalles.length) {
+    return null;
+  }
+
+  const acumuladoPorZona = new Map();
+
+  for (const item of detalles) {
+    const zonaId = Number(item.zonaId);
+    const cantidad = obtenerCantidadEsperadaDetalle(item);
+
+    if (!acumuladoPorZona.has(zonaId)) {
+      acumuladoPorZona.set(zonaId, {
+        zonaId,
+        cantidadEsperada: 0
+      });
+    }
+
+    acumuladoPorZona.get(zonaId).cantidadEsperada += cantidad;
+  }
+
+  const zonas = Array.from(acumuladoPorZona.values());
+
+  if (!zonas.length) {
+    return null;
+  }
+
+  const zonasInfo = await Zona.findAll({
+    where: {
+      id: {
+        [Op.in]: zonas.map((z) => z.zonaId)
+      }
+    },
+    attributes: ['id', 'nombre', 'codigo'],
+    transaction
+  });
+
+  const zonaInfoMap = new Map(
+    zonasInfo.map((z) => [
+      Number(z.id),
+      {
+        id: z.id,
+        nombre: z.nombre,
+        codigo: z.codigo
+      }
+    ])
+  );
+
+  const zonasOperativas = zonas.filter((z) => {
+    const info = zonaInfoMap.get(Number(z.zonaId));
+    return !esZonaBase(info);
+  });
+
+  if (!zonasOperativas.length) {
+    return null;
+  }
+
+  const zonaActual = zonasOperativas.find(
+    (z) => Number(z.zonaId) === Number(zonaActualId)
+  ) || {
+    zonaId: Number(zonaActualId),
+    cantidadEsperada: 0
+  };
+
+  const zonaTop = [...zonasOperativas].sort(
+    (a, b) => Number(b.cantidadEsperada || 0) - Number(a.cantidadEsperada || 0)
+  )[0];
+
+  if (!zonaTop) {
+    return null;
+  }
+
+  if (Number(zonaTop.zonaId) === Number(zonaActualId)) {
+    return null;
+  }
+
+  if (Number(zonaTop.cantidadEsperada || 0) <= Number(zonaActual.cantidadEsperada || 0)) {
+    return null;
+  }
+
+  const zonaActualInfo = zonaInfoMap.get(Number(zonaActualId)) || null;
+  const zonaSugeridaInfo = zonaInfoMap.get(Number(zonaTop.zonaId)) || null;
+
+  if (!zonaSugeridaInfo) {
+    return null;
+  }
+
+  return {
+    mostrar: true,
+    zonaActual: {
+      id: zonaActualInfo?.id || Number(zonaActualId),
+      nombre: zonaActualInfo?.nombre || 'Zona actual',
+      codigo: zonaActualInfo?.codigo || null,
+      cantidadEsperada: Number(zonaActual.cantidadEsperada || 0)
+    },
+    zonaSugerida: {
+      id: zonaSugeridaInfo.id,
+      nombre: zonaSugeridaInfo.nombre,
+      codigo: zonaSugeridaInfo.codigo,
+      cantidadEsperada: Number(zonaTop.cantidadEsperada || 0)
+    }
+  };
+}
+
+// ==================== SCAN LEGACY (con conteoTipo) ====================
+
+async function scanLectura(req, res, next) {
+  const transaction = await sequelize.transaction();
+
   try {
-    const { error, value } = createGrupoSchema.validate(req.body);
+    const { error, value } = scanSchema.validate(req.body);
 
     if (error) {
+      await transaction.rollback();
       return res.status(400).json({
         ok: false,
         message: error.details[0].message
       });
     }
 
-    const inventario = await Inventario.findByPk(value.inventarioId);
+    const validacionCodigo = validarCodigo(value.codigo);
+    if (!validacionCodigo.ok) {
+      await transaction.rollback();
+      return res.status(400).json({
+        ok: false,
+        message: validacionCodigo.message
+      });
+    }
+
+    const { codigoLimpio } = validacionCodigo;
+
+    if (!req.canViewAllGroups && Number(value.grupoId) !== Number(req.grupoId)) {
+      await transaction.rollback();
+      return res.status(403).json({
+        ok: false,
+        message: 'No puedes registrar lecturas en otro grupo'
+      });
+    }
+
+    const [inventario, grupo, zona, asignacion] = await Promise.all([
+      Inventario.findByPk(value.inventarioId, { transaction }),
+      Grupo.findByPk(value.grupoId, { transaction }),
+      Zona.findByPk(value.zonaId, { transaction }),
+      AsignacionConteo.findOne({
+        where: {
+          inventarioId: value.inventarioId,
+          conteoTipo: value.conteoTipo,
+          grupoId: value.grupoId,
+          zonaId: value.zonaId
+        },
+        transaction
+      })
+    ]);
+
     if (!inventario) {
+      await transaction.rollback();
       return res.status(404).json({
         ok: false,
         message: 'Inventario no encontrado'
       });
     }
 
-    // 🔒 Validar que no exista un grupo con el mismo nombre en este inventario
-    const grupoExistente = await Grupo.findOne({
-      where: {
-        inventarioId: value.inventarioId,
-        nombre: value.nombre
-      }
-    });
-
-    if (grupoExistente) {
-      return res.status(400).json({
-        ok: false,
-        message: `Ya existe un grupo con el nombre "${value.nombre}" en este inventario.`
-      });
-    }
-
-    // Validar que el líder no sea líder de otro grupo en este inventario
-    if (value.liderId) {
-      const liderExistente = await Grupo.findOne({
-        where: {
-          inventarioId: value.inventarioId,
-          liderId: value.liderId
-        }
-      });
-
-      if (liderExistente) {
-        return res.status(400).json({
-          ok: false,
-          message: 'Este usuario ya es líder de otro grupo en este inventario.'
-        });
-      }
-
-      // Validar que el líder no sea miembro de otro grupo en este inventario
-      const esMiembro = await sequelize.query(`
-        SELECT 1 FROM usuario_grupo ug
-        JOIN grupos g ON g.id = ug."grupoId"
-        WHERE ug."usuarioId" = :usuarioId
-          AND g."inventarioId" = :inventarioId
-          AND ug."esLider" = false
-      `, {
-        replacements: { usuarioId: value.liderId, inventarioId: value.inventarioId },
-        type: QueryTypes.SELECT
-      });
-
-      if (esMiembro.length > 0) {
-        return res.status(400).json({
-          ok: false,
-          message: 'Este usuario es miembro de otro grupo en este inventario. No puede ser líder.'
-        });
-      }
-    }
-
-    // Crear el grupo
-    const grupo = await Grupo.create(value);
-
-    // Si tiene líder, crear relación en tabla intermedia
-    if (value.liderId) {
-      await sequelize.query(`
-        INSERT INTO usuario_grupo ("usuarioId", "grupoId", "esLider", "fechaAsignacion", "createdAt", "updatedAt")
-        VALUES (:usuarioId, :grupoId, true, NOW(), NOW(), NOW())
-      `, {
-        replacements: { usuarioId: value.liderId, grupoId: grupo.id },
-        type: QueryTypes.INSERT
-      });
-    }
-
-    // Si se asignó una zona, crear la asignación automáticamente
-    if (value.zonaId) {
-      await AsignacionConteo.create({
-        inventarioId: value.inventarioId,
-        conteoTipo: 1,
-        grupoId: grupo.id,
-        zonaId: value.zonaId
-      });
-    }
-
-    res.status(201).json({
-      ok: true,
-      data: grupo
-    });
-  } catch (error) {
-    console.error('[CREATE GRUPO] Error:', error);
-    next(error);
-  }
-}
-
-async function getGrupos(req, res, next) {
-  try {
-    const { inventarioId } = req.query;
-
-    const where = {};
-    if (inventarioId) where.inventarioId = inventarioId;
-
-    const grupos = await Grupo.findAll({
-      where,
-      include: [
-        { model: Usuario, as: 'lider', attributes: ['id', 'nombre', 'email'], required: false },
-        { model: Inventario, as: 'inventario', attributes: ['id', 'nombre', 'fecha'] }
-      ],
-      order: [['nombre', 'ASC']]
-    });
-
-    // Para cada grupo, contar sus miembros y obtener zona asignada
-    const gruposConMiembros = await Promise.all(grupos.map(async (grupo) => {
-      const miembros = await sequelize.query(`
-        SELECT u.id, u.nombre, u.email, u."rolId"
-        FROM usuario_grupo ug
-        JOIN usuarios u ON u.id = ug."usuarioId"
-        WHERE ug."grupoId" = :grupoId
-      `, {
-        replacements: { grupoId: grupo.id },
-        type: QueryTypes.SELECT
-      });
-
-      // Obtener zona asignada
-      const asignacion = await AsignacionConteo.findOne({
-        where: {
-          inventarioId: grupo.inventarioId,
-          grupoId: grupo.id,
-          conteoTipo: 1
-        },
-        include: [{ model: Zona, as: 'zona', attributes: ['id', 'nombre', 'codigo'] }]
-      });
-
-      return {
-        ...grupo.toJSON(),
-        miembros: miembros,
-        totalMiembros: miembros.length,
-        zonaAsignada: asignacion?.zona || null
-      };
-    }));
-
-    res.json({
-      ok: true,
-      data: gruposConMiembros
-    });
-  } catch (error) {
-    console.error('[GET GRUPOS] Error:', error);
-    next(error);
-  }
-}
-
-async function getGrupo(req, res, next) {
-  try {
-    const { id } = req.params;
-
-    const grupo = await Grupo.findByPk(id, {
-      include: [
-        { model: Usuario, as: 'lider', attributes: ['id', 'nombre', 'email'] },
-        { model: Inventario, as: 'inventario', attributes: ['id', 'nombre', 'fecha'] }
-      ]
-    });
-
     if (!grupo) {
+      await transaction.rollback();
       return res.status(404).json({
         ok: false,
         message: 'Grupo no encontrado'
       });
     }
 
-    // Obtener la zona asignada
-    const asignacion = await AsignacionConteo.findOne({
-      where: {
-        inventarioId: grupo.inventarioId,
-        grupoId: grupo.id,
-        conteoTipo: 1
+    if (!zona) {
+      await transaction.rollback();
+      return res.status(404).json({
+        ok: false,
+        message: 'Zona no encontrada'
+      });
+    }
+
+    if (!asignacion) {
+      await transaction.rollback();
+      return res.status(403).json({
+        ok: false,
+        message: 'Ese grupo no está asignado a esa zona para ese conteo'
+      });
+    }
+
+    const productoLocal = await findProductoLocal(
+      value.inventarioId,
+      value.zonaId,
+      codigoLimpio,
+      transaction
+    );
+
+    if (!productoLocal) {
+      const lectura = await Lectura.create(
+        {
+          inventarioId: value.inventarioId,
+          conteoTipo: value.conteoTipo,
+          rondaId: null,
+          zonaId: value.zonaId,
+          grupoId: value.grupoId,
+          usuarioId: req.user.id,
+          productoId: null,
+          sku: null,
+          codigoLeido: codigoLimpio,
+          descripcionSnapshot: null,
+          cantidad: 1,
+          estado: 'no_reconocida'
+        },
+        { transaction }
+      );
+
+      await transaction.commit();
+
+      return res.status(200).json({
+        ok: true,
+        warning: true,
+        message: 'Código no reconocido, lectura guardada para revisión',
+        data: {
+          lecturaId: lectura.id,
+          codigo: codigoLimpio,
+          estado: lectura.estado
+        }
+      });
+    }
+
+    const skuFinal = productoLocal.sku || codigoLimpio;
+    const descripcionFinal = productoLocal.descripcionSnapshot || 'Sin descripción';
+    const productoIdFinal = productoLocal.productoId || null;
+
+    const lectura = await Lectura.create(
+      {
+        inventarioId: value.inventarioId,
+        conteoTipo: value.conteoTipo,
+        rondaId: null,
+        zonaId: value.zonaId,
+        grupoId: value.grupoId,
+        usuarioId: req.user.id,
+        productoId: productoIdFinal,
+        sku: skuFinal,
+        codigoLeido: codigoLimpio,
+        descripcionSnapshot: descripcionFinal,
+        cantidad: 1,
+        estado: 'valida'
       },
-      include: [{ model: Zona, as: 'zona', attributes: ['id', 'nombre', 'codigo'] }]
+      { transaction }
+    );
+
+    const alertaZona = await obtenerAlertaZonaPorSku({
+      inventarioId: value.inventarioId,
+      sku: skuFinal,
+      zonaActualId: value.zonaId,
+      transaction
     });
 
-    const miembros = await sequelize.query(`
-      SELECT u.id, u.nombre, u.email, u."rolId"
-      FROM usuario_grupo ug
-      JOIN usuarios u ON u.id = ug."usuarioId"
-      WHERE ug."grupoId" = :grupoId
-    `, {
-      replacements: { grupoId: grupo.id },
-      type: QueryTypes.SELECT
+    const acumuladoSku = await Lectura.sum('cantidad', {
+      where: {
+        inventarioId: value.inventarioId,
+        conteoTipo: value.conteoTipo,
+        zonaId: value.zonaId,
+        grupoId: value.grupoId,
+        sku: skuFinal,
+        estado: 'valida'
+      },
+      transaction
     });
 
-    res.json({
+    await transaction.commit();
+
+    return res.status(201).json({
       ok: true,
+      warning: Boolean(alertaZona?.mostrar),
+      message: alertaZona?.mostrar
+        ? 'Lectura registrada con alerta de zona'
+        : 'Lectura registrada correctamente',
       data: {
-        ...grupo.toJSON(),
-        miembros: miembros,
-        totalMiembros: miembros.length,
-        zonaAsignada: asignacion?.zona || null
+        lecturaId: lectura.id,
+        producto: {
+          id: productoIdFinal,
+          sku: skuFinal,
+          codigoBarra: productoLocal.codigoLeido || codigoLimpio,
+          descripcion: descripcionFinal,
+          source: 'postgres'
+        },
+        acumuladoSku: Number(acumuladoSku || 0),
+        alertaZona: alertaZona || null
       }
     });
   } catch (error) {
+    await transaction.rollback();
     next(error);
   }
 }
 
-async function updateGrupo(req, res, next) {
+// ==================== SCAN POR RONDA (NUEVO FLUJO) ====================
+
+async function scanLecturaRonda(req, res, next) {
+  const transaction = await sequelize.transaction();
+
   try {
-    const { id } = req.params;
-    const { error, value } = createGrupoSchema.validate(req.body);
+    const { error, value } = scanRondaSchema.validate(req.body);
 
     if (error) {
+      await transaction.rollback();
       return res.status(400).json({
         ok: false,
         message: error.details[0].message
       });
     }
 
-    const grupo = await Grupo.findByPk(id);
+    const validacionCodigo = validarCodigo(value.codigo);
+    if (!validacionCodigo.ok) {
+      await transaction.rollback();
+      return res.status(400).json({
+        ok: false,
+        message: validacionCodigo.message
+      });
+    }
+
+    const { codigoLimpio } = validacionCodigo;
+
+    if (!req.canViewAllGroups && Number(value.grupoId) !== Number(req.grupoId)) {
+      await transaction.rollback();
+      return res.status(403).json({
+        ok: false,
+        message: 'No puedes registrar lecturas en otro grupo'
+      });
+    }
+
+    const ronda = await RondaConteo.findByPk(value.rondaId, {
+      include: [{ model: Zona, as: 'zona', attributes: ['id', 'nombre', 'codigo'] }],
+      transaction
+    });
+
+    if (!ronda) {
+      await transaction.rollback();
+      return res.status(404).json({
+        ok: false,
+        message: 'Ronda no encontrada'
+      });
+    }
+
+    if (ronda.estado === 'pausada') {
+      await transaction.rollback();
+      return res.status(403).json({
+        ok: false,
+        message: 'La ronda está pausada. Reanúdala para continuar escaneando.'
+      });
+    }
+
+    if (ronda.estado === 'cerrada') {
+      await transaction.rollback();
+      return res.status(403).json({
+        ok: false,
+        message: 'La ronda ya está cerrada. No se pueden registrar más lecturas.'
+      });
+    }
+
+    if (ronda.estado !== 'activa') {
+      await transaction.rollback();
+      return res.status(403).json({
+        ok: false,
+        message: 'La ronda debe estar activa para registrar lecturas.'
+      });
+    }
+
+    const grupo = await Grupo.findByPk(value.grupoId, { transaction });
 
     if (!grupo) {
+      await transaction.rollback();
       return res.status(404).json({
         ok: false,
         message: 'Grupo no encontrado'
       });
     }
 
-    // Validar que no exista otro grupo con el mismo nombre en este inventario
-    if (value.nombre !== grupo.nombre) {
-      const grupoExistente = await Grupo.findOne({
-        where: {
-          inventarioId: grupo.inventarioId,
-          nombre: value.nombre,
-          id: { [Op.ne]: id }
+    const asignacionRonda = await AsignacionRonda.findOne({
+      where: {
+        rondaId: ronda.id,
+        grupoId: grupo.id
+      },
+      transaction
+    });
+
+    if (!asignacionRonda) {
+      await transaction.rollback();
+      return res.status(403).json({
+        ok: false,
+        message: 'Ese grupo no está asignado a esta ronda'
+      });
+    }
+
+    const productoLocal = await findProductoLocal(
+      ronda.inventarioId,
+      ronda.zonaId,
+      codigoLimpio,
+      transaction
+    );
+
+    if (!productoLocal) {
+      if (ronda.tipoRonda === 'reconteo') {
+        await transaction.rollback();
+        return res.status(400).json({
+          ok: false,
+          message: 'En una ronda de reconteo solo se permiten productos reconocidos y pendientes'
+        });
+      }
+
+      const lectura = await Lectura.create(
+        {
+          inventarioId: ronda.inventarioId,
+          conteoTipo: ronda.numeroRonda,
+          rondaId: ronda.id,
+          zonaId: ronda.zonaId,
+          grupoId: grupo.id,
+          usuarioId: req.user.id,
+          productoId: null,
+          sku: null,
+          codigoLeido: codigoLimpio,
+          descripcionSnapshot: null,
+          cantidad: 1,
+          estado: 'no_reconocida'
+        },
+        { transaction }
+      );
+
+      await transaction.commit();
+
+      return res.status(200).json({
+        ok: true,
+        warning: true,
+        message: 'Código no reconocido, lectura guardada para revisión',
+        data: {
+          lecturaId: lectura.id,
+          codigo: codigoLimpio,
+          estado: lectura.estado
         }
       });
-
-      if (grupoExistente) {
-        return res.status(400).json({
-          ok: false,
-          message: `Ya existe un grupo con el nombre "${value.nombre}" en este inventario.`
-        });
-      }
     }
 
-    // Validar que el líder no sea líder de otro grupo en este inventario
-    if (value.liderId && value.liderId !== grupo.liderId) {
-      const liderExistente = await Grupo.findOne({
+    const skuFinal = productoLocal.sku || codigoLimpio;
+    const descripcionFinal = productoLocal.descripcionSnapshot || 'Sin descripción';
+    const productoIdFinal = productoLocal.productoId || null;
+
+    if (ronda.tipoRonda === 'reconteo') {
+      const pendiente = await DiscrepanciaConteo.findOne({
         where: {
-          inventarioId: grupo.inventarioId,
-          liderId: value.liderId,
-          id: { [Op.ne]: id }
-        }
+          inventarioId: ronda.inventarioId,
+          zonaId: ronda.zonaId,
+          sku: skuFinal,
+          proximaRondaNumero: ronda.numeroRonda,
+          estado: {
+            [Op.in]: ['pendiente_reconteo', 'reconteo_en_proceso']
+          }
+        },
+        transaction
       });
 
-      if (liderExistente) {
-        return res.status(400).json({
+      if (!pendiente) {
+        await transaction.rollback();
+        return res.status(403).json({
           ok: false,
-          message: 'Este usuario ya es líder de otro grupo en este inventario.'
+          message: 'Ese SKU no está pendiente para esta ronda de reconteo'
         });
       }
 
-      // Validar que el líder no sea miembro de otro grupo en este inventario
-      const esMiembro = await sequelize.query(`
-        SELECT 1 FROM usuario_grupo ug
-        JOIN grupos g ON g.id = ug."grupoId"
-        WHERE ug."usuarioId" = :usuarioId
-          AND g."inventarioId" = :inventarioId
-          AND ug."esLider" = false
-          AND g.id != :grupoId
-      `, {
-        replacements: { usuarioId: value.liderId, inventarioId: grupo.inventarioId, grupoId: id },
-        type: QueryTypes.SELECT
-      });
-
-      if (esMiembro.length > 0) {
-        return res.status(400).json({
-          ok: false,
-          message: 'Este usuario es miembro de otro grupo en este inventario. No puede ser líder.'
-        });
+      if (pendiente.estado === 'pendiente_reconteo') {
+        await pendiente.update({ estado: 'reconteo_en_proceso' }, { transaction });
       }
     }
 
-    // Actualizar líder en tabla intermedia si cambió
-    if (value.liderId !== grupo.liderId) {
-      // Remover líder anterior
-      await sequelize.query(`
-        DELETE FROM usuario_grupo WHERE "grupoId" = :grupoId AND "esLider" = true
-      `, {
-        replacements: { grupoId: id },
-        type: QueryTypes.DELETE
-      });
-
-      // Agregar nuevo líder
-      if (value.liderId) {
-        await sequelize.query(`
-          INSERT INTO usuario_grupo ("usuarioId", "grupoId", "esLider", "fechaAsignacion", "createdAt", "updatedAt")
-          VALUES (:usuarioId, :grupoId, true, NOW(), NOW(), NOW())
-        `, {
-          replacements: { usuarioId: value.liderId, grupoId: id },
-          type: QueryTypes.INSERT
-        });
-      }
-    }
-
-    await grupo.update(value);
-
-    // Actualizar zona asignada si cambió
-    if (value.zonaId) {
-      await AsignacionConteo.upsert({
-        inventarioId: grupo.inventarioId,
-        conteoTipo: 1,
+    const lectura = await Lectura.create(
+      {
+        inventarioId: ronda.inventarioId,
+        conteoTipo: ronda.numeroRonda,
+        rondaId: ronda.id,
+        zonaId: ronda.zonaId,
         grupoId: grupo.id,
-        zonaId: value.zonaId
-      });
-    }
+        usuarioId: req.user.id,
+        productoId: productoIdFinal,
+        sku: skuFinal,
+        codigoLeido: codigoLimpio,
+        descripcionSnapshot: descripcionFinal,
+        cantidad: 1,
+        estado: 'valida'
+      },
+      { transaction }
+    );
 
-    res.json({
+    const alertaZona = await obtenerAlertaZonaPorSku({
+      inventarioId: ronda.inventarioId,
+      sku: skuFinal,
+      zonaActualId: ronda.zonaId,
+      transaction
+    });
+
+    const acumuladoSku = await Lectura.sum('cantidad', {
+      where: {
+        rondaId: ronda.id,
+        sku: skuFinal,
+        estado: 'valida'
+      },
+      transaction
+    });
+
+    await ronda.update({ updatedAt: new Date() }, { transaction });
+
+    await transaction.commit();
+
+    return res.status(201).json({
       ok: true,
-      data: grupo
+      warning: Boolean(alertaZona?.mostrar),
+      message: alertaZona?.mostrar
+        ? 'Lectura registrada con alerta de zona'
+        : 'Lectura registrada correctamente',
+      data: {
+        lecturaId: lectura.id,
+        ronda: {
+          id: ronda.id,
+          numeroRonda: ronda.numeroRonda,
+          tipoRonda: ronda.tipoRonda,
+          estado: ronda.estado
+        },
+        producto: {
+          id: productoIdFinal,
+          sku: skuFinal,
+          codigoBarra: productoLocal.codigoLeido || codigoLimpio,
+          descripcion: descripcionFinal,
+          source: 'postgres'
+        },
+        acumuladoSku: Number(acumuladoSku || 0),
+        alertaZona: alertaZona || null
+      }
     });
   } catch (error) {
+    await transaction.rollback();
     next(error);
   }
 }
 
-async function deleteGrupo(req, res, next) {
+// ==================== ANULAR LECTURA ====================
+
+async function anularLectura(req, res, next) {
+  const transaction = await sequelize.transaction();
+
   try {
-    const { id } = req.params;
+    const lectura = await Lectura.findByPk(req.params.id, { transaction });
 
-    const grupo = await Grupo.findByPk(id);
-
-    if (!grupo) {
+    if (!lectura) {
+      await transaction.rollback();
       return res.status(404).json({
         ok: false,
-        message: 'Grupo no encontrado'
+        message: 'Lectura no encontrada'
       });
     }
 
-    const lecturas = await sequelize.query(
-      `
-      SELECT COUNT(*)::int AS total
-      FROM lecturas
-      WHERE "grupoId" = :grupoId
-      `,
-      {
-        replacements: { grupoId: id },
-        type: QueryTypes.SELECT
-      }
-    );
-
-    const totalLecturas = Number(lecturas?.[0]?.total || 0);
-
-    if (totalLecturas > 0) {
-      return res.status(409).json({
+    if (!req.canViewAllGroups && Number(lectura.grupoId) !== Number(req.grupoId)) {
+      await transaction.rollback();
+      return res.status(403).json({
         ok: false,
-        message: 'No puedes eliminar este grupo porque ya tiene lecturas registradas. Crea otro grupo o déjalo sin uso.'
+        message: 'No puedes anular una lectura de otro grupo'
       });
     }
 
-    await sequelize.query(
-      `
-      DELETE FROM usuario_grupo WHERE "grupoId" = :grupoId
-      `,
-      {
-        replacements: { grupoId: id },
-        type: QueryTypes.DELETE
-      }
-    );
+    if (lectura.estado === 'anulada') {
+      await transaction.rollback();
+      return res.status(400).json({
+        ok: false,
+        message: 'Esta lectura ya estaba anulada'
+      });
+    }
 
-    await AsignacionConteo.destroy({
-      where: { grupoId: id }
-    });
+    await lectura.update({ estado: 'anulada' }, { transaction });
 
-    await grupo.destroy();
+    await transaction.commit();
 
     res.json({
       ok: true,
-      message: 'Grupo eliminado correctamente'
+      message: 'Lectura anulada correctamente',
+      data: {
+        lecturaId: lectura.id,
+        sku: lectura.sku,
+        codigoLeido: lectura.codigoLeido
+      }
+    });
+  } catch (error) {
+    await transaction.rollback();
+    next(error);
+  }
+}
+
+async function getResumenLecturas(req, res, next) {
+  try {
+    const { inventarioId, conteoTipo, zonaId, grupoId, rondaId } = req.query;
+
+    const where = {
+      estado: 'valida'
+    };
+
+    if (inventarioId) where.inventarioId = inventarioId;
+    if (conteoTipo) where.conteoTipo = conteoTipo;
+    if (zonaId) where.zonaId = zonaId;
+    if (rondaId) where.rondaId = rondaId;
+
+    if (!req.canViewAllGroups && req.grupoId) {
+      where.grupoId = req.grupoId;
+    } else if (grupoId && req.canViewAllGroups) {
+      where.grupoId = grupoId;
+    }
+
+    const resumen = await Lectura.findAll({
+      where,
+      attributes: [
+        'sku',
+        [sequelize.fn('MAX', sequelize.col('descripcionSnapshot')), 'descripcionSnapshot'],
+        [sequelize.fn('SUM', sequelize.col('cantidad')), 'cantidadTotal']
+      ],
+      group: ['sku'],
+      order: [[sequelize.literal('"cantidadTotal"'), 'DESC']]
+    });
+
+    res.json({
+      ok: true,
+      data: resumen
     });
   } catch (error) {
     next(error);
   }
 }
-// ==================== ESTADÍSTICAS ====================
 
-async function getGrupoEstadisticas(req, res, next) {
+// ==================== HISTORIAL DE LECTURAS ====================
+
+async function getHistorialLecturas(req, res, next) {
   try {
-    const { id } = req.params;
+    const { inventarioId, conteoTipo, zonaId, grupoId, rondaId, limit = 200 } = req.query;
 
-    const estadisticas = await sequelize.query(`
-      SELECT 
-        g.id,
-        g.nombre,
-        g.color,
-        COUNT(DISTINCT l.id) as total_escaneos,
-        COUNT(DISTINCT l.sku) as productos_distintos,
-        COALESCE(SUM(l.cantidad), 0) as total_unidades,
-        MIN(l."fechaHora") as inicio,
-        MAX(l."fechaHora") as fin,
-        COUNT(DISTINCT l."rondaId") as rondas_participadas,
-        COALESCE(SUM(CASE WHEN l.estado = 'valida' THEN l.cantidad ELSE 0 END), 0) as total_validos,
-        COALESCE(SUM(CASE WHEN l.estado = 'no_reconocida' THEN 1 ELSE 0 END), 0) as no_reconocidos
-      FROM grupos g
-      LEFT JOIN lecturas l ON l."grupoId" = g.id
-      WHERE g.id = :id
-      GROUP BY g.id, g.nombre, g.color
-    `, {
-      replacements: { id },
-      type: QueryTypes.SELECT
-    });
+    const where = {};
 
-    const stats = estadisticas[0] || {};
+    if (inventarioId) where.inventarioId = inventarioId;
+    if (conteoTipo) where.conteoTipo = conteoTipo;
+    if (zonaId) where.zonaId = zonaId;
+    if (rondaId) where.rondaId = rondaId;
 
-    let tiempoActivo = null;
-    let rendimientoPorHora = 0;
-
-    if (stats.inicio && stats.fin) {
-      const horas = (new Date(stats.fin) - new Date(stats.inicio)) / (1000 * 60 * 60);
-      tiempoActivo = horas.toFixed(1) + 'h';
-      rendimientoPorHora = horas > 0 ? Math.round(stats.total_unidades / horas) : 0;
+    if (!req.canViewAllGroups && req.grupoId) {
+      where.grupoId = req.grupoId;
+    } else if (grupoId && req.canViewAllGroups) {
+      where.grupoId = grupoId;
     }
 
-    const miembros = await sequelize.query(`
-      SELECT u.id, u.nombre, u.email
-      FROM usuario_grupo ug
-      JOIN usuarios u ON u.id = ug."usuarioId"
-      WHERE ug."grupoId" = :grupoId
-    `, {
-      replacements: { grupoId: id },
-      type: QueryTypes.SELECT
+    const lecturas = await Lectura.findAll({
+      where,
+      order: [['fechaHora', 'DESC']],
+      limit: parseInt(limit, 10),
+      include: [
+        { model: Usuario, as: 'usuario', attributes: ['id', 'nombre'] },
+        { model: Zona, as: 'zona', attributes: ['id', 'nombre'] }
+      ]
+    });
+
+    res.json({
+      ok: true,
+      data: lecturas
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+// ==================== ESTADÍSTICAS POR GRUPO/RONDA ====================
+
+async function getEstadisticasGrupo(req, res, next) {
+  try {
+    const { rondaId, grupoId } = req.query;
+
+    if (!rondaId || !grupoId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'rondaId y grupoId son requeridos'
+      });
+    }
+
+    if (!req.canViewAllGroups && Number(grupoId) !== Number(req.grupoId)) {
+      return res.status(403).json({
+        ok: false,
+        message: 'No puedes ver estadísticas de otro grupo'
+      });
+    }
+
+    const lecturas = await Lectura.findAll({
+      where: {
+        rondaId,
+        grupoId,
+        estado: 'valida'
+      }
+    });
+
+    const totalEscaneos = lecturas.reduce((sum, l) => sum + Number(l.cantidad || 0), 0);
+    const productosUnicos = new Set(lecturas.map((l) => l.sku).filter(Boolean)).size;
+
+    const primeraLectura = await Lectura.findOne({
+      where: { rondaId, grupoId, estado: 'valida' },
+      order: [['fechaHora', 'ASC']]
+    });
+
+    const ultimaLectura = await Lectura.findOne({
+      where: { rondaId, grupoId, estado: 'valida' },
+      order: [['fechaHora', 'DESC']]
+    });
+
+    let tiempoTotal = null;
+    if (primeraLectura && ultimaLectura) {
+      tiempoTotal = Math.round((ultimaLectura.fechaHora - primeraLectura.fechaHora) / 1000);
+    }
+
+    res.json({
+      ok: true,
+      data: {
+        totalEscaneos,
+        productosUnicos,
+        tiempoSegundos: tiempoTotal,
+        tiempoFormateado: tiempoTotal
+          ? `${Math.floor(tiempoTotal / 60)}m ${tiempoTotal % 60}s`
+          : null,
+        primeraLectura: primeraLectura?.fechaHora || null,
+        ultimaLectura: ultimaLectura?.fechaHora || null
+      }
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
+// ==================== EXPORTACIÓN DE RESULTADOS POR GRUPO ====================
+
+async function exportarResultadosGrupo(req, res, next) {
+  try {
+    const { rondaId, grupoId } = req.query;
+
+    if (!rondaId || !grupoId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'rondaId y grupoId son requeridos'
+      });
+    }
+
+    if (!req.canViewAllGroups && Number(grupoId) !== Number(req.grupoId)) {
+      return res.status(403).json({
+        ok: false,
+        message: 'No puedes exportar resultados de otro grupo'
+      });
+    }
+
+    const resumen = await Lectura.findAll({
+      where: {
+        rondaId,
+        grupoId,
+        estado: 'valida'
+      },
+      attributes: [
+        'sku',
+        'descripcionSnapshot',
+        [sequelize.fn('SUM', sequelize.col('cantidad')), 'cantidadTotal']
+      ],
+      group: ['sku', 'descripcionSnapshot'],
+      order: [[sequelize.literal('"cantidadTotal"'), 'DESC']]
+    });
+
+    const grupoInfo = await Grupo.findByPk(grupoId);
+    const rondaInfo = await RondaConteo.findByPk(rondaId, {
+      include: [{ model: Zona, as: 'zona' }]
     });
 
     res.json({
       ok: true,
       data: {
-        id: stats.id,
-        nombre: stats.nombre,
-        color: stats.color,
-        miembros: miembros,
-        totalMiembros: miembros.length,
-        total_escaneos: Number(stats.total_escaneos) || 0,
-        productos_distintos: Number(stats.productos_distintos) || 0,
-        total_unidades: Number(stats.total_unidades) || 0,
-        rondas_participadas: Number(stats.rondas_participadas) || 0,
-        total_validos: Number(stats.total_validos) || 0,
-        no_reconocidos: Number(stats.no_reconocidos) || 0,
-        tiempo_activo: tiempoActivo,
-        rendimiento_por_hora: rendimientoPorHora
+        grupo: {
+          id: grupoInfo?.id,
+          nombre: grupoInfo?.nombre
+        },
+        ronda: {
+          id: rondaInfo?.id,
+          numeroRonda: rondaInfo?.numeroRonda,
+          tipoRonda: rondaInfo?.tipoRonda,
+          zona: rondaInfo?.zona?.nombre || null
+        },
+        resultados: resumen.map((item) => ({
+          sku: item.sku,
+          descripcion: item.descripcionSnapshot,
+          cantidadTotal: parseInt(item.dataValues.cantidadTotal, 10)
+        })),
+        totalProductos: resumen.length,
+        totalUnidades: resumen.reduce(
+          (sum, item) => sum + parseInt(item.dataValues.cantidadTotal, 10),
+          0
+        )
       }
     });
   } catch (error) {
-    console.error('[GRUPO ESTADISTICAS] Error:', error);
     next(error);
   }
 }
-
-// ==================== MIEMBROS (TABLA INTERMEDIA) ====================
-
-async function getMiembrosDelGrupo(req, res, next) {
-  try {
-    const { grupoId } = req.params;
-
-    const miembros = await sequelize.query(`
-      SELECT u.id, u.nombre, u.email, u."rolId", r.nombre as rol, ug."esLider", ug."fechaAsignacion"
-      FROM usuario_grupo ug
-      JOIN usuarios u ON u.id = ug."usuarioId"
-      LEFT JOIN roles r ON r.id = u."rolId"
-      WHERE ug."grupoId" = :grupoId
-      ORDER BY ug."esLider" DESC, u.nombre
-    `, {
-      replacements: { grupoId },
-      type: QueryTypes.SELECT
-    });
-
-    res.json({ ok: true, data: miembros });
-  } catch (error) {
-    next(error);
-  }
-}
-
-async function asignarUsuarioAGrupo(req, res, next) {
-  try {
-    const { usuarioId, grupoId, esLider = false } = req.body;
-
-    // Verificar si ya existe la relación
-    const existe = await sequelize.query(`
-      SELECT 1 FROM usuario_grupo WHERE "usuarioId" = :usuarioId AND "grupoId" = :grupoId
-    `, {
-      replacements: { usuarioId, grupoId },
-      type: QueryTypes.SELECT
-    });
-
-    if (existe.length > 0) {
-      return res.status(400).json({
-        ok: false,
-        message: 'El usuario ya pertenece a este grupo'
-      });
-    }
-
-    // Obtener el grupo destino
-    const grupoDestino = await Grupo.findByPk(grupoId);
-    if (!grupoDestino) {
-      return res.status(404).json({ ok: false, message: 'Grupo no encontrado' });
-    }
-
-    // 🔒 VALIDACIÓN: Si es líder, no puede ser miembro de otro grupo en el mismo inventario
-    if (esLider) {
-      const esMiembroEnInventario = await sequelize.query(`
-        SELECT 1 FROM usuario_grupo ug
-        JOIN grupos g ON g.id = ug."grupoId"
-        WHERE ug."usuarioId" = :usuarioId
-          AND g."inventarioId" = :inventarioId
-          AND ug."esLider" = false
-      `, {
-        replacements: { usuarioId, inventarioId: grupoDestino.inventarioId },
-        type: QueryTypes.SELECT
-      });
-
-      if (esMiembroEnInventario.length > 0) {
-        return res.status(400).json({
-          ok: false,
-          message: 'Este usuario es miembro de otro grupo en este inventario. No puede ser líder.'
-        });
-      }
-    }
-
-    // 🔒 VALIDACIÓN: Si es miembro, no puede ser líder de otro grupo en el mismo inventario
-    if (!esLider) {
-      const esLiderEnInventario = await sequelize.query(`
-        SELECT 1 FROM usuario_grupo ug
-        JOIN grupos g ON g.id = ug."grupoId"
-        WHERE ug."usuarioId" = :usuarioId
-          AND g."inventarioId" = :inventarioId
-          AND ug."esLider" = true
-      `, {
-        replacements: { usuarioId, inventarioId: grupoDestino.inventarioId },
-        type: QueryTypes.SELECT
-      });
-
-      if (esLiderEnInventario.length > 0) {
-        return res.status(400).json({
-          ok: false,
-          message: 'Este usuario es líder de otro grupo en este inventario. No puede ser miembro.'
-        });
-      }
-    }
-
-    // Verificar que no esté en otro grupo del mismo inventario (ya sea líder o miembro)
-    const mismoInventario = await sequelize.query(`
-      SELECT 1 FROM usuario_grupo ug
-      JOIN grupos g ON g.id = ug."grupoId"
-      WHERE ug."usuarioId" = :usuarioId
-        AND g."inventarioId" = :inventarioId
-    `, {
-      replacements: { usuarioId, inventarioId: grupoDestino.inventarioId },
-      type: QueryTypes.SELECT
-    });
-
-    if (mismoInventario.length > 0) {
-      return res.status(400).json({
-        ok: false,
-        message: 'El usuario ya pertenece a otro grupo (como líder o miembro) en este inventario.'
-      });
-    }
-
-    // Insertar la relación
-    await sequelize.query(`
-      INSERT INTO usuario_grupo ("usuarioId", "grupoId", "esLider", "fechaAsignacion", "createdAt", "updatedAt")
-      VALUES (:usuarioId, :grupoId, :esLider, NOW(), NOW(), NOW())
-    `, {
-      replacements: { usuarioId, grupoId, esLider },
-      type: QueryTypes.INSERT
-    });
-
-    // Si es líder, actualizar liderId en grupos
-    if (esLider) {
-      await Grupo.update({ liderId: usuarioId }, { where: { id: grupoId } });
-    }
-
-    res.json({ ok: true, message: 'Usuario asignado al grupo correctamente' });
-  } catch (error) {
-    console.error('[ASIGNAR USUARIO] Error:', error);
-    next(error);
-  }
-}
-
-async function removerUsuarioDeGrupo(req, res, next) {
-  try {
-    const { usuarioId, grupoId } = req.body;
-
-    // Verificar si es líder
-    const esLider = await sequelize.query(`
-      SELECT "esLider" FROM usuario_grupo 
-      WHERE "usuarioId" = :usuarioId AND "grupoId" = :grupoId
-    `, {
-      replacements: { usuarioId, grupoId },
-      type: QueryTypes.SELECT
-    });
-
-    // Eliminar la relación
-    await sequelize.query(`
-      DELETE FROM usuario_grupo 
-      WHERE "usuarioId" = :usuarioId AND "grupoId" = :grupoId
-    `, {
-      replacements: { usuarioId, grupoId },
-      type: QueryTypes.DELETE
-    });
-
-    // Si era líder, limpiar liderId
-    if (esLider.length > 0 && esLider[0].esLider) {
-      const otroLider = await sequelize.query(`
-        SELECT 1 FROM usuario_grupo 
-        WHERE "grupoId" = :grupoId AND "esLider" = true AND "usuarioId" != :usuarioId
-      `, {
-        replacements: { grupoId, usuarioId },
-        type: QueryTypes.SELECT
-      });
-
-      if (otroLider.length === 0) {
-        await Grupo.update({ liderId: null }, { where: { id: grupoId } });
-      }
-    }
-
-    res.json({ ok: true, message: 'Usuario removido del grupo correctamente' });
-  } catch (error) {
-    next(error);
-  }
-}
-async function getLideresDisponiblesParaGrupo(req, res, next) {
-  try {
-    const { grupoId } = req.params;
-
-    const grupo = await Grupo.findByPk(grupoId);
-    if (!grupo) {
-      return res.status(404).json({
-        ok: false,
-        message: 'Grupo no encontrado'
-      });
-    }
-
-    const disponibles = await sequelize.query(`
-      SELECT 
-        u.id,
-        u.nombre,
-        u.email,
-        u."rolId",
-        r.nombre as rol
-      FROM usuarios u
-      LEFT JOIN roles r ON r.id = u."rolId"
-      WHERE u.activo = true
-        AND NOT EXISTS (
-          SELECT 1
-          FROM usuario_grupo ug
-          JOIN grupos g ON g.id = ug."grupoId"
-          WHERE ug."usuarioId" = u.id
-            AND g."inventarioId" = :inventarioId
-            AND g.id != :grupoId
-        )
-      ORDER BY u.nombre
-    `, {
-      replacements: {
-        inventarioId: grupo.inventarioId,
-        grupoId
-      },
-      type: QueryTypes.SELECT
-    });
-
-    res.json({
-      ok: true,
-      data: disponibles
-    });
-  } catch (error) {
-    next(error);
-  }
-}
-
-async function getUsuariosDisponiblesParaGrupo(req, res, next) {
-  try {
-    const { grupoId } = req.params;
-
-    const grupo = await Grupo.findByPk(grupoId);
-    if (!grupo) {
-      return res.status(404).json({ ok: false, message: 'Grupo no encontrado' });
-    }
-
-    const disponibles = await sequelize.query(`
-      SELECT u.id, u.nombre, u.email, u."rolId", r.nombre as rol
-      FROM usuarios u
-      LEFT JOIN roles r ON r.id = u."rolId"
-      WHERE u.activo = true
-        AND u.id NOT IN (
-          SELECT ug."usuarioId"
-          FROM usuario_grupo ug
-          JOIN grupos g ON g.id = ug."grupoId"
-          WHERE g."inventarioId" = :inventarioId
-        )
-        AND u.id NOT IN (
-          SELECT DISTINCT liderId FROM grupos WHERE "inventarioId" = :inventarioId AND liderId IS NOT NULL
-        )
-      ORDER BY u.nombre
-    `, {
-      replacements: { inventarioId: grupo.inventarioId },
-      type: QueryTypes.SELECT
-    });
-
-    res.json({ ok: true, data: disponibles });
-  } catch (error) {
-    next(error);
-  }
-}
-
-async function getUsuariosDisponiblesParaGrupo(req, res, next) {
-  try {
-    const { grupoId } = req.params;
-
-    const grupo = await Grupo.findByPk(grupoId);
-    if (!grupo) {
-      return res.status(404).json({
-        ok: false,
-        message: 'Grupo no encontrado'
-      });
-    }
-
-    const disponibles = await sequelize.query(`
-      SELECT 
-        u.id,
-        u.nombre,
-        u.email,
-        u."rolId",
-        r.nombre as rol
-      FROM usuarios u
-      LEFT JOIN roles r ON r.id = u."rolId"
-      WHERE u.activo = true
-        AND NOT EXISTS (
-          SELECT 1
-          FROM usuario_grupo ug
-          JOIN grupos g ON g.id = ug."grupoId"
-          WHERE ug."usuarioId" = u.id
-            AND g."inventarioId" = :inventarioId
-        )
-      ORDER BY u.nombre
-    `, {
-      replacements: { inventarioId: grupo.inventarioId },
-      type: QueryTypes.SELECT
-    });
-
-    res.json({
-      ok: true,
-      data: disponibles
-    });
-  } catch (error) {
-    console.error('[USUARIOS DISPONIBLES] Error:', error);
-    next(error);
-  }
-}
-
-// ==================== TEST (eliminar después) ====================
-
-async function testUsuarios(req, res, next) {
-  try {
-    const usuarios = await sequelize.query(`
-      SELECT id, nombre, email, activo
-      FROM usuarios
-      WHERE activo = true
-      ORDER BY id
-    `, {
-      type: QueryTypes.SELECT
-    });
-
-    res.json({
-      ok: true,
-      data: usuarios
-    });
-  } catch (error) {
-    next(error);
-  }
-}
-
-async function testGrupo(req, res, next) {
-  try {
-    const { id } = req.params;
-    const grupo = await Grupo.findByPk(id);
-
-    res.json({
-      ok: true,
-      message: `Grupo ${id} encontrado: ${grupo?.nombre || 'no existe'}`,
-      data: grupo
-    });
-  } catch (error) {
-    next(error);
-  }
-}
-
-// ==================== EXPORTS ====================
 
 module.exports = {
-  // CRUD
-  createGrupo,
-  getGrupos,
-  getGrupo,
-  updateGrupo,
-  deleteGrupo,
-  // Estadísticas
-  getGrupoEstadisticas,
-  // Miembros
-  getMiembrosDelGrupo,
-  asignarUsuarioAGrupo,
-  removerUsuarioDeGrupo,
-  getUsuariosDisponiblesParaGrupo,
-  getLideresDisponiblesParaGrupo,
-  // Tests
-  testUsuarios,
-  testGrupo
+  scanLectura,
+  scanLecturaRonda,
+  anularLectura,
+  getResumenLecturas,
+  getHistorialLecturas,
+  getEstadisticasGrupo,
+  exportarResultadosGrupo
 };
