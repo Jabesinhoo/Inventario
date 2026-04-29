@@ -70,6 +70,11 @@ module.exports = (sequelize, DataTypes) => {
       cerradoEn: {
         type: DataTypes.DATE,
         allowNull: true
+      },
+      reconteoCount: {
+        type: DataTypes.INTEGER,
+        allowNull: false,
+        defaultValue: 0
       }
     },
     {
@@ -79,6 +84,12 @@ module.exports = (sequelize, DataTypes) => {
         {
           unique: true,
           fields: ['inventarioId', 'zonaId', 'sku']
+        },
+        {
+          fields: ['estado']
+        },
+        {
+          fields: ['proximaRondaNumero']
         }
       ]
     }

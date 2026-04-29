@@ -40,8 +40,8 @@ export async function cerrarRonda(id) {
   return response.data;
 }
 
-export async function getPendientesRonda(id) {
-  const response = await api.get(`/rondas/${id}/pendientes`);
+export async function getPendientesRonda(rondaId) {
+  const response = await api.get(`/rondas/${rondaId}/pendientes`);
   return response.data.data;
 }
 

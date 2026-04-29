@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { useAuth } from '../../hooks/useAuth';
 import {
   ScanLine,
@@ -33,6 +34,11 @@ import {
 import { getInventarios } from '../../services/inventarios.service';
 
 export default function EscaneoPage() {
+  const [searchParams] = useSearchParams();
+
+  const inventarioIdFromUrl = Number(searchParams.get('inventarioId') || 0);
+  const rondaIdFromUrl = Number(searchParams.get('rondaId') || 0);
+
   const lastSentRef = useRef({ code: '', at: 0 });
   const inputRef = useRef(null);
   const audioRef = useRef(null);
@@ -55,7 +61,6 @@ export default function EscaneoPage() {
   const [syncing, setSyncing] = useState(false);
   const [exporting, setExporting] = useState(false);
 
-
   const auth = useAuth();
   const rol = String(auth?.user?.rol || auth?.user?.rol?.nombre || '').toLowerCase();
   const isContador = rol === 'contador';
@@ -76,7 +81,7 @@ export default function EscaneoPage() {
   const playBeep = () => {
     if (!audioRef.current) return;
     audioRef.current.currentTime = 0;
-    audioRef.current.play().catch(() => { });
+    audioRef.current.play().catch(() => {});
   };
 
   const selectedRonda = useMemo(() => {
@@ -105,9 +110,11 @@ export default function EscaneoPage() {
   async function loadInventariosData() {
     try {
       const data = await getInventarios();
-      setInventarios(data);
+      setInventarios(data || []);
 
-      if (data.length > 0) {
+      if (inventarioIdFromUrl) {
+        setSelectedInventario(inventarioIdFromUrl);
+      } else if (data?.length > 0) {
         setSelectedInventario((prev) => prev || data[0].id);
       }
     } catch (err) {
@@ -129,6 +136,7 @@ export default function EscaneoPage() {
       setRondas(data || []);
 
       const preferred =
+        data.find((item) => Number(item.id) === Number(rondaIdFromUrl)) ||
         data.find((item) => Number(item.id) === Number(currentSelectedId)) ||
         data.find((item) => item.estado === 'activa') ||
         data.find((item) => item.estado === 'pausada') ||
@@ -138,12 +146,14 @@ export default function EscaneoPage() {
 
       setSelectedRondaId(preferred?.id || '');
     } catch (err) {
-      setFlashMessage(err.response?.data?.message || 'No se pudieron cargar tus rondas', 'error');
+      setFlashMessage(
+        err.response?.data?.message || 'No se pudieron cargar tus rondas',
+        'error'
+      );
       setRondas([]);
       setSelectedRondaId('');
     }
-  }, [setFlashMessage]);
-
+  }, [setFlashMessage, rondaIdFromUrl]);
 
   const loadRoundContext = useCallback(async (ronda) => {
     if (!ronda?.id) {
@@ -165,18 +175,47 @@ export default function EscaneoPage() {
           : Promise.resolve({ pendientes: [] }),
         ronda.asignacion?.grupoId || ronda.asignacion?.grupo?.id
           ? getEstadisticasGrupo({
-            rondaId: ronda.id,
-            grupoId: ronda.asignacion?.grupoId || ronda.asignacion?.grupo?.id
-          })
+              rondaId: ronda.id,
+              grupoId: ronda.asignacion?.grupoId || ronda.asignacion?.grupo?.id
+            })
           : Promise.resolve(null)
       ];
 
-      const [resumenData, historyData, pendientesData, statsData] = await Promise.all(requests);
+      const [resumenRes, historyRes, pendientesRes, statsRes] =
+        await Promise.allSettled(requests);
 
-      setResumen(resumenData || []);
-      setHistory(historyData || []);
-      setPendientes(pendientesData?.pendientes || []);
-      setStats(statsData || null);
+      setResumen(
+        resumenRes.status === 'fulfilled' ? resumenRes.value || [] : []
+      );
+
+      setHistory(
+        historyRes.status === 'fulfilled' ? historyRes.value || [] : []
+      );
+
+      setPendientes(
+        pendientesRes.status === 'fulfilled'
+          ? pendientesRes.value?.pendientes || []
+          : []
+      );
+
+      setStats(
+        statsRes.status === 'fulfilled' ? statsRes.value || null : null
+      );
+
+      if (pendientesRes.status === 'rejected' && ronda.tipoRonda === 'reconteo') {
+        setFlashMessage(
+          pendientesRes.reason?.response?.data?.message ||
+            'No se pudieron cargar los pendientes del reconteo',
+          'warning'
+        );
+      }
+
+      if (resumenRes.status === 'rejected' || historyRes.status === 'rejected') {
+        setFlashMessage(
+          'Se cargó la ronda, pero algunas secciones no pudieron sincronizarse',
+          'warning'
+        );
+      }
     } catch (err) {
       setFlashMessage('No se pudo sincronizar la información de la ronda', 'error');
     } finally {
@@ -189,6 +228,12 @@ export default function EscaneoPage() {
   }, []);
 
   useEffect(() => {
+    if (inventarioIdFromUrl) {
+      setSelectedInventario(inventarioIdFromUrl);
+    }
+  }, [inventarioIdFromUrl]);
+
+  useEffect(() => {
     if (selectedInventario) {
       loadRondasData(selectedInventario, selectedRondaId);
     }
@@ -197,9 +242,10 @@ export default function EscaneoPage() {
   useEffect(() => {
     if (!isContador) return;
     if (selectedInventario) {
-      loadRondasData(selectedInventario, null);
+      loadRondasData(selectedInventario, rondaIdFromUrl || null);
     }
-  }, [isContador, selectedInventario, loadRondasData]);
+  }, [isContador, selectedInventario, loadRondasData, rondaIdFromUrl]);
+
   useEffect(() => {
     if (selectedRonda) {
       loadRoundContext(selectedRonda);
@@ -229,7 +275,7 @@ export default function EscaneoPage() {
 
   const handleRefresh = async () => {
     if (!selectedInventario) return;
-    await loadRondasData(selectedInventario, isContador ? null : selectedRondaId);
+    await loadRondasData(selectedInventario, selectedRondaId || rondaIdFromUrl || null);
   };
 
   const handleRondaAction = async (action) => {
@@ -250,7 +296,10 @@ export default function EscaneoPage() {
       await loadRondasData(selectedInventario, selectedRonda.id);
       setTimeout(() => inputRef.current?.focus(), 50);
     } catch (err) {
-      setFlashMessage(err.response?.data?.message || 'No se pudo actualizar el estado de la ronda', 'error');
+      setFlashMessage(
+        err.response?.data?.message || 'No se pudo actualizar el estado de la ronda',
+        'error'
+      );
     }
   };
 
@@ -262,11 +311,15 @@ export default function EscaneoPage() {
     if (!codigoLimpio) return;
 
     if (!/^\d{5,7}$/.test(codigoLimpio)) {
-      setFlashMessage('Código inválido. Debe tener entre 5 y 7 dígitos numéricos.', 'warning');
+      setFlashMessage(
+        'Código inválido. Debe tener entre 5 y 7 dígitos numéricos.',
+        'warning'
+      );
       setCodigo('');
       setTimeout(() => inputRef.current?.focus(), 50);
       return;
     }
+
     const now = Date.now();
 
     if (
@@ -282,6 +335,7 @@ export default function EscaneoPage() {
       code: codigoLimpio,
       at: now
     };
+
     if (!selectedRonda?.id) {
       setFlashMessage('Debes seleccionar una ronda.', 'error');
       setTimeout(() => inputRef.current?.focus(), 50);
@@ -305,24 +359,29 @@ export default function EscaneoPage() {
     setLoadingScan(true);
 
     try {
-      const response = await scanLecturaRonda({
+      const raw = await scanLecturaRonda({
         rondaId: selectedRonda.id,
         grupoId: grupoAsignado.id,
         codigo: codigoLimpio
       });
 
+      const backend = raw?.ok !== undefined ? raw : raw?.data?.ok !== undefined ? raw.data : null;
+      const payload = backend?.data || raw?.data || raw || null;
+      const message = backend?.message || raw?.message || 'Lectura registrada';
+      const warning = Boolean(backend?.warning || raw?.warning);
+
       playBeep();
-      setLastScan(response.data || null);
-      setFlashMessage(
-        response.message || 'Lectura registrada',
-        response.warning ? 'warning' : 'success'
-      );
+      setLastScan(payload);
+      setFlashMessage(message, warning ? 'warning' : 'success');
 
       setCodigo('');
       await loadRoundContext(selectedRonda);
       setTimeout(() => inputRef.current?.focus(), 50);
     } catch (err) {
-      setFlashMessage(err.response?.data?.message || 'Error al registrar lectura', 'error');
+      setFlashMessage(
+        err.response?.data?.message || 'Error al registrar lectura',
+        'error'
+      );
       setCodigo('');
       setTimeout(() => inputRef.current?.focus(), 50);
     } finally {
@@ -339,7 +398,10 @@ export default function EscaneoPage() {
       setFlashMessage('Lectura anulada correctamente', 'success');
       await loadRoundContext(selectedRonda);
     } catch (err) {
-      setFlashMessage(err.response?.data?.message || 'No se pudo anular la lectura', 'error');
+      setFlashMessage(
+        err.response?.data?.message || 'No se pudo anular la lectura',
+        'error'
+      );
     }
   };
 
@@ -397,7 +459,10 @@ export default function EscaneoPage() {
 
       setFlashMessage('Exportación del grupo generada correctamente', 'success');
     } catch (err) {
-      setFlashMessage(err.response?.data?.message || 'No se pudo exportar el grupo', 'error');
+      setFlashMessage(
+        err.response?.data?.message || 'No se pudo exportar el grupo',
+        'error'
+      );
     } finally {
       setExporting(false);
     }
@@ -512,7 +577,15 @@ export default function EscaneoPage() {
       </div>
 
       {flash.text ? (
-        <div className={`alert-${flash.type === 'error' ? 'error' : flash.type === 'warning' ? 'warning' : 'success'}`}>
+        <div
+          className={`alert-${
+            flash.type === 'error'
+              ? 'error'
+              : flash.type === 'warning'
+                ? 'warning'
+                : 'success'
+          }`}
+        >
           {flash.text}
         </div>
       ) : null}
@@ -722,8 +795,8 @@ export default function EscaneoPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {resumen.map((item) => (
-                        <tr key={item.sku}>
+                      {resumen.map((item, index) => (
+                        <tr key={`${item.sku || 'sku'}-${index}`}>
                           <td>
                             <strong>{item.sku}</strong>
                           </td>

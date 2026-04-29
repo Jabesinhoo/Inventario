@@ -32,6 +32,38 @@ const scanRondaSchema = Joi.object({
 
 // ==================== HELPERS ====================
 
+function buildWherePendienteReconteo(ronda, sku = null) {
+  const and = [
+    { inventarioId: ronda.inventarioId },
+    { zonaId: ronda.zonaId },
+    { diferencia: { [Op.ne]: 0 } },
+    {
+      [Op.or]: [
+        { proximaRondaNumero: ronda.numeroRonda },
+        { proximaRondaNumero: null }
+      ]
+    },
+    {
+      [Op.or]: [
+        {
+          estado: {
+            [Op.in]: ['pendiente_reconteo', 'reconteo_en_proceso', 'pendiente']
+          }
+        },
+        { estado: null }
+      ]
+    }
+  ];
+
+  if (sku) {
+    and.push({ sku });
+  }
+
+  return {
+    [Op.and]: and
+  };
+}
+
 async function findProductoLocal(inventarioId, zonaId, codigoLimpio, transaction) {
   const whereCodigo = {
     [Op.or]: [
@@ -69,7 +101,6 @@ async function findProductoLocal(inventarioId, zonaId, codigoLimpio, transaction
   return candidatos[0];
 }
 
-
 function validarCodigo(codigo) {
   const codigoLimpio = String(codigo || '').trim();
 
@@ -85,6 +116,19 @@ function validarCodigo(codigo) {
     ok: true,
     codigoLimpio
   };
+}
+
+async function calcularTotalReconteo(rondaId, sku, transaction) {
+  const total = await Lectura.sum('cantidad', {
+    where: {
+      rondaId,
+      sku,
+      estado: 'valida'
+    },
+    transaction
+  });
+
+  return Number(total || 0);
 }
 
 // ==================== SCAN LEGACY (con conteoTipo) ====================
@@ -266,7 +310,7 @@ async function scanLectura(req, res, next) {
   }
 }
 
-// ==================== SCAN POR RONDA (NUEVO FLUJO) ====================
+// ==================== SCAN POR RONDA ====================
 
 async function scanLecturaRonda(req, res, next) {
   const transaction = await sequelize.transaction();
@@ -416,31 +460,118 @@ async function scanLecturaRonda(req, res, next) {
     const descripcionFinal = productoLocal.descripcionSnapshot || 'Sin descripción';
     const productoIdFinal = productoLocal.productoId || null;
 
+    let pendiente = null;
+    let esReconteo = false;
+
     if (ronda.tipoRonda === 'reconteo') {
-      const pendiente = await DiscrepanciaConteo.findOne({
+      esReconteo = true;
+
+      console.log('\n========== DEBUG RECONTEO ==========');
+      console.log('Ronda ID:', ronda.id);
+      console.log('Inventario:', ronda.inventarioId);
+      console.log('Zona:', ronda.zonaId);
+      console.log('Numero ronda:', ronda.numeroRonda);
+      console.log('Estado ronda:', ronda.estado);
+      console.log('Grupo:', grupo.id);
+      console.log('Codigo leido:', codigoLimpio);
+      console.log('SKU final:', skuFinal);
+
+      const wherePendiente = buildWherePendienteReconteo(ronda, skuFinal);
+      console.log('WHERE buildWherePendienteReconteo:', JSON.stringify(wherePendiente, null, 2));
+
+      pendiente = await DiscrepanciaConteo.findOne({
+        where: wherePendiente,
+        transaction
+      });
+
+      console.log('Pendiente exacto encontrado:', pendiente ? pendiente.toJSON() : null);
+
+      const pendienteAlterno = await DiscrepanciaConteo.findOne({
         where: {
           inventarioId: ronda.inventarioId,
           zonaId: ronda.zonaId,
-          sku: skuFinal,
-          proximaRondaNumero: ronda.numeroRonda,
-          estado: {
-            [Op.in]: ['pendiente_reconteo', 'reconteo_en_proceso']
-          }
+          sku: skuFinal
         },
         transaction
       });
 
-      if (!pendiente) {
+      console.log('Pendiente alterno misma zona:', pendienteAlterno ? pendienteAlterno.toJSON() : null);
+
+      const todosSkuMismaZona = await DiscrepanciaConteo.findAll({
+        where: {
+          inventarioId: ronda.inventarioId,
+          zonaId: ronda.zonaId,
+          sku: skuFinal
+        },
+        order: [['id', 'DESC']],
+        transaction
+      });
+
+      console.log(
+        'Todos los registros para ese SKU en misma zona:',
+        todosSkuMismaZona.map((x) => x.toJSON())
+      );
+
+      const pendienteOtraZona = await DiscrepanciaConteo.findAll({
+        where: {
+          inventarioId: ronda.inventarioId,
+          sku: skuFinal
+        },
+        order: [['zonaId', 'ASC'], ['id', 'DESC']],
+        transaction
+      });
+
+      console.log(
+        'Registros del SKU en otras zonas del mismo inventario:',
+        pendienteOtraZona.map((x) => x.toJSON())
+      );
+
+      if(!pendiente) {
+        const pendienteEnOtraRonda = await DiscrepanciaConteo.findOne({
+          where: {
+            sku: skuFinal,
+            estado: {
+              [Op.in]: ['pendiente_reconteo', 'reconteo_en_proceso', 'pendiente']
+            }
+          },
+          order: [['updatedAt', 'DESC']],
+          transaction
+        });
+
         await transaction.rollback();
+
+        if (pendienteEnOtraRonda) {
+          return res.status(403).json({
+            ok: false,
+            message: `Ese SKU está pendiente en inventario ${pendienteEnOtraRonda.inventarioId}, zona ${pendienteEnOtraRonda.zonaId}, ronda ${pendienteEnOtraRonda.proximaRondaNumero || 'sin número'}`
+          });
+        }
+
         return res.status(403).json({
           ok: false,
           message: 'Ese SKU no está pendiente para esta ronda de reconteo'
         });
       }
 
-      if (pendiente.estado === 'pendiente_reconteo') {
-        await pendiente.update({ estado: 'reconteo_en_proceso' }, { transaction });
+      if (
+        !pendiente.estado ||
+        pendiente.estado === 'pendiente' ||
+        pendiente.estado === 'pendiente_reconteo'
+      ) {
+        await pendiente.update(
+          {
+            estado: 'reconteo_en_proceso',
+            reconteoCount: Number(pendiente.reconteoCount || 0) + 1,
+            proximaRondaNumero: pendiente.proximaRondaNumero || ronda.numeroRonda
+          },
+          { transaction }
+        );
+
+        console.log('✅ Pendiente actualizado a reconteo_en_proceso');
       }
+
+      console.log('✅ RESULTADO: SKU válido para reconteo');
+      console.log('====================================\n');
     }
 
     const lectura = await Lectura.create(
@@ -461,39 +592,76 @@ async function scanLecturaRonda(req, res, next) {
       { transaction }
     );
 
-    const acumuladoSku = await Lectura.sum('cantidad', {
+    const cantidadTotalReconteo = await calcularTotalReconteo(ronda.id, skuFinal, transaction);
+
+    if (esReconteo && pendiente) {
+      const nuevaDiferencia = Math.abs(
+        Number(pendiente.cantidadBase || 0) - Number(cantidadTotalReconteo || 0)
+      );
+
+      await pendiente.update(
+        {
+          cantidadUltima: cantidadTotalReconteo,
+          diferencia: nuevaDiferencia,
+          ultimaRondaId: ronda.id
+        },
+        { transaction }
+      );
+    }
+
+    const totalEscaneosRonda = await Lectura.sum('cantidad', {
       where: {
         rondaId: ronda.id,
-        sku: skuFinal,
         estado: 'valida'
       },
       transaction
     });
 
-    await ronda.update({ updatedAt: new Date() }, { transaction });
+    await ronda.update(
+      {
+        updatedAt: new Date(),
+        totalEscaneos: Number(totalEscaneosRonda || 0)
+      },
+      { transaction }
+    );
 
     await transaction.commit();
 
+    const responseData = {
+      lecturaId: lectura.id,
+      ronda: {
+        id: ronda.id,
+        numeroRonda: ronda.numeroRonda,
+        tipoRonda: ronda.tipoRonda,
+        estado: ronda.estado
+      },
+      producto: {
+        id: productoIdFinal,
+        sku: skuFinal,
+        codigoBarra: productoLocal.codigoLeido || codigoLimpio,
+        descripcion: descripcionFinal,
+        source: 'postgres'
+      },
+      acumuladoSku: cantidadTotalReconteo
+    };
+
+    if (esReconteo && pendiente) {
+      responseData.discrepancia = {
+        cantidadBase: Number(pendiente.cantidadBase || 0),
+        cantidadReconteo: cantidadTotalReconteo,
+        diferencia: Math.abs(
+          Number(pendiente.cantidadBase || 0) - Number(cantidadTotalReconteo || 0)
+        ),
+        reconteoCount: Number(pendiente.reconteoCount || 0)
+      };
+    }
+
     return res.status(201).json({
       ok: true,
-      message: 'Lectura registrada correctamente',
-      data: {
-        lecturaId: lectura.id,
-        ronda: {
-          id: ronda.id,
-          numeroRonda: ronda.numeroRonda,
-          tipoRonda: ronda.tipoRonda,
-          estado: ronda.estado
-        },
-        producto: {
-          id: productoIdFinal,
-          sku: skuFinal,
-          codigoBarra: productoLocal.codigoLeido || codigoLimpio,
-          descripcion: descripcionFinal,
-          source: 'postgres'
-        },
-        acumuladoSku: Number(acumuladoSku || 0)
-      }
+      message: esReconteo
+        ? `Reconteo registrado. Total para SKU ${skuFinal}: ${cantidadTotalReconteo}`
+        : 'Lectura registrada correctamente',
+      data: responseData
     });
   } catch (error) {
     await transaction.rollback();
@@ -534,6 +702,56 @@ async function anularLectura(req, res, next) {
     }
 
     await lectura.update({ estado: 'anulada' }, { transaction });
+
+    if (lectura.rondaId) {
+      const ronda = await RondaConteo.findByPk(lectura.rondaId, { transaction });
+
+      if (ronda && ronda.tipoRonda === 'reconteo' && lectura.sku) {
+        const nuevaCantidad = await calcularTotalReconteo(
+          ronda.id,
+          lectura.sku,
+          transaction
+        );
+
+        const discrepancia = await DiscrepanciaConteo.findOne({
+          where: {
+            inventarioId: ronda.inventarioId,
+            zonaId: ronda.zonaId,
+            sku: lectura.sku
+          },
+          transaction
+        });
+
+        if (discrepancia) {
+          await discrepancia.update(
+            {
+              cantidadUltima: nuevaCantidad,
+              diferencia: Math.abs(
+                Number(discrepancia.cantidadBase || 0) - Number(nuevaCantidad || 0)
+              ),
+              ultimaRondaId: ronda.id
+            },
+            { transaction }
+          );
+        }
+
+        const totalEscaneosRonda = await Lectura.sum('cantidad', {
+          where: {
+            rondaId: ronda.id,
+            estado: 'valida'
+          },
+          transaction
+        });
+
+        await ronda.update(
+          {
+            totalEscaneos: Number(totalEscaneosRonda || 0),
+            updatedAt: new Date()
+          },
+          { transaction }
+        );
+      }
+    }
 
     await transaction.commit();
 
@@ -590,7 +808,6 @@ async function getResumenLecturas(req, res, next) {
     next(error);
   }
 }
-// ==================== HISTORIAL DE LECTURAS ====================
 
 async function getHistorialLecturas(req, res, next) {
   try {
@@ -627,8 +844,6 @@ async function getHistorialLecturas(req, res, next) {
     next(error);
   }
 }
-
-// ==================== ESTADÍSTICAS POR GRUPO/RONDA ====================
 
 async function getEstadisticasGrupo(req, res, next) {
   try {
@@ -691,8 +906,6 @@ async function getEstadisticasGrupo(req, res, next) {
     next(error);
   }
 }
-
-// ==================== EXPORTACIÓN DE RESULTADOS POR GRUPO ====================
 
 async function exportarResultadosGrupo(req, res, next) {
   try {
@@ -769,5 +982,6 @@ module.exports = {
   getResumenLecturas,
   getHistorialLecturas,
   getEstadisticasGrupo,
-  exportarResultadosGrupo
+  exportarResultadosGrupo,
+  buildWherePendienteReconteo
 };
