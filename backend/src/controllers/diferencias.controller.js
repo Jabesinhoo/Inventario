@@ -1,7 +1,7 @@
 const Joi = require('joi');
 const ExcelJS = require('exceljs');
 const { QueryTypes } = require('sequelize');
-const { sequelize, Zona, Inventario, RondaConteo, DiscrepanciaConteo, Lectura, Grupo } = require('../models');
+const { sequelize, Zona, Inventario, RondaConteo, DiscrepanciaConteo } = require('../models');
 
 const compareSchema = Joi.object({
   inventarioBaseId: Joi.number().integer().required(),
@@ -79,6 +79,7 @@ function buildLecturasFilterSql({
   return sql;
 }
 
+// FUNCIÓN CORREGIDA: Ahora usa SOLO la última ronda completa de cada inventario
 async function getSkuComparisonRows(
   inventarioBaseId,
   inventarioComparadoId,
@@ -86,10 +87,91 @@ async function getSkuComparisonRows(
   zonaBaseId,
   zonaComparadaId
 ) {
-  const [baseRows, comparadoRows] = await Promise.all([
-    getSkuRowsFromUltimaRonda(inventarioBaseId, allowedGroupIds, zonaBaseId),
-    getSkuRowsFromUltimaRonda(inventarioComparadoId, allowedGroupIds, zonaComparadaId)
-  ]);
+  const filterBase = buildLecturasFilterSql({
+    groupIds: allowedGroupIds,
+    zonaId: zonaBaseId,
+    alias: 'l',
+    groupParam: 'allowedGroupIds',
+    zonaParam: 'zonaBaseId'
+  });
+
+  const filterComparado = buildLecturasFilterSql({
+    groupIds: allowedGroupIds,
+    zonaId: zonaComparadaId,
+    alias: 'l',
+    groupParam: 'allowedGroupIds',
+    zonaParam: 'zonaComparadaId'
+  });
+
+  // Query para obtener SOLO la última ronda completa del inventario base
+  const baseRows = await sequelize.query(
+    `
+    WITH ultima_ronda_base AS (
+      SELECT id, "numeroRonda"
+      FROM rondas_conteo
+      WHERE "inventarioId" = :inventarioBaseId
+        AND "tipoRonda" = 'completa'
+        ${zonaBaseId ? 'AND "zonaId" = :zonaBaseId' : ''}
+      ORDER BY "numeroRonda" DESC
+      LIMIT 1
+    )
+    SELECT
+      l.sku AS "sku",
+      MAX(l."descripcionSnapshot") AS "descripcion",
+      COALESCE(SUM(l.cantidad), 0)::int AS "cantidad"
+    FROM lecturas l
+    INNER JOIN ultima_ronda_base ur ON ur.id = l."rondaId"
+    WHERE l."inventarioId" = :inventarioBaseId
+      AND l.estado = 'valida'
+      AND l.sku IS NOT NULL
+      ${filterBase}
+    GROUP BY l.sku
+    ORDER BY l.sku ASC
+    `,
+    {
+      replacements: {
+        inventarioBaseId,
+        allowedGroupIds,
+        zonaBaseId: zonaBaseId || null
+      },
+      type: QueryTypes.SELECT
+    }
+  );
+
+  // Query para obtener SOLO la última ronda completa del inventario comparado
+  const comparadoRows = await sequelize.query(
+    `
+    WITH ultima_ronda_comparado AS (
+      SELECT id, "numeroRonda"
+      FROM rondas_conteo
+      WHERE "inventarioId" = :inventarioComparadoId
+        AND "tipoRonda" = 'completa'
+        ${zonaComparadaId ? 'AND "zonaId" = :zonaComparadaId' : ''}
+      ORDER BY "numeroRonda" DESC
+      LIMIT 1
+    )
+    SELECT
+      l.sku AS "sku",
+      MAX(l."descripcionSnapshot") AS "descripcion",
+      COALESCE(SUM(l.cantidad), 0)::int AS "cantidad"
+    FROM lecturas l
+    INNER JOIN ultima_ronda_comparado ur ON ur.id = l."rondaId"
+    WHERE l."inventarioId" = :inventarioComparadoId
+      AND l.estado = 'valida'
+      AND l.sku IS NOT NULL
+      ${filterComparado}
+    GROUP BY l.sku
+    ORDER BY l.sku ASC
+    `,
+    {
+      replacements: {
+        inventarioComparadoId,
+        allowedGroupIds,
+        zonaComparadaId: zonaComparadaId || null
+      },
+      type: QueryTypes.SELECT
+    }
+  );
 
   const baseMap = new Map();
   const comparadoMap = new Map();
@@ -131,7 +213,6 @@ async function getSkuComparisonRows(
   });
 }
 
-
 async function getTotalesPorGrupo(inventarioId, allowedGroupIds, zonaId) {
   const filter = buildLecturasFilterSql({
     groupIds: allowedGroupIds,
@@ -143,6 +224,15 @@ async function getTotalesPorGrupo(inventarioId, allowedGroupIds, zonaId) {
 
   return sequelize.query(
     `
+    WITH ultima_ronda AS (
+      SELECT id
+      FROM rondas_conteo
+      WHERE "inventarioId" = :inventarioId
+        AND "tipoRonda" = 'completa'
+        ${zonaId ? 'AND "zonaId" = :zonaId' : ''}
+      ORDER BY "numeroRonda" DESC
+      LIMIT 1
+    )
     SELECT
       g.id AS "id",
       g.nombre AS "nombre",
@@ -150,12 +240,11 @@ async function getTotalesPorGrupo(inventarioId, allowedGroupIds, zonaId) {
       COALESCE(SUM(l.cantidad), 0)::int AS "totalEscaneos",
       COUNT(DISTINCT l.sku)::int AS "productosUnicos"
     FROM lecturas l
+    INNER JOIN ultima_ronda ur ON ur.id = l."rondaId"
     LEFT JOIN grupos g ON g.id = l."grupoId"
     LEFT JOIN zonas z ON z.id = l."zonaId"
-    LEFT JOIN rondas_conteo r ON r.id = l."rondaId"
     WHERE l."inventarioId" = :inventarioId
       AND l.estado = 'valida'
-      AND (l."rondaId" IS NULL OR r."tipoRonda" != 'reconteo')
       ${filter}
     GROUP BY g.id, g.nombre
     ORDER BY g.nombre ASC
@@ -164,7 +253,7 @@ async function getTotalesPorGrupo(inventarioId, allowedGroupIds, zonaId) {
       replacements: {
         inventarioId,
         allowedGroupIds,
-        zonaId
+        zonaId: zonaId || null
       },
       type: QueryTypes.SELECT
     }
@@ -182,6 +271,15 @@ async function getTotalesPorZona(inventarioId, allowedGroupIds, zonaId) {
 
   return sequelize.query(
     `
+    WITH ultima_ronda AS (
+      SELECT id
+      FROM rondas_conteo
+      WHERE "inventarioId" = :inventarioId
+        AND "tipoRonda" = 'completa'
+        ${zonaId ? 'AND "zonaId" = :zonaId' : ''}
+      ORDER BY "numeroRonda" DESC
+      LIMIT 1
+    )
     SELECT
       z.id AS "id",
       z.nombre AS "nombre",
@@ -189,11 +287,10 @@ async function getTotalesPorZona(inventarioId, allowedGroupIds, zonaId) {
       COALESCE(SUM(l.cantidad), 0)::int AS "totalEscaneos",
       COUNT(DISTINCT l.sku)::int AS "productosUnicos"
     FROM lecturas l
+    INNER JOIN ultima_ronda ur ON ur.id = l."rondaId"
     LEFT JOIN zonas z ON z.id = l."zonaId"
-    LEFT JOIN rondas_conteo r ON r.id = l."rondaId"
     WHERE l."inventarioId" = :inventarioId
       AND l.estado = 'valida'
-      AND (l."rondaId" IS NULL OR r."tipoRonda" != 'reconteo')
       ${filter}
     GROUP BY z.id, z.nombre, z.codigo
     ORDER BY z.nombre ASC
@@ -202,7 +299,7 @@ async function getTotalesPorZona(inventarioId, allowedGroupIds, zonaId) {
       replacements: {
         inventarioId,
         allowedGroupIds,
-        zonaId
+        zonaId: zonaId || null
       },
       type: QueryTypes.SELECT
     }
@@ -220,6 +317,15 @@ async function getTotalesPorMiembro(inventarioId, allowedGroupIds, zonaId) {
 
   return sequelize.query(
     `
+    WITH ultima_ronda AS (
+      SELECT id
+      FROM rondas_conteo
+      WHERE "inventarioId" = :inventarioId
+        AND "tipoRonda" = 'completa'
+        ${zonaId ? 'AND "zonaId" = :zonaId' : ''}
+      ORDER BY "numeroRonda" DESC
+      LIMIT 1
+    )
     SELECT
       u.id AS "id",
       u.nombre AS "nombre",
@@ -229,13 +335,12 @@ async function getTotalesPorMiembro(inventarioId, allowedGroupIds, zonaId) {
       COALESCE(SUM(l.cantidad), 0)::int AS "totalEscaneos",
       COUNT(DISTINCT l.sku)::int AS "productosUnicos"
     FROM lecturas l
+    INNER JOIN ultima_ronda ur ON ur.id = l."rondaId"
     LEFT JOIN usuarios u ON u.id = l."usuarioId"
     LEFT JOIN grupos g ON g.id = l."grupoId"
     LEFT JOIN zonas z ON z.id = l."zonaId"
-    LEFT JOIN rondas_conteo r ON r.id = l."rondaId"
     WHERE l."inventarioId" = :inventarioId
       AND l.estado = 'valida'
-      AND (l."rondaId" IS NULL OR r."tipoRonda" != 'reconteo')
       ${filter}
     GROUP BY u.id, u.nombre, u.email
     ORDER BY u.nombre ASC
@@ -244,7 +349,7 @@ async function getTotalesPorMiembro(inventarioId, allowedGroupIds, zonaId) {
       replacements: {
         inventarioId,
         allowedGroupIds,
-        zonaId
+        zonaId: zonaId || null
       },
       type: QueryTypes.SELECT
     }
@@ -300,8 +405,7 @@ async function buildComparisonData(
     inventarioComparadoId,
     allowedGroupIds,
     zonaBaseId,
-    zonaComparadaId,
-    true
+    zonaComparadaId
   );
 
   const coinciden = comparisonRows.filter((row) => row.estado === 'coincide');
@@ -527,7 +631,6 @@ async function exportarComparacionExcel(req, res, next) {
   }
 }
 
-// NUEVA FUNCIÓN: Generar reconteo desde comparación
 async function generarReconteoDesdeComparacion(req, res, next) {
   try {
     const { inventarioBaseId, inventarioComparadoId, zonaId } = req.body;
@@ -539,7 +642,6 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       });
     }
 
-    // Validar que los inventarios existan
     const [inventarioBase, inventarioComparado] = await Promise.all([
       Inventario.findByPk(inventarioBaseId),
       Inventario.findByPk(inventarioComparadoId)
@@ -552,7 +654,6 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       });
     }
 
-    // Obtener las diferencias entre los dos inventarios
     const allowedGroupIds = await getAllowedGroupIds(req);
     
     const comparisonRows = await getSkuComparisonRows(
@@ -572,10 +673,8 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       });
     }
 
-    // Crear una nueva ronda de reconteo en el inventario base
     const zona = zonaId ? await Zona.findByPk(zonaId) : null;
     
-    // Obtener el último número de ronda para este inventario y zona
     const lastRonda = await RondaConteo.findOne({
       where: {
         inventarioId: inventarioBaseId,
@@ -595,7 +694,6 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       estado: 'pendiente'
     });
 
-    // Crear o actualizar discrepancias_conteo para cada SKU que difiere
     for (const diferencia of diferencias) {
       await DiscrepanciaConteo.upsert({
         inventarioId: inventarioBaseId,
@@ -626,5 +724,5 @@ async function generarReconteoDesdeComparacion(req, res, next) {
 module.exports = {
   compareInventarios,
   exportarComparacionExcel,
-  generarReconteoDesdeComparacion  // ← EXPORTADA CORRECTAMENTE
+  generarReconteoDesdeComparacion
 };
