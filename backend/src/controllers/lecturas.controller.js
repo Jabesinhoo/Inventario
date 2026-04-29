@@ -526,7 +526,7 @@ async function scanLecturaRonda(req, res, next) {
         pendienteOtraZona.map((x) => x.toJSON())
       );
 
-      if(!pendiente) {
+      if (!pendiente) {
         const pendienteEnOtraRonda = await DiscrepanciaConteo.findOne({
           where: {
             sku: skuFinal,
@@ -770,40 +770,94 @@ async function anularLectura(req, res, next) {
   }
 }
 
+// ==================== RESUMEN Y CONSULTAS ====================
+
 async function getResumenLecturas(req, res, next) {
   try {
     const { inventarioId, conteoTipo, zonaId, grupoId, rondaId } = req.query;
 
-    const where = {
-      estado: 'valida'
-    };
+    // Si se filtra por una ronda específica, no aplicamos el filtro de tipoRonda
+    // porque el usuario está consultando esa ronda a propósito.
+    // Si no, excluimos las lecturas de rondas de reconteo para no inflar los totales.
+    if (rondaId) {
+      const where = { estado: 'valida', rondaId };
 
-    if (inventarioId) where.inventarioId = inventarioId;
-    if (conteoTipo) where.conteoTipo = conteoTipo;
-    if (zonaId) where.zonaId = zonaId;
-    if (rondaId) where.rondaId = rondaId;
+      if (inventarioId) where.inventarioId = inventarioId;
+      if (conteoTipo) where.conteoTipo = conteoTipo;
+      if (zonaId) where.zonaId = zonaId;
 
-    if (!req.canViewAllGroups && req.grupoId) {
-      where.grupoId = req.grupoId;
-    } else if (grupoId && req.canViewAllGroups) {
-      where.grupoId = grupoId;
+      if (!req.canViewAllGroups && req.grupoId) {
+        where.grupoId = req.grupoId;
+      } else if (grupoId && req.canViewAllGroups) {
+        where.grupoId = grupoId;
+      }
+
+      const resumen = await Lectura.findAll({
+        where,
+        attributes: [
+          'sku',
+          [sequelize.fn('MAX', sequelize.col('descripcionSnapshot')), 'descripcionSnapshot'],
+          [sequelize.fn('SUM', sequelize.col('cantidad')), 'cantidadTotal']
+        ],
+        group: ['sku'],
+        order: [[sequelize.literal('"cantidadTotal"'), 'DESC']]
+      });
+
+      return res.json({ ok: true, data: resumen });
     }
 
-    const resumen = await Lectura.findAll({
-      where,
-      attributes: [
-        'sku',
-        [sequelize.fn('MAX', sequelize.col('descripcionSnapshot')), 'descripcionSnapshot'],
-        [sequelize.fn('SUM', sequelize.col('cantidad')), 'cantidadTotal']
-      ],
-      group: ['sku'],
-      order: [[sequelize.literal('"cantidadTotal"'), 'DESC']]
-    });
+    // Sin rondaId: excluir lecturas de rondas de reconteo para que no inflen el inventario
+    const replacements = {};
+    const conditions = [`l.estado = 'valida'`];
 
-    res.json({
-      ok: true,
-      data: resumen
-    });
+    if (inventarioId) {
+      conditions.push(`l."inventarioId" = :inventarioId`);
+      replacements.inventarioId = inventarioId;
+    }
+
+    if (conteoTipo) {
+      conditions.push(`l."conteoTipo" = :conteoTipo`);
+      replacements.conteoTipo = conteoTipo;
+    }
+
+    if (zonaId) {
+      conditions.push(`l."zonaId" = :zonaId`);
+      replacements.zonaId = zonaId;
+    }
+
+    if (!req.canViewAllGroups && req.grupoId) {
+      conditions.push(`l."grupoId" = :grupoId`);
+      replacements.grupoId = req.grupoId;
+    } else if (grupoId && req.canViewAllGroups) {
+      conditions.push(`l."grupoId" = :grupoId`);
+      replacements.grupoId = grupoId;
+    }
+
+    // Excluir lecturas pertenecientes a rondas de reconteo
+    conditions.push(`(l."rondaId" IS NULL OR r."tipoRonda" != 'reconteo')`);
+
+    const whereClause = conditions.join(' AND ');
+
+    const resumen = await sequelize.query(
+      `
+      SELECT
+        l.sku,
+        MAX(l."descripcionSnapshot") AS "descripcionSnapshot",
+        COALESCE(SUM(l.cantidad), 0)::int AS "cantidadTotal"
+      FROM lecturas l
+      LEFT JOIN rondas_conteo r ON r.id = l."rondaId"
+      WHERE ${whereClause}
+        AND l.sku IS NOT NULL
+      GROUP BY l.sku
+      ORDER BY "cantidadTotal" DESC
+      `,
+      {
+        replacements,
+        type: require('sequelize').QueryTypes.SELECT
+      }
+    );
+
+    return res.json({ ok: true, data: resumen });
   } catch (error) {
     next(error);
   }

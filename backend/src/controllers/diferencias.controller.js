@@ -1,7 +1,7 @@
 const Joi = require('joi');
 const ExcelJS = require('exceljs');
 const { QueryTypes } = require('sequelize');
-const { sequelize, Zona } = require('../models');
+const { sequelize, Zona, Inventario, RondaConteo, DiscrepanciaConteo, Lectura, Grupo } = require('../models');
 
 const compareSchema = Joi.object({
   inventarioBaseId: Joi.number().integer().required(),
@@ -79,12 +79,15 @@ function buildLecturasFilterSql({
   return sql;
 }
 
+// Reemplaza la función getSkuComparisonRows completa con esta:
+
 async function getSkuComparisonRows(
   inventarioBaseId,
   inventarioComparadoId,
   allowedGroupIds,
   zonaBaseId,
-  zonaComparadaId
+  zonaComparadaId,
+  esInventarioComparado = false  // NUEVO PARÁMETRO
 ) {
   const filterBase = buildLecturasFilterSql({
     groupIds: allowedGroupIds,
@@ -94,14 +97,7 @@ async function getSkuComparisonRows(
     zonaParam: 'zonaBaseId'
   });
 
-  const filterComparado = buildLecturasFilterSql({
-    groupIds: allowedGroupIds,
-    zonaId: zonaComparadaId,
-    alias: 'l',
-    groupParam: 'allowedGroupIds',
-    zonaParam: 'zonaComparadaId'
-  });
-
+  // Para el inventario BASE: excluimos reconteos (usamos SOLO ronda 1)
   const baseRows = await sequelize.query(
     `
     SELECT
@@ -109,9 +105,12 @@ async function getSkuComparisonRows(
       MAX(l."descripcionSnapshot") AS "descripcion",
       COALESCE(SUM(l.cantidad), 0)::int AS "cantidad"
     FROM lecturas l
+    LEFT JOIN rondas_conteo r ON r.id = l."rondaId"
     WHERE l."inventarioId" = :inventarioBaseId
       AND l.estado = 'valida'
       AND l.sku IS NOT NULL
+      AND (l."rondaId" IS NULL OR r."tipoRonda" != 'reconteo')
+      AND (r."tipoRonda" != 'reconteo' OR r."tipoRonda" IS NULL)
       ${filterBase}
     GROUP BY l.sku
     ORDER BY l.sku ASC
@@ -126,19 +125,31 @@ async function getSkuComparisonRows(
     }
   );
 
+  // Para el inventario COMPARADO: tomamos la ÚLTIMA ronda de cada SKU (incluye reconteos)
   const comparadoRows = await sequelize.query(
     `
+    WITH ultimas_lecturas AS (
+      SELECT DISTINCT ON (l.sku)
+        l.sku,
+        l."descripcionSnapshot" AS descripcion,
+        COALESCE(l.cantidad, 0) AS cantidad,
+        r."tipoRonda",
+        r."numeroRonda"
+      FROM lecturas l
+      LEFT JOIN rondas_conteo r ON r.id = l."rondaId"
+      WHERE l."inventarioId" = :inventarioComparadoId
+        AND l.estado = 'valida'
+        AND l.sku IS NOT NULL
+        ${filterBase.replace(/l\./g, 'l.')}
+      ORDER BY l.sku, r."numeroRonda" DESC NULLS LAST
+    )
     SELECT
-      l.sku AS "sku",
-      MAX(l."descripcionSnapshot") AS "descripcion",
-      COALESCE(SUM(l.cantidad), 0)::int AS "cantidad"
-    FROM lecturas l
-    WHERE l."inventarioId" = :inventarioComparadoId
-      AND l.estado = 'valida'
-      AND l.sku IS NOT NULL
-      ${filterComparado}
-    GROUP BY l.sku
-    ORDER BY l.sku ASC
+      sku AS "sku",
+      MAX(descripcion) AS "descripcion",
+      COALESCE(SUM(cantidad), 0)::int AS "cantidad"
+    FROM ultimas_lecturas
+    GROUP BY sku
+    ORDER BY sku ASC
     `,
     {
       replacements: {
@@ -208,12 +219,12 @@ async function getTotalesPorGrupo(inventarioId, allowedGroupIds, zonaId) {
       COALESCE(SUM(l.cantidad), 0)::int AS "totalEscaneos",
       COUNT(DISTINCT l.sku)::int AS "productosUnicos"
     FROM lecturas l
-    LEFT JOIN grupos g
-      ON g.id = l."grupoId"
-    LEFT JOIN zonas z
-      ON z.id = l."zonaId"
+    LEFT JOIN grupos g ON g.id = l."grupoId"
+    LEFT JOIN zonas z ON z.id = l."zonaId"
+    LEFT JOIN rondas_conteo r ON r.id = l."rondaId"
     WHERE l."inventarioId" = :inventarioId
       AND l.estado = 'valida'
+      AND (l."rondaId" IS NULL OR r."tipoRonda" != 'reconteo')
       ${filter}
     GROUP BY g.id, g.nombre
     ORDER BY g.nombre ASC
@@ -247,10 +258,11 @@ async function getTotalesPorZona(inventarioId, allowedGroupIds, zonaId) {
       COALESCE(SUM(l.cantidad), 0)::int AS "totalEscaneos",
       COUNT(DISTINCT l.sku)::int AS "productosUnicos"
     FROM lecturas l
-    LEFT JOIN zonas z
-      ON z.id = l."zonaId"
+    LEFT JOIN zonas z ON z.id = l."zonaId"
+    LEFT JOIN rondas_conteo r ON r.id = l."rondaId"
     WHERE l."inventarioId" = :inventarioId
       AND l.estado = 'valida'
+      AND (l."rondaId" IS NULL OR r."tipoRonda" != 'reconteo')
       ${filter}
     GROUP BY z.id, z.nombre, z.codigo
     ORDER BY z.nombre ASC
@@ -286,14 +298,13 @@ async function getTotalesPorMiembro(inventarioId, allowedGroupIds, zonaId) {
       COALESCE(SUM(l.cantidad), 0)::int AS "totalEscaneos",
       COUNT(DISTINCT l.sku)::int AS "productosUnicos"
     FROM lecturas l
-    LEFT JOIN usuarios u
-      ON u.id = l."usuarioId"
-    LEFT JOIN grupos g
-      ON g.id = l."grupoId"
-    LEFT JOIN zonas z
-      ON z.id = l."zonaId"
+    LEFT JOIN usuarios u ON u.id = l."usuarioId"
+    LEFT JOIN grupos g ON g.id = l."grupoId"
+    LEFT JOIN zonas z ON z.id = l."zonaId"
+    LEFT JOIN rondas_conteo r ON r.id = l."rondaId"
     WHERE l."inventarioId" = :inventarioId
       AND l.estado = 'valida'
+      AND (l."rondaId" IS NULL OR r."tipoRonda" != 'reconteo')
       ${filter}
     GROUP BY u.id, u.nombre, u.email
     ORDER BY u.nombre ASC
@@ -358,7 +369,8 @@ async function buildComparisonData(
     inventarioComparadoId,
     allowedGroupIds,
     zonaBaseId,
-    zonaComparadaId
+    zonaComparadaId,
+    true
   );
 
   const coinciden = comparisonRows.filter((row) => row.estado === 'coincide');
@@ -584,7 +596,104 @@ async function exportarComparacionExcel(req, res, next) {
   }
 }
 
+// NUEVA FUNCIÓN: Generar reconteo desde comparación
+async function generarReconteoDesdeComparacion(req, res, next) {
+  try {
+    const { inventarioBaseId, inventarioComparadoId, zonaId } = req.body;
+
+    if (!inventarioBaseId || !inventarioComparadoId) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Se requiere inventarioBaseId y inventarioComparadoId'
+      });
+    }
+
+    // Validar que los inventarios existan
+    const [inventarioBase, inventarioComparado] = await Promise.all([
+      Inventario.findByPk(inventarioBaseId),
+      Inventario.findByPk(inventarioComparadoId)
+    ]);
+
+    if (!inventarioBase || !inventarioComparado) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Uno de los inventarios no existe'
+      });
+    }
+
+    // Obtener las diferencias entre los dos inventarios
+    const allowedGroupIds = await getAllowedGroupIds(req);
+    
+    const comparisonRows = await getSkuComparisonRows(
+      inventarioBaseId,
+      inventarioComparadoId,
+      allowedGroupIds,
+      zonaId || null,
+      zonaId || null
+    );
+
+    const diferencias = comparisonRows.filter(row => row.estado === 'difiere');
+
+    if (diferencias.length === 0) {
+      return res.status(400).json({
+        ok: false,
+        message: 'No hay diferencias entre los inventarios para generar un reconteo'
+      });
+    }
+
+    // Crear una nueva ronda de reconteo en el inventario base
+    const zona = zonaId ? await Zona.findByPk(zonaId) : null;
+    
+    // Obtener el último número de ronda para este inventario y zona
+    const lastRonda = await RondaConteo.findOne({
+      where: {
+        inventarioId: inventarioBaseId,
+        zonaId: zonaId || null
+      },
+      order: [['numeroRonda', 'DESC']],
+      attributes: ['numeroRonda']
+    });
+
+    const nextRondaNumero = (lastRonda?.numeroRonda || 0) + 1;
+
+    const nuevaRonda = await RondaConteo.create({
+      inventarioId: inventarioBaseId,
+      zonaId: zonaId || null,
+      numeroRonda: nextRondaNumero,
+      tipoRonda: 'reconteo',
+      estado: 'pendiente'
+    });
+
+    // Crear o actualizar discrepancias_conteo para cada SKU que difiere
+    for (const diferencia of diferencias) {
+      await DiscrepanciaConteo.upsert({
+        inventarioId: inventarioBaseId,
+        sku: diferencia.sku,
+        zonaId: zonaId || null,
+        cantidadRonda1: diferencia.cantidadBase,
+        cantidadUltima: diferencia.cantidadComparada,
+        cantidadFinal: null,
+        estado: 'pendiente',
+        rondaReconteoId: nuevaRonda.id
+      });
+    }
+
+    res.json({
+      ok: true,
+      message: `Ronda de reconteo generada exitosamente con ${diferencias.length} SKUs para corregir`,
+      data: {
+        ronda: nuevaRonda,
+        totalDiferencias: diferencias.length
+      }
+    });
+  } catch (error) {
+    console.error('Error en generarReconteoDesdeComparacion:', error);
+    next(error);
+  }
+}
+
 module.exports = {
   compareInventarios,
-  exportarComparacionExcel
+  exportarComparacionExcel,
+  generarReconteoDesdeComparacion  // ← EXPORTADA CORRECTAMENTE
 };

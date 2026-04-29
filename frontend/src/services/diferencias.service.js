@@ -43,3 +43,14 @@ export async function exportarDiferenciasExcel(params) {
   link.remove();
   window.URL.revokeObjectURL(url);
 }
+
+// NUEVA FUNCIÓN: Generar ronda de reconteo desde comparación
+export async function generarRondaReconteoDesdeComparacion(data) {
+  const response = await api.post('/diferencias/reconteo', {
+    inventarioBaseId: data.inventarioBaseId,
+    inventarioComparadoId: data.inventarioComparadoId,
+    zonaId: data.zonaId
+  });
+  
+  return response;
+}
