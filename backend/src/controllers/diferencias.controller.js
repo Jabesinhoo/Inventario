@@ -79,87 +79,17 @@ function buildLecturasFilterSql({
   return sql;
 }
 
-// Reemplaza la función getSkuComparisonRows completa con esta:
-
 async function getSkuComparisonRows(
   inventarioBaseId,
   inventarioComparadoId,
   allowedGroupIds,
   zonaBaseId,
-  zonaComparadaId,
-  esInventarioComparado = false  // NUEVO PARÁMETRO
+  zonaComparadaId
 ) {
-  const filterBase = buildLecturasFilterSql({
-    groupIds: allowedGroupIds,
-    zonaId: zonaBaseId,
-    alias: 'l',
-    groupParam: 'allowedGroupIds',
-    zonaParam: 'zonaBaseId'
-  });
-
-  // Para el inventario BASE: excluimos reconteos (usamos SOLO ronda 1)
-  const baseRows = await sequelize.query(
-    `
-    SELECT
-      l.sku AS "sku",
-      MAX(l."descripcionSnapshot") AS "descripcion",
-      COALESCE(SUM(l.cantidad), 0)::int AS "cantidad"
-    FROM lecturas l
-    LEFT JOIN rondas_conteo r ON r.id = l."rondaId"
-    WHERE l."inventarioId" = :inventarioBaseId
-      AND l.estado = 'valida'
-      AND l.sku IS NOT NULL
-      AND (l."rondaId" IS NULL OR r."tipoRonda" != 'reconteo')
-      AND (r."tipoRonda" != 'reconteo' OR r."tipoRonda" IS NULL)
-      ${filterBase}
-    GROUP BY l.sku
-    ORDER BY l.sku ASC
-    `,
-    {
-      replacements: {
-        inventarioBaseId,
-        allowedGroupIds,
-        zonaBaseId
-      },
-      type: QueryTypes.SELECT
-    }
-  );
-
-  // Para el inventario COMPARADO: tomamos la ÚLTIMA ronda de cada SKU (incluye reconteos)
-  const comparadoRows = await sequelize.query(
-    `
-    WITH ultimas_lecturas AS (
-      SELECT DISTINCT ON (l.sku)
-        l.sku,
-        l."descripcionSnapshot" AS descripcion,
-        COALESCE(l.cantidad, 0) AS cantidad,
-        r."tipoRonda",
-        r."numeroRonda"
-      FROM lecturas l
-      LEFT JOIN rondas_conteo r ON r.id = l."rondaId"
-      WHERE l."inventarioId" = :inventarioComparadoId
-        AND l.estado = 'valida'
-        AND l.sku IS NOT NULL
-        ${filterBase.replace(/l\./g, 'l.')}
-      ORDER BY l.sku, r."numeroRonda" DESC NULLS LAST
-    )
-    SELECT
-      sku AS "sku",
-      MAX(descripcion) AS "descripcion",
-      COALESCE(SUM(cantidad), 0)::int AS "cantidad"
-    FROM ultimas_lecturas
-    GROUP BY sku
-    ORDER BY sku ASC
-    `,
-    {
-      replacements: {
-        inventarioComparadoId,
-        allowedGroupIds,
-        zonaComparadaId
-      },
-      type: QueryTypes.SELECT
-    }
-  );
+  const [baseRows, comparadoRows] = await Promise.all([
+    getSkuRowsFromUltimaRonda(inventarioBaseId, allowedGroupIds, zonaBaseId),
+    getSkuRowsFromUltimaRonda(inventarioComparadoId, allowedGroupIds, zonaComparadaId)
+  ]);
 
   const baseMap = new Map();
   const comparadoMap = new Map();
@@ -200,6 +130,7 @@ async function getSkuComparisonRows(
     };
   });
 }
+
 
 async function getTotalesPorGrupo(inventarioId, allowedGroupIds, zonaId) {
   const filter = buildLecturasFilterSql({
