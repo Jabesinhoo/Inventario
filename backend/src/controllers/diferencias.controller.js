@@ -79,7 +79,6 @@ function buildLecturasFilterSql({
   return sql;
 }
 
-// FUNCIÓN CORREGIDA: Ahora usa SOLO la última ronda completa de cada inventario
 async function getSkuComparisonRows(
   inventarioBaseId,
   inventarioComparadoId,
@@ -103,7 +102,6 @@ async function getSkuComparisonRows(
     zonaParam: 'zonaComparadaId'
   });
 
-  // Query para obtener SOLO la última ronda completa del inventario base
   const baseRows = await sequelize.query(
     `
     WITH ultima_ronda_base AS (
@@ -138,7 +136,6 @@ async function getSkuComparisonRows(
     }
   );
 
-  // Query para obtener SOLO la última ronda completa del inventario comparado
   const comparadoRows = await sequelize.query(
     `
     WITH ultima_ronda_comparado AS (
@@ -437,10 +434,11 @@ async function buildComparisonData(
     resumen: {
       inventarioBaseId,
       inventarioComparadoId,
-      totalComparados: comparisonRows.length,
-      totalCoinciden: coinciden.length,
-      totalDifieren: diferencias.length
+      totalItemsComparados: comparisonRows.length,
+      totalDiferencias: diferencias.length,
+      totalDiferenciaUnidades: diferencias.reduce((sum, row) => sum + Math.abs(row.diferencia), 0)
     },
+    comparacion: comparisonRows,  // ← ESTA ES LA LÍNEA CLAVE
     coinciden,
     diferencias,
     totales: {
@@ -577,9 +575,9 @@ async function exportarComparacionExcel(req, res, next) {
       { concepto: 'Inventario Comparado', valor: data.resumen.inventarioComparadoId },
       { concepto: 'Zona Base', valor: data.filtros.zonaBase?.nombre || 'Todas' },
       { concepto: 'Zona Comparada', valor: data.filtros.zonaComparada?.nombre || 'Todas' },
-      { concepto: 'Total Comparados', valor: data.resumen.totalComparados },
-      { concepto: 'Total Coinciden', valor: data.resumen.totalCoinciden },
-      { concepto: 'Total Difieren', valor: data.resumen.totalDifieren }
+      { concepto: 'Total Comparados', valor: data.resumen.totalItemsComparados },
+      { concepto: 'Total Coinciden', valor: data.coinciden.length },
+      { concepto: 'Total Difieren', valor: data.diferencias.length }
     ]);
 
     coincidenSheet.addRows(data.coinciden);
@@ -712,6 +710,7 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       message: `Ronda de reconteo generada exitosamente con ${diferencias.length} SKUs para corregir`,
       data: {
         ronda: nuevaRonda,
+        inventarioObjetivoId: inventarioBaseId,
         totalDiferencias: diferencias.length
       }
     });
