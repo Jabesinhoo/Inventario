@@ -517,35 +517,26 @@ async function compareInventarios(req, res, next) {
 
 async function exportarComparacionExcel(req, res, next) {
   try {
-    console.log('📥 [1/6] Iniciando exportación...');
-    
+    console.log('📥 Iniciando exportación completa...');
+
     const { error, value } = compareSchema.validate(req.query);
 
     if (error) {
-      console.log('❌ Error validación:', error.details[0].message);
       return res.status(400).json({
         ok: false,
         message: error.details[0].message
       });
     }
 
-    console.log('✅ [2/6] Validación OK');
-    console.log('   inventarioBaseId:', value.inventarioBaseId);
-    console.log('   inventarioComparadoId:', value.inventarioComparadoId);
-
     // Obtener cantidades aceptadas
     let cantidadesAceptadas = {};
     if (req.query.cantidadesAceptadas) {
       try {
         cantidadesAceptadas = JSON.parse(req.query.cantidadesAceptadas);
-        console.log(`   cantidadesAceptadas: ${Object.keys(cantidadesAceptadas).length} SKUs`);
-      } catch (e) {
-        console.error('Error parsing cantidadesAceptadas:', e.message);
-      }
+      } catch (e) {}
     }
 
-    console.log('✅ [3/6] Construyendo datos de comparación...');
-    
+    // Obtener datos de comparación
     const data = await buildComparisonData(
       req,
       Number(value.inventarioBaseId),
@@ -554,67 +545,305 @@ async function exportarComparacionExcel(req, res, next) {
       value.zonaComparadaId ? Number(value.zonaComparadaId) : null
     );
 
-    console.log(`✅ [4/6] Datos obtenidos: ${data.diferencias.length} diferencias`);
-
-    // Crear Excel básico (sin SQL Server por ahora)
-    console.log('📝 [5/6] Creando Excel...');
-    
-    const ExcelJS = require('exceljs');
     const workbook = new ExcelJS.Workbook();
-    const worksheet = workbook.addWorksheet('INVENTARIO');
+    
+    // Colores para las gráficas
+    const colores = ['#2563eb', '#16a34a', '#dc2626', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
 
-    // Columnas básicas
-    worksheet.columns = [
+    // ==================== HOJA 1: INVENTARIO ====================
+    const inventarioSheet = workbook.addWorksheet('INVENTARIO');
+    
+    inventarioSheet.columns = [
       { header: 'Empresa', key: 'empresa', width: 30 },
       { header: 'Tipo Documento', key: 'tipoDocumento', width: 15 },
+      { header: 'Documento Número', key: 'documentoNumero', width: 20 },
       { header: 'Fecha', key: 'fecha', width: 12 },
+      { header: 'Elaborado', key: 'elaborado', width: 20 },
+      { header: 'Destino', key: 'destino', width: 25 },
+      { header: 'Nota', key: 'nota', width: 35 },
+      { header: 'Verificado', key: 'verificado', width: 12 },
+      { header: 'Anulado', key: 'anulado', width: 10 },
       { header: 'Producto', key: 'producto', width: 20 },
-      { header: 'Descripción', key: 'descripcion', width: 50 },
       { header: 'Bodega', key: 'bodega', width: 15 },
+      { header: 'Unidad De Medida', key: 'unidadMedida', width: 15 },
+      { header: 'Cantidad Físico', key: 'cantidadFisico', width: 15 },
+      { header: 'Cantidad Sistema', key: 'cantidadSistema', width: 15 },
+      { header: 'IVA', key: 'iva', width: 10 },
+      { header: 'Valor Unitario', key: 'valorUnitario', width: 15 },
+      { header: 'Descuento', key: 'descuento', width: 10 },
+      { header: 'Vencimiento', key: 'vencimiento', width: 12 },
+      { header: 'Lote', key: 'lote', width: 15 },
+      { header: 'Talla', key: 'talla', width: 10 },
+      { header: 'Color', key: 'color', width: 15 }
+    ];
+
+    inventarioSheet.getRow(1).font = { bold: true };
+    inventarioSheet.getRow(1).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF2563eb' }
+    };
+    inventarioSheet.getRow(1).font = { color: { argb: 'FFFFFFFF' }, bold: true };
+
+    const fechaActual = new Date();
+    const fechaStr = fechaActual.toISOString().slice(0, 10);
+    const mesActual = fechaActual.toLocaleString('es', { month: 'long' });
+    const nombreEmpresa = 'TECNOCOMPUTER MELISSA SANDOVAL';
+
+    // Agregar TODOS los productos de la comparación (coincidencias y diferencias)
+    const todosProductos = [...(data.comparacion || [])];
+    
+    for (const producto of todosProductos) {
+      const cantidadAceptada = cantidadesAceptadas[producto.sku] || producto.cantidadComparada;
+      
+      // BODEGA
+      inventarioSheet.addRow({
+        empresa: nombreEmpresa,
+        tipoDocumento: 'AI',
+        documentoNumero: '',
+        fecha: fechaStr,
+        elaborado: req.user?.nombre || 'Admin',
+        destino: 'SIN GRUPO',
+        nota: `Inventario - ${mesActual}`,
+        verificado: -1,
+        anulado: 0,
+        producto: producto.sku,
+        bodega: 'BODEGA',
+        unidadMedida: 'Und.',
+        cantidadFisico: cantidadAceptada,
+        cantidadSistema: 0,
+        iva: 0,
+        valorUnitario: 0,
+        descuento: 0,
+        vencimiento: fechaStr,
+        lote: '',
+        talla: '',
+        color: ''
+      });
+      
+      // EXHIBICION
+      inventarioSheet.addRow({
+        empresa: nombreEmpresa,
+        tipoDocumento: 'AI',
+        documentoNumero: '',
+        fecha: fechaStr,
+        elaborado: req.user?.nombre || 'Admin',
+        destino: 'SIN GRUPO',
+        nota: `Inventario - ${mesActual}`,
+        verificado: -1,
+        anulado: 0,
+        producto: producto.sku,
+        bodega: 'EXHIBICION',
+        unidadMedida: 'Und.',
+        cantidadFisico: cantidadAceptada,
+        cantidadSistema: 0,
+        iva: 0,
+        valorUnitario: 0,
+        descuento: 0,
+        vencimiento: fechaStr,
+        lote: '',
+        talla: '',
+        color: ''
+      });
+    }
+
+    // ==================== HOJA 2: RESUMEN GENERAL ====================
+    const resumenSheet = workbook.addWorksheet('RESUMEN GENERAL');
+    resumenSheet.columns = [
+      { header: 'Concepto', key: 'concepto', width: 35 },
+      { header: 'Valor', key: 'valor', width: 25 },
+      { header: 'Detalle', key: 'detalle', width: 30 }
+    ];
+
+    resumenSheet.getRow(1).font = { bold: true };
+    resumenSheet.getRow(1).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF2563eb' }
+    };
+    resumenSheet.getRow(1).font = { color: { argb: 'FFFFFFFF' }, bold: true };
+
+    const totalUnidadesBase = todosProductos.reduce((sum, p) => sum + p.cantidadBase, 0);
+    const totalUnidadesComparado = todosProductos.reduce((sum, p) => sum + p.cantidadComparada, 0);
+    const totalUnidadesAceptadas = todosProductos.reduce((sum, p) => sum + (cantidadesAceptadas[p.sku] || p.cantidadComparada), 0);
+
+    resumenSheet.addRows([
+      { concepto: '📊 INFORMACIÓN GENERAL', valor: '', detalle: '' },
+      { concepto: 'Fecha Exportación', valor: fechaActual.toLocaleString(), detalle: '' },
+      { concepto: 'Empresa', valor: nombreEmpresa, detalle: '' },
+      { concepto: 'Elaborado Por', valor: req.user?.nombre || 'Admin', detalle: '' },
+      { concepto: '', valor: '', detalle: '' },
+      { concepto: '📦 INVENTARIOS COMPARADOS', valor: '', detalle: '' },
+      { concepto: 'Inventario Base ID', valor: data.resumen.inventarioBaseId, detalle: '' },
+      { concepto: 'Inventario Comparado ID', valor: data.resumen.inventarioComparadoId, detalle: '' },
+      { concepto: 'Zona Base', valor: data.filtros.zonaBase?.nombre || 'Todas', detalle: '' },
+      { concepto: 'Zona Comparada', valor: data.filtros.zonaComparada?.nombre || 'Todas', detalle: '' },
+      { concepto: '', valor: '', detalle: '' },
+      { concepto: '📈 ESTADÍSTICAS', valor: '', detalle: '' },
+      { concepto: 'Total Productos', valor: todosProductos.length, detalle: '' },
+      { concepto: 'Total Coincidencias', valor: data.coinciden.length, detalle: '' },
+      { concepto: 'Total Diferencias', valor: data.diferencias.length, detalle: '' },
+      { concepto: 'Total SKU Ajustados', valor: Object.keys(cantidadesAceptadas).length, detalle: '' },
+      { concepto: '', valor: '', detalle: '' },
+      { concepto: '📊 CANTIDADES', valor: '', detalle: '' },
+      { concepto: 'Total Unidades Base', valor: totalUnidadesBase.toLocaleString(), detalle: '' },
+      { concepto: 'Total Unidades Comparado', valor: totalUnidadesComparado.toLocaleString(), detalle: '' },
+      { concepto: 'Total Unidades Aceptadas', valor: totalUnidadesAceptadas.toLocaleString(), detalle: '' },
+      { concepto: 'Diferencia Global', valor: (totalUnidadesAceptadas - totalUnidadesBase).toLocaleString(), detalle: '' }
+    ]);
+
+    // ==================== HOJA 3: RESULTADOS POR GRUPO ====================
+    const gruposSheet = workbook.addWorksheet('RESULTADOS POR GRUPO');
+    gruposSheet.columns = [
+      { header: 'Grupo', key: 'grupo', width: 25 },
+      { header: 'Inventario', key: 'inventario', width: 20 },
+      { header: 'Zona', key: 'zona', width: 25 },
+      { header: 'Total Escaneos', key: 'totalEscaneos', width: 15 },
+      { header: 'Productos Únicos', key: 'productosUnicos', width: 15 },
+      { header: 'Participación', key: 'participacion', width: 12 }
+    ];
+
+    gruposSheet.getRow(1).font = { bold: true };
+    gruposSheet.getRow(1).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF2563eb' }
+    };
+    gruposSheet.getRow(1).font = { color: { argb: 'FFFFFFFF' }, bold: true };
+
+    // Grupos Base
+    for (const grupo of data.totales.base.grupos) {
+      gruposSheet.addRow({
+        grupo: grupo.nombre,
+        inventario: 'BASE',
+        zona: grupo.zona || 'N/A',
+        totalEscaneos: grupo.totalEscaneos,
+        productosUnicos: grupo.productosUnicos,
+        participacion: ''
+      });
+    }
+    
+    gruposSheet.addRow({ grupo: '', inventario: '', zona: '', totalEscaneos: '', productosUnicos: '', participacion: '' });
+    
+    // Grupos Comparado
+    for (const grupo of data.totales.comparado.grupos) {
+      gruposSheet.addRow({
+        grupo: grupo.nombre,
+        inventario: 'COMPARADO',
+        zona: grupo.zona || 'N/A',
+        totalEscaneos: grupo.totalEscaneos,
+        productosUnicos: grupo.productosUnicos,
+        participacion: ''
+      });
+    }
+
+    // ==================== HOJA 4: RESULTADOS POR ZONA ====================
+    const zonasSheet = workbook.addWorksheet('RESULTADOS POR ZONA');
+    zonasSheet.columns = [
+      { header: 'Zona', key: 'zona', width: 25 },
+      { header: 'Código', key: 'codigo', width: 15 },
+      { header: 'Inventario', key: 'inventario', width: 20 },
+      { header: 'Total Escaneos', key: 'totalEscaneos', width: 15 },
+      { header: 'Productos Únicos', key: 'productosUnicos', width: 15 }
+    ];
+
+    zonasSheet.getRow(1).font = { bold: true };
+    zonasSheet.getRow(1).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF2563eb' }
+    };
+    zonasSheet.getRow(1).font = { color: { argb: 'FFFFFFFF' }, bold: true };
+
+    for (const zona of data.totales.base.zonas) {
+      zonasSheet.addRow({
+        zona: zona.nombre,
+        codigo: zona.codigo || 'N/A',
+        inventario: 'BASE',
+        totalEscaneos: zona.totalEscaneos,
+        productosUnicos: zona.productosUnicos
+      });
+    }
+    
+    zonasSheet.addRow({ zona: '', codigo: '', inventario: '', totalEscaneos: '', productosUnicos: '' });
+    
+    for (const zona of data.totales.comparado.zonas) {
+      zonasSheet.addRow({
+        zona: zona.nombre,
+        codigo: zona.codigo || 'N/A',
+        inventario: 'COMPARADO',
+        totalEscaneos: zona.totalEscaneos,
+        productosUnicos: zona.productosUnicos
+      });
+    }
+
+    // ==================== HOJA 5: RESULTADOS POR MIEMBRO ====================
+    const miembrosSheet = workbook.addWorksheet('RESULTADOS POR MIEMBRO');
+    miembrosSheet.columns = [
+      { header: 'Miembro', key: 'miembro', width: 25 },
+      { header: 'Email', key: 'email', width: 30 },
+      { header: 'Grupo', key: 'grupo', width: 20 },
+      { header: 'Zona', key: 'zona', width: 20 },
+      { header: 'Inventario', key: 'inventario', width: 20 },
+      { header: 'Total Escaneos', key: 'totalEscaneos', width: 15 }
+    ];
+
+    miembrosSheet.getRow(1).font = { bold: true };
+    miembrosSheet.getRow(1).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF2563eb' }
+    };
+    miembrosSheet.getRow(1).font = { color: { argb: 'FFFFFFFF' }, bold: true };
+
+    for (const miembro of data.totales.base.miembros) {
+      miembrosSheet.addRow({
+        miembro: miembro.nombre,
+        email: miembro.email || 'N/A',
+        grupo: miembro.grupo || 'N/A',
+        zona: miembro.zona || 'N/A',
+        inventario: 'BASE',
+        totalEscaneos: miembro.totalEscaneos
+      });
+    }
+    
+    miembrosSheet.addRow({ miembro: '', email: '', grupo: '', zona: '', inventario: '', totalEscaneos: '' });
+    
+    for (const miembro of data.totales.comparado.miembros) {
+      miembrosSheet.addRow({
+        miembro: miembro.nombre,
+        email: miembro.email || 'N/A',
+        grupo: miembro.grupo || 'N/A',
+        zona: miembro.zona || 'N/A',
+        inventario: 'COMPARADO',
+        totalEscaneos: miembro.totalEscaneos
+      });
+    }
+
+    // ==================== HOJA 6: DETALLE DE DIFERENCIAS ====================
+    const diferenciasSheet = workbook.addWorksheet('DETALLE DE DIFERENCIAS');
+    diferenciasSheet.columns = [
+      { header: 'SKU', key: 'sku', width: 20 },
+      { header: 'Descripción', key: 'descripcion', width: 60 },
       { header: 'Cantidad Base', key: 'cantidadBase', width: 15 },
       { header: 'Cantidad Comparada', key: 'cantidadComparada', width: 15 },
       { header: 'Cantidad Aceptada', key: 'cantidadAceptada', width: 15 },
       { header: 'Diferencia', key: 'diferencia', width: 15 }
     ];
 
-    // Estilos
-    worksheet.getRow(1).font = { bold: true };
-    worksheet.getRow(1).fill = {
+    diferenciasSheet.getRow(1).font = { bold: true };
+    diferenciasSheet.getRow(1).fill = {
       type: 'pattern',
       pattern: 'solid',
       fgColor: { argb: 'FF2563eb' }
     };
-    worksheet.getRow(1).font = { color: { argb: 'FFFFFFFF' }, bold: true };
-
-    const fechaActual = new Date();
-    const fechaStr = fechaActual.toISOString().slice(0, 10);
-    const nombreEmpresa = 'TECNOCOMPUTER MELISSA SANDOVAL';
+    diferenciasSheet.getRow(1).font = { color: { argb: 'FFFFFFFF' }, bold: true };
 
     for (const diff of data.diferencias) {
       const cantidadAceptada = cantidadesAceptadas[diff.sku] || diff.cantidadComparada;
-      
-      // BODEGA
-      worksheet.addRow({
-        empresa: nombreEmpresa,
-        tipoDocumento: 'AI',
-        fecha: fechaStr,
-        producto: diff.sku,
+      diferenciasSheet.addRow({
+        sku: diff.sku,
         descripcion: diff.descripcion,
-        bodega: 'BODEGA',
-        cantidadBase: diff.cantidadBase,
-        cantidadComparada: diff.cantidadComparada,
-        cantidadAceptada: cantidadAceptada,
-        diferencia: cantidadAceptada - diff.cantidadBase
-      });
-      
-      // EXHIBICION
-      worksheet.addRow({
-        empresa: nombreEmpresa,
-        tipoDocumento: 'AI',
-        fecha: fechaStr,
-        producto: diff.sku,
-        descripcion: diff.descripcion,
-        bodega: 'EXHIBICION',
         cantidadBase: diff.cantidadBase,
         cantidadComparada: diff.cantidadComparada,
         cantidadAceptada: cantidadAceptada,
@@ -622,8 +851,46 @@ async function exportarComparacionExcel(req, res, next) {
       });
     }
 
+    // ==================== HOJA 7: GRÁFICAS ====================
+    const graficasSheet = workbook.addWorksheet('GRÁFICAS');
+    
+    // Título
+    graficasSheet.mergeCells('A1:D1');
+    graficasSheet.getCell('A1').value = 'DASHBOARD DE INVENTARIO';
+    graficasSheet.getCell('A1').font = { bold: true, size: 16 };
+    graficasSheet.getCell('A1').alignment = { horizontal: 'center' };
+    
+    // Resumen visual
+    graficasSheet.getCell('A3').value = 'Resumen General:';
+    graficasSheet.getCell('A3').font = { bold: true };
+    
+    graficasSheet.getCell('A4').value = 'Total Productos:';
+    graficasSheet.getCell('B4').value = todosProductos.length;
+    graficasSheet.getCell('A5').value = 'Coincidencias:';
+    graficasSheet.getCell('B5').value = data.coinciden.length;
+    graficasSheet.getCell('A6').value = 'Diferencias:';
+    graficasSheet.getCell('B6').value = data.diferencias.length;
+    
+    // Top productos por cantidad
+    graficasSheet.getCell('D3').value = 'Top 5 Productos por Cantidad:';
+    graficasSheet.getCell('D3').font = { bold: true };
+    
+    const topProductos = [...todosProductos]
+      .sort((a, b) => b.cantidadComparada - a.cantidadComparada)
+      .slice(0, 5);
+    
+    let row = 4;
+    for (let i = 0; i < topProductos.length; i++) {
+      graficasSheet.getCell(`D${row + i}`).value = `${i + 1}. ${topProductos[i].sku} - ${topProductos[i].cantidadComparada} unidades`;
+    }
+    
+    // Estilos para todas las hojas
+    workbook.eachWorksheet((sheet) => {
+      sheet.views = [{ state: 'frozen', ySplit: 1 }];
+    });
+
     // Enviar archivo
-    const filename = `inventario_diferencias_${value.inventarioBaseId}_vs_${value.inventarioComparadoId}_${fechaStr}.xlsx`;
+    const filename = `inventario_completo_${value.inventarioBaseId}_vs_${value.inventarioComparadoId}_${fechaStr}.xlsx`;
     
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
@@ -631,18 +898,16 @@ async function exportarComparacionExcel(req, res, next) {
     await workbook.xlsx.write(res);
     res.end();
 
-    console.log('✅ [6/6] Exportación completada!');
+    console.log('✅ Exportación completa finalizada');
 
   } catch (error) {
-    console.error('❌ ERROR en exportarComparacionExcel:', error.message);
-    console.error('Stack:', error.stack);
+    console.error('❌ Error:', error);
     res.status(500).json({
       ok: false,
       message: 'Error al exportar: ' + error.message
     });
   }
 }
-
 async function generarReconteoDesdeComparacion(req, res, next) {
   console.log('🔥🔥🔥 FUCIÓN LLAMADA: generarReconteoDesdeComparacion 🔥🔥🔥');
   console.log('Body recibido:', JSON.stringify(req.body, null, 2));
