@@ -652,9 +652,9 @@ async function exportarComparacionExcel(req, res, next) {
 }
 
 async function generarReconteoDesdeComparacion(req, res, next) {
-    console.log('🔥🔥🔥 FUCIÓN LLAMADA: generarReconteoDesdeComparacion 🔥🔥🔥');
+  console.log('🔥🔥🔥 FUCIÓN LLAMADA: generarReconteoDesdeComparacion 🔥🔥🔥');
   console.log('Body recibido:', JSON.stringify(req.body, null, 2));
-  
+
   try {
     const { inventarioBaseId, inventarioComparadoId, zonaId } = req.body;
     console.log('📦 Parámetros:', { inventarioBaseId, inventarioComparadoId, zonaId });
@@ -681,7 +681,7 @@ async function generarReconteoDesdeComparacion(req, res, next) {
 
     // Obtener las diferencias entre los dos inventarios
     const allowedGroupIds = await getAllowedGroupIds(req);
-    
+
     const comparisonRows = await getSkuComparisonRows(
       inventarioBaseId,
       inventarioComparadoId,
@@ -701,7 +701,7 @@ async function generarReconteoDesdeComparacion(req, res, next) {
 
     // Crear una nueva ronda de reconteo en el inventario base
     const zona = zonaId ? await Zona.findByPk(zonaId) : null;
-    
+
     // Obtener el último número de ronda para este inventario y zona
     const lastRonda = await RondaConteo.findOne({
       where: {
@@ -723,8 +723,9 @@ async function generarReconteoDesdeComparacion(req, res, next) {
     });
 
     // Crear o actualizar discrepancias_conteo para cada SKU que difiere
+    // Crear discrepancias
     for (const diferencia of diferencias) {
-      await DiscrepanciaConteo.upsert({
+      await DiscrepanciaConteo.create({
         inventarioId: inventarioBaseId,
         sku: diferencia.sku,
         zonaId: zonaId || null,
@@ -733,14 +734,16 @@ async function generarReconteoDesdeComparacion(req, res, next) {
         diferencia: diferencia.diferencia,
         estado: 'pendiente_reconteo',
         rondaReconteoId: nuevaRonda.id,
+        rondaBaseId: lastRonda?.id || 1,  // ← AGREGAR ESTO
         reconteoCount: 0,
         descripcionSnapshot: diferencia.descripcion || 'Sin descripción'
       });
+      console.log(`  ✓ Discrepancia para SKU: ${diferencia.sku}`);
     }
 
     // 🔥 NUEVO: Actualizar o crear la pareja de inventarios
     const { ParejaInventario } = require('../models');
-    
+
     const [pareja, created] = await ParejaInventario.findOrCreate({
       where: {
         inventarioBaseId: inventarioBaseId,
@@ -789,16 +792,16 @@ async function generarReconteoDesdeComparacion(req, res, next) {
 async function completarPareja(req, res, next) {
   try {
     const { parejaId } = req.params;
-    
+
     const pareja = await ParejaInventario.findByPk(parejaId);
-    
+
     if (!pareja) {
       return res.status(404).json({
         ok: false,
         message: 'Pareja de inventarios no encontrada'
       });
     }
-    
+
     // Verificar que todas las discrepancias estén resueltas
     const discrepanciasPendientes = await DiscrepanciaConteo.count({
       where: {
@@ -809,19 +812,19 @@ async function completarPareja(req, res, next) {
         }
       }
     });
-    
+
     if (discrepanciasPendientes > 0) {
       return res.status(400).json({
         ok: false,
         message: `No se puede completar la pareja. Aún hay ${discrepanciasPendientes} discrepancias pendientes.`
       });
     }
-    
+
     await pareja.update({
       estado: 'completada',
       fechaCompletada: new Date()
     });
-    
+
     res.json({
       ok: true,
       message: 'Pareja de inventarios marcada como completada',
