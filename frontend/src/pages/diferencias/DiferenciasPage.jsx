@@ -21,7 +21,7 @@ import {
   generarRondaReconteoDesdeComparacion
 } from '../../services/diferencias.service';
 import api from '../../services/api';
-import './DiferenciasPage.css'; // 🔥 Importar CSS
+import './app.css'; // 🔥 Importar CSS
 
 function normalizeZoneText(value) {
   return String(value || '')
