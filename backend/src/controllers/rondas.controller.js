@@ -565,36 +565,21 @@ async function getPendientesRonda(req, res, next) {
       });
     }
 
-    console.log('\n====== DEBUG getPendientesRonda ======');
-    console.log('Ronda ID:', ronda.id);
-    console.log('Inventario:', ronda.inventarioId);
-    console.log('Zona:', ronda.zonaId);
-    console.log('Numero ronda:', ronda.numeroRonda);
-    console.log('Estado:', ronda.estado);
-
-    const wherePendientes = buildWherePendienteReconteo(ronda);
-    console.log('WHERE pendientes:', JSON.stringify(wherePendientes, null, 2));
-
+    // 🔥 CORREGIDO: Buscar TODOS los SKU pendientes para esta ronda,
+    // sin importar si ya tienen reconteoCount > 0
     const discrepancias = await DiscrepanciaConteo.findAll({
-      where: wherePendientes,
+      where: {
+        inventarioId: ronda.inventarioId,
+        zonaId: ronda.zonaId,
+        rondaReconteoId: ronda.id,
+        estado: {
+          [Op.in]: ['pendiente_reconteo', 'reconteo_en_proceso', 'pendiente']
+        }
+      },
       order: [['diferencia', 'DESC'], ['sku', 'ASC']]
     });
 
-    console.log('Pendientes encontrados:', discrepancias.length);
-    console.log(
-      'Detalle pendientes:',
-      discrepancias.map((x) => ({
-        id: x.id,
-        inventarioId: x.inventarioId,
-        zonaId: x.zonaId,
-        sku: x.sku,
-        diferencia: x.diferencia,
-        estado: x.estado,
-        proximaRondaNumero: x.proximaRondaNumero
-      }))
-    );
-    console.log('=====================================\n');
-
+    // El resto del código igual...
     const skus = [...new Set(discrepancias.map((item) => item.sku).filter(Boolean))];
 
     let mapaDetalle = new Map();
@@ -667,6 +652,7 @@ async function getPendientesRonda(req, res, next) {
     next(error);
   }
 }
+
 
 async function reabrirRonda(req, res, next) {
   try {

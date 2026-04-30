@@ -103,74 +103,49 @@ async function getSkuComparisonRows(
     zonaParam: 'zonaComparadaId'
   });
 
-  const baseRows = await sequelize.query(
-    `
-    WITH ultima_ronda_base AS (
-      SELECT id, "numeroRonda"
-      FROM rondas_conteo
-      WHERE "inventarioId" = :inventarioBaseId
-        AND "tipoRonda" = 'completa'
-        ${zonaBaseId ? 'AND "zonaId" = :zonaBaseId' : ''}
-      ORDER BY "numeroRonda" DESC
-      LIMIT 1
+  // 🔥 NUEVA CONSULTA: Obtener la última lectura de CADA SKU (por fecha de ronda)
+  const getUltimasLecturasQuery = (inventarioId, zonaId, filterSql) => `
+    WITH ultimas_lecturas AS (
+      SELECT DISTINCT ON (l.sku)
+        l.sku,
+        l."descripcionSnapshot" AS descripcion,
+        COALESCE(l.cantidad, 0) AS cantidad,
+        r."createdAt" as ronda_created_at
+      FROM lecturas l
+      LEFT JOIN rondas_conteo r ON r.id = l."rondaId"
+      WHERE l."inventarioId" = ${inventarioId}
+        AND l.estado = 'valida'
+        AND l.sku IS NOT NULL
+        ${zonaId ? `AND l."zonaId" = ${zonaId}` : ''}
+        ${filterSql}
+      ORDER BY l.sku, r."createdAt" DESC NULLS LAST
     )
     SELECT
-      l.sku AS "sku",
-      MAX(l."descripcionSnapshot") AS "descripcion",
-      COALESCE(SUM(l.cantidad), 0)::int AS "cantidad"
-    FROM lecturas l
-    INNER JOIN ultima_ronda_base ur ON ur.id = l."rondaId"
-    WHERE l."inventarioId" = :inventarioBaseId
-      AND l.estado = 'valida'
-      AND l.sku IS NOT NULL
-      ${filterBase}
-    GROUP BY l.sku
-    ORDER BY l.sku ASC
-    `,
+      sku AS "sku",
+      MAX(descripcion) AS "descripcion",
+      COALESCE(SUM(cantidad), 0)::int AS "cantidad"
+    FROM ultimas_lecturas
+    GROUP BY sku
+    ORDER BY sku ASC
+  `;
+
+  const baseRows = await sequelize.query(
+    getUltimasLecturasQuery(inventarioBaseId, zonaBaseId, filterBase),
     {
-      replacements: {
-        inventarioBaseId,
-        allowedGroupIds,
-        zonaBaseId: zonaBaseId || null
-      },
+      replacements: { allowedGroupIds, zonaBaseId: zonaBaseId || null },
       type: QueryTypes.SELECT
     }
   );
 
   const comparadoRows = await sequelize.query(
-    `
-    WITH ultima_ronda_comparado AS (
-      SELECT id, "numeroRonda"
-      FROM rondas_conteo
-      WHERE "inventarioId" = :inventarioComparadoId
-        AND "tipoRonda" = 'completa'
-        ${zonaComparadaId ? 'AND "zonaId" = :zonaComparadaId' : ''}
-      ORDER BY "numeroRonda" DESC
-      LIMIT 1
-    )
-    SELECT
-      l.sku AS "sku",
-      MAX(l."descripcionSnapshot") AS "descripcion",
-      COALESCE(SUM(l.cantidad), 0)::int AS "cantidad"
-    FROM lecturas l
-    INNER JOIN ultima_ronda_comparado ur ON ur.id = l."rondaId"
-    WHERE l."inventarioId" = :inventarioComparadoId
-      AND l.estado = 'valida'
-      AND l.sku IS NOT NULL
-      ${filterComparado}
-    GROUP BY l.sku
-    ORDER BY l.sku ASC
-    `,
+    getUltimasLecturasQuery(inventarioComparadoId, zonaComparadaId, filterComparado),
     {
-      replacements: {
-        inventarioComparadoId,
-        allowedGroupIds,
-        zonaComparadaId: zonaComparadaId || null
-      },
+      replacements: { allowedGroupIds, zonaComparadaId: zonaComparadaId || null },
       type: QueryTypes.SELECT
     }
   );
 
+  // El resto igual...
   const baseMap = new Map();
   const comparadoMap = new Map();
 
