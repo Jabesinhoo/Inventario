@@ -2759,7 +2759,19 @@ input, select, textarea {
     min-width: auto;
   }
 }
+.pending-sku-desc {
+  font-size: 12px;
+  color: #666;
+  margin-top: 4px;
+}
 
+.pending-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 8px 12px;
+  border-bottom: 1px solid #e2e8f0;
+}
 @media (max-width: 480px) {
   .zona-card-header h3 {
     font-size: 15px;

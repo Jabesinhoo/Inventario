@@ -761,9 +761,8 @@ export default function EscaneoPage() {
                         <div key={`${item.sku}-${item.id}`} className="pending-item">
                           <div>
                             <strong>{item.sku}</strong>
-                            <p>{item.descripcionSnapshot || 'Sin descripción'}</p>
+                            <p className="pending-sku-desc">{item.descripcionSnapshot || 'Sin descripción'}</p>
                           </div>
-                          <span className="pending-diff">Dif. {item.diferencia}</span>
                         </div>
                       ))}
                     </div>
