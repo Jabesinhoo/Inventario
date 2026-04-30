@@ -652,8 +652,12 @@ async function exportarComparacionExcel(req, res, next) {
 }
 
 async function generarReconteoDesdeComparacion(req, res, next) {
+    console.log('🔥🔥🔥 FUCIÓN LLAMADA: generarReconteoDesdeComparacion 🔥🔥🔥');
+  console.log('Body recibido:', JSON.stringify(req.body, null, 2));
+  
   try {
     const { inventarioBaseId, inventarioComparadoId, zonaId } = req.body;
+    console.log('📦 Parámetros:', { inventarioBaseId, inventarioComparadoId, zonaId });
 
     if (!inventarioBaseId || !inventarioComparadoId) {
       return res.status(400).json({
