@@ -2728,7 +2728,118 @@ input, select, textarea {
   background: var(--surface-soft);
   border-color: var(--border);
 }
+/* ==================== DIFERENCIAS PAGE - CANTIDAD ACEPTADA ==================== */
 
+/* Columna de cantidad aceptada */
+.cantidad-aceptada-col {
+  width: 140px;
+  text-align: center;
+  background-color: #f8fafc;
+  font-weight: 600;
+}
+
+.cantidad-aceptada-cell {
+  background-color: #fefce8;
+  padding: 8px !important;
+}
+
+.cantidad-aceptada-input {
+  width: 90px;
+  padding: 6px 8px;
+  text-align: center;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  background-color: #ffffff;
+  transition: all 0.2s ease;
+}
+
+.cantidad-aceptada-input:focus {
+  outline: none;
+  border-color: #3b82f6;
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.2);
+}
+
+.cantidad-aceptada-input:hover {
+  border-color: #94a3b8;
+}
+
+/* Estilos para las cantidades base y comparada */
+.cantidad-base {
+  font-weight: 500;
+  color: #1e293b;
+}
+
+.cantidad-comparada {
+  font-weight: 500;
+  color: #1e293b;
+}
+
+/* Estilos para las diferencias */
+.diferencia {
+  font-weight: 600;
+  font-family: monospace;
+}
+
+.text-danger {
+  color: #dc2626 !important;
+}
+
+.text-success {
+  color: #16a34a !important;
+}
+
+/* Fila de advertencia (diferencias) */
+.row-warning {
+  background-color: #fef2f2;
+}
+
+.row-warning:hover {
+  background-color: #fee2e2;
+}
+
+/* Fila de éxito (coincidencias) */
+.row-success {
+  background-color: #f0fdf4;
+}
+
+.row-success:hover {
+  background-color: #dcfce7;
+}
+
+/* Animación de carga */
+.spin {
+  animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Responsive para la tabla de diferencias */
+@media (max-width: 768px) {
+  .cantidad-aceptada-input {
+    width: 70px;
+    padding: 4px 6px;
+    font-size: 11px;
+  }
+  
+  .cantidad-aceptada-col {
+    width: 100px;
+  }
+}
+
+/* Tabla de diferencias */
+.diferencias-table {
+  width: 100%;
+  border-collapse: collapse;
+}
 /* Responsive para rondas */
 @media (max-width: 768px) {
   .zonas-grid {
