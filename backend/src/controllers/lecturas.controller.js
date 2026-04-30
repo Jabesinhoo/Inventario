@@ -476,13 +476,12 @@ async function scanLecturaRonda(req, res, next) {
       console.log('Codigo leido:', codigoLimpio);
       console.log('SKU final:', skuFinal);
 
-      // 🔧 CORRECCIÓN: Buscar pendiente con rondaReconteoId
       pendiente = await DiscrepanciaConteo.findOne({
         where: {
           inventarioId: ronda.inventarioId,
           zonaId: ronda.zonaId,
           sku: skuFinal,
-          rondaReconteoId: ronda.id,  // ← CLAVE: vincular con la ronda actual
+          rondaReconteoId: ronda.id,
           estado: {
             [Op.in]: ['pendiente_reconteo', 'pendiente', 'reconteo_en_proceso']
           }
@@ -492,7 +491,6 @@ async function scanLecturaRonda(req, res, next) {
 
       console.log('Pendiente encontrado con rondaReconteoId:', pendiente ? pendiente.toJSON() : null);
 
-      // Si no encuentra con rondaReconteoId, busca sin él (fallback)
       if (!pendiente) {
         pendiente = await DiscrepanciaConteo.findOne({
           where: {
@@ -508,7 +506,6 @@ async function scanLecturaRonda(req, res, next) {
 
         console.log('Pendiente encontrado sin rondaReconteoId (fallback):', pendiente ? pendiente.toJSON() : null);
 
-        // Si existe pendiente pero no tiene rondaReconteoId, actualízalo
         if (pendiente && !pendiente.rondaReconteoId) {
           await pendiente.update(
             {
@@ -603,6 +600,20 @@ async function scanLecturaRonda(req, res, next) {
         },
         { transaction }
       );
+
+      // 🔥 NUEVO: Si la diferencia es 0, marcar como conciliado
+      if (nuevaDiferencia === 0) {
+        await pendiente.update(
+          {
+            estado: 'conciliado',
+            cantidadFinal: cantidadTotalReconteo,
+            criterioCierre: `reconteo_completado_ronda_${ronda.numeroRonda}`,
+            cerradoEn: new Date()
+          },
+          { transaction }
+        );
+        console.log(`✅ SKU ${skuFinal} conciliado (diferencia 0)`);
+      }
     }
 
     const totalEscaneosRonda = await Lectura.sum('cantidad', {
