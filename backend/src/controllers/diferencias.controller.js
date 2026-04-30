@@ -8,7 +8,8 @@ const compareSchema = Joi.object({
   inventarioBaseId: Joi.number().integer().required(),
   inventarioComparadoId: Joi.number().integer().required(),
   zonaBaseId: Joi.number().integer().allow(null, ''),
-  zonaComparadaId: Joi.number().integer().allow(null, '')
+  zonaComparadaId: Joi.number().integer().allow(null, ''),
+  cantidadesAceptadas: Joi.string().allow(null, '')  // ← AGREGAR ESTO
 });
 
 function isAdminOrSupervisor(req) {
@@ -516,22 +517,28 @@ async function compareInventarios(req, res, next) {
 
 async function exportarComparacionExcel(req, res, next) {
   try {
+    console.log('📥 Parámetros recibidos:', req.query);
+    
     const { error, value } = compareSchema.validate(req.query);
 
     if (error) {
+      console.log('❌ Error de validación:', error.details[0].message);
       return res.status(400).json({
         ok: false,
         message: error.details[0].message
       });
     }
 
+    console.log('✅ Validación exitosa:', value);
+
     // Obtener cantidades aceptadas
     let cantidadesAceptadas = {};
     if (req.query.cantidadesAceptadas) {
       try {
         cantidadesAceptadas = JSON.parse(req.query.cantidadesAceptadas);
+        console.log('📦 Cantidades aceptadas:', Object.keys(cantidadesAceptadas).length);
       } catch (e) {
-        console.error('Error parsing cantidadesAceptadas:', e);
+        console.error('Error parsing cantidadesAceptadas:', e.message);
       }
     }
 
@@ -543,229 +550,42 @@ async function exportarComparacionExcel(req, res, next) {
       value.zonaComparadaId ? Number(value.zonaComparadaId) : null
     );
 
-    // Obtener información de productos desde SQL Server (precio coste, grupo, descripción)
-    const { getSqlServerPool } = require('../config/sqlserver');
-    let sqlServerData = new Map();
-    
-    try {
-      const sqlPool = await getSqlServerPool();
-      
-      // Obtener SKUs únicos de las diferencias
-      const skusUnicos = [...new Set(data.diferencias.map(d => d.sku))];
-      
-      if (skusUnicos.length > 0) {
-        const skusList = skusUnicos.map(s => `'${s.replace(/'/g, "''")}'`).join(',');
-        
-        const productosResult = await sqlPool.request().query(`
-          SELECT 
-            i.[CódigoInventario] as sku,
-            i.[Descripción] as descripcion,
-            i.UnidadDeMedida,
-            ISNULL(i.Iva, 0) as iva,
-            i.IdGrupoInventarioDos as grupoId,
-            g.Descripcion as grupoNombre,
-            ISNULL((
-              SELECT TOP 1 c.CostoPromedio 
-              FROM CCA_M_Inventarios c 
-              WHERE c.IdInventario = i.IdInventario 
-                AND c.CostoPromedio > 0
-              ORDER BY c.IdAsientoContable DESC
-            ), 0) as valorUnitario
-          FROM Inventarios i
-          LEFT JOIN [Inventarios - AgrupaciónDos] g ON g.IdGrupoInventarioDos = i.IdGrupoInventarioDos
-          WHERE i.[CódigoInventario] IN (${skusList})
-            AND i.Activo = -1
-        `);
-        
-        for (const row of productosResult.recordset) {
-          sqlServerData.set(row.sku, {
-            descripcion: row.descripcion || 'Sin descripción',
-            unidadMedida: row.UnidadDeMedida || 'Und.',
-            iva: row.iva || 0,
-            grupoNombre: row.grupoNombre || 'SIN GRUPO',
-            valorUnitario: row.valorUnitario || 0
-          });
-        }
-      }
-    } catch (sqlError) {
-      console.error('Error consultando SQL Server:', sqlError.message);
-      // Continuar con datos por defecto si SQL Server no está disponible
-    }
+    console.log('✅ Datos de comparación obtenidos:', data.diferencias.length);
 
+    // Crear Excel básico primero para probar
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('INVENTARIO');
 
-    // Columnas según formato Melissa
+    // Columnas básicas
     worksheet.columns = [
-      { header: 'Empresa', key: 'empresa', width: 30 },
-      { header: 'Tipo Documento', key: 'tipoDocumento', width: 15 },
-      { header: 'Documento Número', key: 'documentoNumero', width: 20 },
-      { header: 'Fecha', key: 'fecha', width: 12 },
-      { header: 'Elaborado', key: 'elaborado', width: 20 },
-      { header: 'Destino', key: 'destino', width: 25 },
-      { header: 'Nota', key: 'nota', width: 35 },
-      { header: 'Verificado', key: 'verificado', width: 12 },
-      { header: 'Anulado', key: 'anulado', width: 10 },
-      { header: 'Producto', key: 'producto', width: 20 },
-      { header: 'Bodega', key: 'bodega', width: 15 },
-      { header: 'Unidad De Medida', key: 'unidadMedida', width: 15 },
-      { header: 'Cantidad Físico', key: 'cantidadFisico', width: 15 },
-      { header: 'Cantidad Sistema', key: 'cantidadSistema', width: 15 },
-      { header: 'IVA', key: 'iva', width: 10 },
-      { header: 'Valor Unitario', key: 'valorUnitario', width: 15 },
-      { header: 'Descuento', key: 'descuento', width: 10 },
-      { header: 'Vencimiento', key: 'vencimiento', width: 12 },
-      { header: 'Lote', key: 'lote', width: 15 },
-      { header: 'Talla', key: 'talla', width: 10 },
-      { header: 'Color', key: 'color', width: 15 }
-    ];
-
-    // Estilos encabezado
-    worksheet.getRow(1).font = { bold: true };
-    worksheet.getRow(1).fill = {
-      type: 'pattern',
-      pattern: 'solid',
-      fgColor: { argb: 'FF2563eb' }
-    };
-    worksheet.getRow(1).font = { color: { argb: 'FFFFFFFF' }, bold: true };
-
-    const fechaActual = new Date();
-    const fechaStr = fechaActual.toISOString().slice(0, 10);
-    const mesActual = fechaActual.toLocaleString('es', { month: 'long' });
-    const nombreEmpresa = 'TECNOCOMPUTER MELISSA SANDOVAL';
-    let totalRegistros = 0;
-    let totalUnidades = 0;
-
-    console.log('📝 Generando Excel de diferencias...');
-
-    // Generar filas para cada diferencia
-    for (const diff of data.diferencias) {
-      const cantidadAceptada = cantidadesAceptadas[diff.sku] || diff.cantidadComparada;
-      const productData = sqlServerData.get(diff.sku) || {};
-      
-      // Fila para BODEGA
-      worksheet.addRow({
-        empresa: nombreEmpresa,
-        tipoDocumento: 'AI',
-        documentoNumero: '',
-        fecha: fechaStr,
-        elaborado: req.user?.nombre || 'Admin',
-        destino: productData.grupoNombre || 'SIN GRUPO',
-        nota: `Ajuste de inventario - ${mesActual}`,
-        verificado: -1,
-        anulado: 0,
-        producto: diff.sku,
-        bodega: 'BODEGA',
-        unidadMedida: productData.unidadMedida || 'Und.',
-        cantidadFisico: cantidadAceptada,
-        cantidadSistema: 0,
-        iva: 0,
-        valorUnitario: productData.valorUnitario || 0,
-        descuento: 0,
-        vencimiento: fechaStr,
-        lote: '',
-        talla: '',
-        color: ''
-      });
-      totalRegistros++;
-      totalUnidades += cantidadAceptada;
-      
-      // Fila para EXHIBICION
-      worksheet.addRow({
-        empresa: nombreEmpresa,
-        tipoDocumento: 'AI',
-        documentoNumero: '',
-        fecha: fechaStr,
-        elaborado: req.user?.nombre || 'Admin',
-        destino: productData.grupoNombre || 'SIN GRUPO',
-        nota: `Ajuste de inventario - ${mesActual}`,
-        verificado: -1,
-        anulado: 0,
-        producto: diff.sku,
-        bodega: 'EXHIBICION',
-        unidadMedida: productData.unidadMedida || 'Und.',
-        cantidadFisico: cantidadAceptada,
-        cantidadSistema: 0,
-        iva: 0,
-        valorUnitario: productData.valorUnitario || 0,
-        descuento: 0,
-        vencimiento: fechaStr,
-        lote: '',
-        talla: '',
-        color: ''
-      });
-      totalRegistros++;
-      totalUnidades += cantidadAceptada;
-    }
-
-    // Hoja de resumen
-    const resumenSheet = workbook.addWorksheet('RESUMEN');
-    resumenSheet.columns = [
-      { header: 'Concepto', key: 'concepto', width: 30 },
-      { header: 'Valor', key: 'valor', width: 20 }
-    ];
-
-    resumenSheet.addRows([
-      { concepto: 'Fecha Exportación', valor: fechaActual.toLocaleString() },
-      { concepto: 'Empresa', valor: nombreEmpresa },
-      { concepto: 'Inventario Base', valor: data.resumen.inventarioBaseId },
-      { concepto: 'Inventario Comparado', valor: data.resumen.inventarioComparadoId },
-      { concepto: 'Total SKU con diferencias', valor: data.diferencias.length },
-      { concepto: 'Total Registros (Bodega+Exhibición)', valor: totalRegistros },
-      { concepto: 'Total Unidades Ajustadas', valor: totalUnidades.toLocaleString() },
-      { concepto: 'Tipo Documento', valor: 'AI' },
-      { concepto: 'Mes de Ajuste', valor: mesActual },
-      { concepto: 'Verificado', valor: '-1 (SI)' },
-      { concepto: 'Anulado', valor: '0 (NO)' },
-      { concepto: 'IVA', valor: '0' }
-    ]);
-
-    resumenSheet.getRow(1).font = { bold: true };
-
-    // Hoja de detalle de diferencias
-    const detalleSheet = workbook.addWorksheet('DETALLE_DIFERENCIAS');
-    detalleSheet.columns = [
       { header: 'SKU', key: 'sku', width: 20 },
-      { header: 'Descripción', key: 'descripcion', width: 60 },
+      { header: 'Descripción', key: 'descripcion', width: 50 },
       { header: 'Cantidad Base', key: 'cantidadBase', width: 15 },
       { header: 'Cantidad Comparada', key: 'cantidadComparada', width: 15 },
-      { header: 'Cantidad Aceptada', key: 'cantidadAceptada', width: 15 },
-      { header: 'Diferencia', key: 'diferencia', width: 15 },
-      { header: 'Valor Unitario', key: 'valorUnitario', width: 15 },
-      { header: 'Grupo', key: 'grupo', width: 25 }
+      { header: 'Cantidad Aceptada', key: 'cantidadAceptada', width: 15 }
     ];
 
-    detalleSheet.getRow(1).font = { bold: true };
-
+    // Agregar filas
     for (const diff of data.diferencias) {
       const cantidadAceptada = cantidadesAceptadas[diff.sku] || diff.cantidadComparada;
-      const productData = sqlServerData.get(diff.sku) || {};
-      
-      detalleSheet.addRow({
+      worksheet.addRow({
         sku: diff.sku,
-        descripcion: productData.descripcion || diff.descripcion,
+        descripcion: diff.descripcion,
         cantidadBase: diff.cantidadBase,
         cantidadComparada: diff.cantidadComparada,
-        cantidadAceptada: cantidadAceptada,
-        diferencia: cantidadAceptada - diff.cantidadBase,
-        valorUnitario: productData.valorUnitario || 0,
-        grupo: productData.grupoNombre || 'SIN GRUPO'
+        cantidadAceptada: cantidadAceptada
       });
     }
-
-    // Aplicar estilos a todas las hojas
-    workbook.eachWorksheet((sheet) => {
-      sheet.views = [{ state: 'frozen', ySplit: 1 }];
-    });
 
     // Enviar archivo
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename=inventario_diferencias_${value.inventarioBaseId}_vs_${value.inventarioComparadoId}_${fechaStr}.xlsx`);
+    res.setHeader('Content-Disposition', `attachment; filename=test_diferencias.xlsx`);
 
     await workbook.xlsx.write(res);
     res.end();
 
   } catch (error) {
+    console.error('❌ Error en exportarComparacionExcel:', error);
     if (error.status) {
       return res.status(error.status).json({
         ok: false,
