@@ -21,7 +21,7 @@ import {
   generarRondaReconteoDesdeComparacion
 } from '../../services/diferencias.service';
 import api from '../../services/api';
-import '../../../styles/app.css'; 
+import '../../styles/app.css'; 
 function normalizeZoneText(value) {
   return String(value || '')
     .trim()
