@@ -476,60 +476,56 @@ async function scanLecturaRonda(req, res, next) {
       console.log('Codigo leido:', codigoLimpio);
       console.log('SKU final:', skuFinal);
 
-      const wherePendiente = buildWherePendienteReconteo(ronda, skuFinal);
-      console.log('WHERE buildWherePendienteReconteo:', JSON.stringify(wherePendiente, null, 2));
-
+      // 🔧 CORRECCIÓN: Buscar pendiente con rondaReconteoId
       pendiente = await DiscrepanciaConteo.findOne({
-        where: wherePendiente,
-        transaction
-      });
-
-      console.log('Pendiente exacto encontrado:', pendiente ? pendiente.toJSON() : null);
-
-      const pendienteAlterno = await DiscrepanciaConteo.findOne({
         where: {
           inventarioId: ronda.inventarioId,
           zonaId: ronda.zonaId,
-          sku: skuFinal
+          sku: skuFinal,
+          rondaReconteoId: ronda.id,  // ← CLAVE: vincular con la ronda actual
+          estado: {
+            [Op.in]: ['pendiente_reconteo', 'pendiente', 'reconteo_en_proceso']
+          }
         },
         transaction
       });
 
-      console.log('Pendiente alterno misma zona:', pendienteAlterno ? pendienteAlterno.toJSON() : null);
+      console.log('Pendiente encontrado con rondaReconteoId:', pendiente ? pendiente.toJSON() : null);
 
-      const todosSkuMismaZona = await DiscrepanciaConteo.findAll({
-        where: {
-          inventarioId: ronda.inventarioId,
-          zonaId: ronda.zonaId,
-          sku: skuFinal
-        },
-        order: [['id', 'DESC']],
-        transaction
-      });
+      // Si no encuentra con rondaReconteoId, busca sin él (fallback)
+      if (!pendiente) {
+        pendiente = await DiscrepanciaConteo.findOne({
+          where: {
+            inventarioId: ronda.inventarioId,
+            zonaId: ronda.zonaId,
+            sku: skuFinal,
+            estado: {
+              [Op.in]: ['pendiente_reconteo', 'pendiente', 'reconteo_en_proceso']
+            }
+          },
+          transaction
+        });
 
-      console.log(
-        'Todos los registros para ese SKU en misma zona:',
-        todosSkuMismaZona.map((x) => x.toJSON())
-      );
+        console.log('Pendiente encontrado sin rondaReconteoId (fallback):', pendiente ? pendiente.toJSON() : null);
 
-      const pendienteOtraZona = await DiscrepanciaConteo.findAll({
-        where: {
-          inventarioId: ronda.inventarioId,
-          sku: skuFinal
-        },
-        order: [['zonaId', 'ASC'], ['id', 'DESC']],
-        transaction
-      });
-
-      console.log(
-        'Registros del SKU en otras zonas del mismo inventario:',
-        pendienteOtraZona.map((x) => x.toJSON())
-      );
+        // Si existe pendiente pero no tiene rondaReconteoId, actualízalo
+        if (pendiente && !pendiente.rondaReconteoId) {
+          await pendiente.update(
+            {
+              rondaReconteoId: ronda.id
+            },
+            { transaction }
+          );
+          console.log('✅ rondaReconteoId actualizado en el pendiente existente');
+        }
+      }
 
       if (!pendiente) {
         const pendienteEnOtraRonda = await DiscrepanciaConteo.findOne({
           where: {
             sku: skuFinal,
+            inventarioId: ronda.inventarioId,
+            zonaId: ronda.zonaId,
             estado: {
               [Op.in]: ['pendiente_reconteo', 'reconteo_en_proceso', 'pendiente']
             }
@@ -543,7 +539,7 @@ async function scanLecturaRonda(req, res, next) {
         if (pendienteEnOtraRonda) {
           return res.status(403).json({
             ok: false,
-            message: `Ese SKU está pendiente en inventario ${pendienteEnOtraRonda.inventarioId}, zona ${pendienteEnOtraRonda.zonaId}, ronda ${pendienteEnOtraRonda.proximaRondaNumero || 'sin número'}`
+            message: `Ese SKU ya está pendiente en otra ronda de reconteo`
           });
         }
 

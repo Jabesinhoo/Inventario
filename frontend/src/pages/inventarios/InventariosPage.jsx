@@ -9,7 +9,13 @@ import {
   Plus,
   CircleCheck,
   CircleAlert,
-  ShieldCheck
+  ShieldCheck,
+  Link2,
+  CheckCircle,
+  Clock,
+  RefreshCw,
+  Eye,
+  Unlink
 } from 'lucide-react';
 import {
   createInventario,
@@ -17,6 +23,7 @@ import {
   updateInventario,
   deleteInventario
 } from '../../services/inventarios.service';
+import api from '../../services/api';
 
 function Modal({ open, title, children, onClose, footer }) {
   if (!open) return null;
@@ -39,7 +46,7 @@ function Modal({ open, title, children, onClose, footer }) {
         className="card"
         style={{
           width: '100%',
-          maxWidth: '480px',
+          maxWidth: '500px',
           borderRadius: '16px',
           boxShadow: '0 20px 50px rgba(0,0,0,0.2)'
         }}
@@ -74,15 +81,19 @@ function Modal({ open, title, children, onClose, footer }) {
 
 export default function InventariosPage() {
   const [inventarios, setInventarios] = useState([]);
+  const [parejas, setParejas] = useState([]);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState({
     nombre: '',
     fecha: '',
     estado: 'borrador',
-    requiereConteo3: false
+    requiereConteo3: false,
+    inventarioParejaId: ''  // ← NUEVO: inventario con el que forma pareja
   });
   const [loading, setLoading] = useState(true);
+  const [loadingParejas, setLoadingParejas] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [filtroParejas, setFiltroParejas] = useState('todas');
 
   const [feedbackModal, setFeedbackModal] = useState({
     open: false,
@@ -96,9 +107,27 @@ export default function InventariosPage() {
     inventario: null
   });
 
+  const [verDetalleModal, setVerDetalleModal] = useState({
+    open: false,
+    pareja: null
+  });
+
   async function loadInventarios() {
     const data = await getInventarios();
     setInventarios(data);
+  }
+
+  async function loadParejas() {
+    setLoadingParejas(true);
+    try {
+      const params = filtroParejas !== 'todas' ? { estado: filtroParejas } : {};
+      const response = await api.get('/diferencias/parejas', { params });
+      setParejas(response.data.data || []);
+    } catch (error) {
+      console.error('Error cargando parejas:', error);
+    } finally {
+      setLoadingParejas(false);
+    }
   }
 
   useEffect(() => {
@@ -114,12 +143,17 @@ export default function InventariosPage() {
       .finally(() => setLoading(false));
   }, []);
 
+  useEffect(() => {
+    loadParejas();
+  }, [filtroParejas]);
+
   const resetForm = () => {
     setForm({
       nombre: '',
       fecha: '',
       estado: 'borrador',
-      requiereConteo3: false
+      requiereConteo3: false,
+      inventarioParejaId: ''
     });
     setEditing(null);
   };
@@ -151,16 +185,52 @@ export default function InventariosPage() {
     setSaving(true);
 
     try {
+      let inventarioCreado;
+      
       if (editing) {
-        await updateInventario(editing, form);
+        await updateInventario(editing, {
+          nombre: form.nombre,
+          fecha: form.fecha,
+          estado: form.estado,
+          requiereConteo3: form.requiereConteo3
+        });
+        inventarioCreado = { id: editing };
         openSuccess('Inventario actualizado correctamente');
       } else {
-        await createInventario(form);
+        const response = await createInventario({
+          nombre: form.nombre,
+          fecha: form.fecha,
+          estado: form.estado,
+          requiereConteo3: form.requiereConteo3
+        });
+        inventarioCreado = response.data;
         openSuccess('Inventario creado correctamente');
+      }
+
+      // 🔥 NUEVO: Si se seleccionó un inventario pareja, crear la relación
+      if (form.inventarioParejaId) {
+        const inventarioParejaId = Number(form.inventarioParejaId);
+        
+        // Verificar si ya existe la pareja
+        const existePareja = parejas.some(p => 
+          (p.inventarioBaseId === inventarioCreado.id && p.inventarioComparadoId === inventarioParejaId) ||
+          (p.inventarioBaseId === inventarioParejaId && p.inventarioComparadoId === inventarioCreado.id)
+        );
+        
+        if (!existePareja) {
+          await api.post('/diferencias/parejas', {
+            inventarioBaseId: inventarioCreado.id,
+            inventarioComparadoId: inventarioParejaId,
+            estado: 'pendiente',
+            observaciones: `Creada desde inventario ${form.nombre}`
+          });
+          openSuccess('Inventario creado y pareja registrada correctamente');
+        }
       }
 
       resetForm();
       await loadInventarios();
+      await loadParejas();
     } catch (err) {
       openError(err.response?.data?.message || 'Error al guardar inventario');
     } finally {
@@ -174,7 +244,8 @@ export default function InventariosPage() {
       nombre: item.nombre || '',
       fecha: item.fecha || '',
       estado: item.estado || 'borrador',
-      requiereConteo3: Boolean(item.requiereConteo3)
+      requiereConteo3: Boolean(item.requiereConteo3),
+      inventarioParejaId: ''
     });
   };
 
@@ -204,6 +275,7 @@ export default function InventariosPage() {
       }
 
       await loadInventarios();
+      await loadParejas();
       closeDelete();
       openSuccess('Inventario eliminado correctamente');
     } catch (err) {
@@ -211,6 +283,25 @@ export default function InventariosPage() {
       openError(err.response?.data?.message || 'Error al eliminar inventario');
     }
   };
+
+  const getEstadoBadge = (estado) => {
+    const config = {
+      pendiente: { icon: Clock, text: 'Pendiente', color: 'warning' },
+      en_reconteo: { icon: RefreshCw, text: 'En reconteo', color: 'info' },
+      completada: { icon: CheckCircle, text: 'Completada', color: 'success' }
+    };
+    const { icon: Icon, text, color } = config[estado] || config.pendiente;
+    return (
+      <span className={`status-badge ${color}`}>
+        <Icon size={12} /> {text}
+      </span>
+    );
+  };
+
+  // Filtrar inventarios que pueden ser pareja (excluir el actual)
+  const inventariosDisponiblesParaPareja = inventarios.filter(
+    inv => inv.id !== editing
+  );
 
   return (
     <>
@@ -289,6 +380,29 @@ export default function InventariosPage() {
                 />
                 Requiere conteo 3
               </label>
+            </div>
+
+            {/* 🔥 NUEVO: Selector de inventario pareja */}
+            <div className="form-group">
+              <label>
+                <Link2 size={14} /> Inventario pareja (opcional)
+              </label>
+              <select
+                value={form.inventarioParejaId}
+                onChange={(e) =>
+                  setForm((prev) => ({ ...prev, inventarioParejaId: e.target.value }))
+                }
+              >
+                <option value="">Selecciona un inventario pareja</option>
+                {inventariosDisponiblesParaPareja.map((inv) => (
+                  <option key={inv.id} value={inv.id}>
+                    {inv.nombre} - {inv.fecha} ({inv.estado})
+                  </option>
+                ))}
+              </select>
+              <small className="text-muted">
+                Si seleccionas un inventario, se creará automáticamente una pareja entre ambos
+              </small>
             </div>
 
             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
@@ -410,6 +524,96 @@ export default function InventariosPage() {
         </div>
       </div>
 
+      {/* Sección de Parejas existentes */}
+      <div className="card" style={{ marginTop: '20px' }}>
+        <div
+          style={{
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            flexWrap: 'wrap',
+            gap: '12px',
+            marginBottom: '20px'
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+            <Link2 size={22} />
+            <h2 style={{ margin: 0 }}>Parejas registradas</h2>
+          </div>
+
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            <button
+              className={`btn ${filtroParejas === 'todas' ? 'btn-primary' : 'btn-outline'}`}
+              onClick={() => setFiltroParejas('todas')}
+            >
+              Todas
+            </button>
+            <button
+              className={`btn ${filtroParejas === 'pendiente' ? 'btn-primary' : 'btn-outline'}`}
+              onClick={() => setFiltroParejas('pendiente')}
+            >
+              <Clock size={14} /> Pendientes
+            </button>
+            <button
+              className={`btn ${filtroParejas === 'en_reconteo' ? 'btn-primary' : 'btn-outline'}`}
+              onClick={() => setFiltroParejas('en_reconteo')}
+            >
+              <RefreshCw size={14} /> En reconteo
+            </button>
+            <button
+              className={`btn ${filtroParejas === 'completada' ? 'btn-primary' : 'btn-outline'}`}
+              onClick={() => setFiltroParejas('completada')}
+            >
+              <CheckCircle size={14} /> Completadas
+            </button>
+          </div>
+        </div>
+
+        {loadingParejas ? (
+          <p>Cargando parejas...</p>
+        ) : parejas.length === 0 ? (
+          <p className="muted">
+            No hay parejas registradas. Al crear un inventario puedes seleccionar su pareja.
+          </p>
+        ) : (
+          <div className="table-container">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Inventario Base</th>
+                  <th>Inventario Comparado</th>
+                  <th>Estado</th>
+                  <th>Fecha</th>
+                  <th>Rondas</th>
+                  <th>Acciones</th>
+                </tr>
+              </thead>
+              <tbody>
+                {parejas.map((pareja) => (
+                  <tr key={pareja.id}>
+                    <td>{pareja.inventarioBase?.nombre} <small>({pareja.inventarioBase?.fecha})</small></td>
+                    <td>{pareja.inventarioComparado?.nombre} <small>({pareja.inventarioComparado?.fecha})</small></td>
+                    <td>{getEstadoBadge(pareja.estado)}</td>
+                    <td>{new Date(pareja.createdAt).toLocaleDateString()}</td>
+                    <td className="text-center">{pareja.rondasReconteoGeneradas || 0}</td>
+                    <td>
+                      <button
+                        className="btn btn-outline"
+                        style={{ padding: '4px 8px' }}
+                        onClick={() => setVerDetalleModal({ open: true, pareja })}
+                      >
+                        <Eye size={14} /> Ver
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Modales... (mantén los mismos modales que tenías) */}
       <Modal
         open={feedbackModal.open}
         title={feedbackModal.title}
@@ -449,6 +653,47 @@ export default function InventariosPage() {
           ¿Seguro que quieres eliminar el inventario{' '}
           <strong>{deleteModal.inventario?.nombre}</strong>?
         </p>
+      </Modal>
+
+      <Modal
+        open={verDetalleModal.open}
+        title="Detalle de pareja"
+        onClose={() => setVerDetalleModal({ open: false, pareja: null })}
+        footer={
+          <button
+            className="btn btn-primary"
+            onClick={() => setVerDetalleModal({ open: false, pareja: null })}
+          >
+            Cerrar
+          </button>
+        }
+      >
+        {verDetalleModal.pareja && (
+          <div>
+            <div style={{ marginBottom: '12px' }}>
+              <strong>Inventario Base:</strong> {verDetalleModal.pareja.inventarioBase?.nombre}
+              <br />
+              <small>{verDetalleModal.pareja.inventarioBase?.fecha}</small>
+            </div>
+            <div style={{ marginBottom: '12px' }}>
+              <strong>Inventario Comparado:</strong> {verDetalleModal.pareja.inventarioComparado?.nombre}
+              <br />
+              <small>{verDetalleModal.pareja.inventarioComparado?.fecha}</small>
+            </div>
+            <div style={{ marginBottom: '12px' }}>
+              <strong>Estado:</strong> {getEstadoBadge(verDetalleModal.pareja.estado)}
+            </div>
+            <div style={{ marginBottom: '12px' }}>
+              <strong>Rondas generadas:</strong> {verDetalleModal.pareja.rondasReconteoGeneradas || 0}
+            </div>
+            {verDetalleModal.pareja.observaciones && (
+              <div>
+                <strong>Observaciones:</strong>
+                <p>{verDetalleModal.pareja.observaciones}</p>
+              </div>
+            )}
+          </div>
+        )}
       </Modal>
     </>
   );

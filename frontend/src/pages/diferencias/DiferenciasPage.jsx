@@ -76,7 +76,10 @@ function getZonaLabel(zona) {
 
 export default function DiferenciasPage() {
   const navigate = useNavigate();
-
+  const fetchParejas = async () => {
+    const response = await api.get('/diferencias/parejas');
+    setParejas(response.data.data);
+  };
   const [inventarios, setInventarios] = useState([]);
   const [inventarioBaseId, setInventarioBaseId] = useState('');
   const [inventarioComparadoId, setInventarioComparadoId] = useState('');
@@ -487,8 +490,8 @@ export default function DiferenciasPage() {
         ) : null}
 
         {zonaBaseSeleccionada &&
-        zonaComparadaSeleccionada &&
-        !zonesAreEquivalent(zonaBaseSeleccionada, zonaComparadaSeleccionada) ? (
+          zonaComparadaSeleccionada &&
+          !zonesAreEquivalent(zonaBaseSeleccionada, zonaComparadaSeleccionada) ? (
           <div className="alert-warning" style={{ marginTop: '12px' }}>
             <AlertTriangle size={16} />
             <span>No puedes comparar ni generar reconteo entre zonas distintas.</span>

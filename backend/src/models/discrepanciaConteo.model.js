@@ -35,6 +35,14 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.INTEGER,
         allowNull: true
       },
+       rondaReconteoId: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+        references: {
+          model: 'rondas_conteo',
+          key: 'id'
+        }
+      },
       cantidadBase: {
         type: DataTypes.INTEGER,
         allowNull: false,

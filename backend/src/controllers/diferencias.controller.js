@@ -2,6 +2,7 @@ const Joi = require('joi');
 const ExcelJS = require('exceljs');
 const { QueryTypes } = require('sequelize');
 const { sequelize, Zona, Inventario, RondaConteo, DiscrepanciaConteo } = require('../models');
+const parejaService = require('../services/parejaInventario.service');
 
 const compareSchema = Joi.object({
   inventarioBaseId: Joi.number().integer().required(),
@@ -475,9 +476,29 @@ async function compareInventarios(req, res, next) {
       value.zonaComparadaId ? Number(value.zonaComparadaId) : null
     );
 
+    // 🔥 NUEVO: Crear o actualizar la pareja de inventarios
+    const pareja = await parejaService.crearOPareja(
+      Number(value.inventarioBaseId),
+      Number(value.inventarioComparadoId),
+      value.zonaBaseId ? Number(value.zonaBaseId) : null
+    );
+
+    // Si hay diferencias y la pareja estaba completada, volver a pendiente
+    if (data.diferencias.length > 0 && pareja.estado === 'completada') {
+      await parejaService.actualizarEstadoPareja(pareja.id, 'pendiente');
+    }
+
+    // Agregar información de la pareja a la respuesta
     res.json({
       ok: true,
-      data
+      data: {
+        ...data,
+        pareja: {
+          id: pareja.id,
+          estado: pareja.estado,
+          fechaComparacion: pareja.fechaComparacion
+        }
+      }
     });
   } catch (error) {
     if (error.status) {
@@ -489,6 +510,7 @@ async function compareInventarios(req, res, next) {
     next(error);
   }
 }
+
 
 async function exportarComparacionExcel(req, res, next) {
   try {
@@ -640,6 +662,7 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       });
     }
 
+    // Validar que los inventarios existan
     const [inventarioBase, inventarioComparado] = await Promise.all([
       Inventario.findByPk(inventarioBaseId),
       Inventario.findByPk(inventarioComparadoId)
@@ -652,6 +675,7 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       });
     }
 
+    // Obtener las diferencias entre los dos inventarios
     const allowedGroupIds = await getAllowedGroupIds(req);
     
     const comparisonRows = await getSkuComparisonRows(
@@ -671,8 +695,10 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       });
     }
 
+    // Crear una nueva ronda de reconteo en el inventario base
     const zona = zonaId ? await Zona.findByPk(zonaId) : null;
     
+    // Obtener el último número de ronda para este inventario y zona
     const lastRonda = await RondaConteo.findOne({
       where: {
         inventarioId: inventarioBaseId,
@@ -689,19 +715,51 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       zonaId: zonaId || null,
       numeroRonda: nextRondaNumero,
       tipoRonda: 'reconteo',
-      estado: 'pendiente'
+      estado: 'borrador'
     });
 
+    // Crear o actualizar discrepancias_conteo para cada SKU que difiere
     for (const diferencia of diferencias) {
       await DiscrepanciaConteo.upsert({
         inventarioId: inventarioBaseId,
         sku: diferencia.sku,
         zonaId: zonaId || null,
-        cantidadRonda1: diferencia.cantidadBase,
+        cantidadBase: diferencia.cantidadBase,
         cantidadUltima: diferencia.cantidadComparada,
-        cantidadFinal: null,
-        estado: 'pendiente',
-        rondaReconteoId: nuevaRonda.id
+        diferencia: diferencia.diferencia,
+        estado: 'pendiente_reconteo',
+        rondaReconteoId: nuevaRonda.id,
+        reconteoCount: 0,
+        descripcionSnapshot: diferencia.descripcion || 'Sin descripción'
+      });
+    }
+
+    // 🔥 NUEVO: Actualizar o crear la pareja de inventarios
+    const { ParejaInventario } = require('../models');
+    
+    const [pareja, created] = await ParejaInventario.findOrCreate({
+      where: {
+        inventarioBaseId: inventarioBaseId,
+        inventarioComparadoId: inventarioComparadoId,
+        zonaId: zonaId || null
+      },
+      defaults: {
+        inventarioBaseId: inventarioBaseId,
+        inventarioComparadoId: inventarioComparadoId,
+        zonaId: zonaId || null,
+        estado: 'en_reconteo',
+        fechaComparacion: new Date(),
+        rondasReconteoGeneradas: 1
+      }
+    });
+
+    // Si la pareja ya existía, actualizar su estado y contador
+    if (!created) {
+      await pareja.update({
+        estado: 'en_reconteo',
+        rondasReconteoGeneradas: (pareja.rondasReconteoGeneradas || 0) + 1,
+        fechaComparacion: new Date(),
+        fechaCompletada: null // Reiniciar fecha completada si estaba completada
       });
     }
 
@@ -711,7 +769,12 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       data: {
         ronda: nuevaRonda,
         inventarioObjetivoId: inventarioBaseId,
-        totalDiferencias: diferencias.length
+        totalDiferencias: diferencias.length,
+        pareja: {
+          id: pareja.id,
+          estado: pareja.estado,
+          rondasGeneradas: pareja.rondasReconteoGeneradas
+        }
       }
     });
   } catch (error) {
@@ -719,9 +782,55 @@ async function generarReconteoDesdeComparacion(req, res, next) {
     next(error);
   }
 }
-
+async function completarPareja(req, res, next) {
+  try {
+    const { parejaId } = req.params;
+    
+    const pareja = await ParejaInventario.findByPk(parejaId);
+    
+    if (!pareja) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Pareja de inventarios no encontrada'
+      });
+    }
+    
+    // Verificar que todas las discrepancias estén resueltas
+    const discrepanciasPendientes = await DiscrepanciaConteo.count({
+      where: {
+        inventarioId: pareja.inventarioBaseId,
+        zonaId: pareja.zonaId || null,
+        estado: {
+          [Op.in]: ['pendiente_reconteo', 'reconteo_en_proceso', 'pendiente']
+        }
+      }
+    });
+    
+    if (discrepanciasPendientes > 0) {
+      return res.status(400).json({
+        ok: false,
+        message: `No se puede completar la pareja. Aún hay ${discrepanciasPendientes} discrepancias pendientes.`
+      });
+    }
+    
+    await pareja.update({
+      estado: 'completada',
+      fechaCompletada: new Date()
+    });
+    
+    res.json({
+      ok: true,
+      message: 'Pareja de inventarios marcada como completada',
+      data: pareja
+    });
+  } catch (error) {
+    next(error);
+  }
+}
 module.exports = {
   compareInventarios,
   exportarComparacionExcel,
+  generarReconteoDesdeComparacion,
+  completarPareja,
   generarReconteoDesdeComparacion
 };

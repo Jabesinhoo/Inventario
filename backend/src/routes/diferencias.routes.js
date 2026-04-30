@@ -12,5 +12,138 @@ router.post(
   allowRoles('admin', 'supervisor'),
   controller.generarReconteoDesdeComparacion
 );
+router.patch('/parejas/:parejaId/completar', 
+  authMiddleware, 
+  allowRoles('admin', 'supervisor'), 
+  controller.completarPareja
+);
+
+// GET /api/diferencias/parejas
+// Crear pareja
+router.get('/parejas', authMiddleware, allowRoles('admin', 'supervisor'), async (req, res, next) => {
+  try {
+    const { estado, limit } = req.query;
+    const { ParejaInventario, Inventario, Zona } = require('../models');
+    
+    const where = {};
+    if (estado && estado !== 'todas') where.estado = estado;
+    
+    const parejas = await ParejaInventario.findAll({
+      where,
+      include: [
+        { model: Inventario, as: 'inventarioBase' },
+        { model: Inventario, as: 'inventarioComparado' },
+        { model: Zona, as: 'zona' }
+      ],
+      order: [['createdAt', 'DESC']],
+      limit: limit ? Number(limit) : 100
+    });
+    
+    res.json({ ok: true, data: parejas });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Crear pareja
+router.post('/parejas', authMiddleware, allowRoles('admin', 'supervisor'), async (req, res, next) => {
+  try {
+    const { inventarioBaseId, inventarioComparadoId, zonaId, estado, observaciones } = req.body;
+    const { ParejaInventario } = require('../models');
+    
+    if (!inventarioBaseId || !inventarioComparadoId) {
+      return res.status(400).json({ ok: false, message: 'Faltan inventarios' });
+    }
+    
+    if (inventarioBaseId === inventarioComparadoId) {
+      return res.status(400).json({ ok: false, message: 'No puedes crear una pareja con el mismo inventario' });
+    }
+    
+    const [pareja, created] = await ParejaInventario.findOrCreate({
+      where: { 
+        inventarioBaseId, 
+        inventarioComparadoId, 
+        zonaId: zonaId || null 
+      },
+      defaults: {
+        inventarioBaseId,
+        inventarioComparadoId,
+        zonaId: zonaId || null,
+        estado: estado || 'pendiente',
+        observaciones: observaciones || null,
+        fechaComparacion: new Date(),
+        rondasReconteoGeneradas: 0
+      }
+    });
+    
+    if (!created && estado) {
+      await pareja.update({ estado, observaciones });
+    }
+    
+    res.json({ ok: true, data: pareja });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Actualizar pareja
+router.put('/parejas/:id', authMiddleware, allowRoles('admin', 'supervisor'), async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { ParejaInventario } = require('../models');
+    
+    const pareja = await ParejaInventario.findByPk(id);
+    if (!pareja) {
+      return res.status(404).json({ ok: false, message: 'Pareja no encontrada' });
+    }
+    
+    await pareja.update(req.body);
+    res.json({ ok: true, data: pareja });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Eliminar pareja
+router.delete('/parejas/:id', authMiddleware, allowRoles('admin', 'supervisor'), async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { ParejaInventario } = require('../models');
+    
+    const pareja = await ParejaInventario.findByPk(id);
+    if (!pareja) {
+      return res.status(404).json({ ok: false, message: 'Pareja no encontrada' });
+    }
+    
+    await pareja.destroy();
+    res.json({ ok: true, message: 'Pareja eliminada correctamente' });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Obtener pareja específica
+router.get('/parejas/:id', authMiddleware, allowRoles('admin', 'supervisor'), async (req, res, next) => {
+  try {
+    const { id } = req.params;
+    const { ParejaInventario, Inventario, Zona } = require('../models');
+    
+    const pareja = await ParejaInventario.findByPk(id, {
+      include: [
+        { model: Inventario, as: 'inventarioBase' },
+        { model: Inventario, as: 'inventarioComparado' },
+        { model: Zona, as: 'zona' }
+      ]
+    });
+    
+    if (!pareja) {
+      return res.status(404).json({ ok: false, message: 'Pareja no encontrada' });
+    }
+    
+    res.json({ ok: true, data: pareja });
+  } catch (error) {
+    next(error);
+  }
+});
 
 module.exports = router;

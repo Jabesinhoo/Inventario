@@ -24,6 +24,7 @@ const Lectura = require('./lectura.model')(sequelize, DataTypes);
 const RondaConteo = require('./rondaConteo.model')(sequelize, DataTypes);
 const AsignacionRonda = require('./asignacionRonda.model')(sequelize, DataTypes);
 const DiscrepanciaConteo = require('./discrepanciaConteo.model')(sequelize, DataTypes);
+const ParejaInventario = require('./parejaInventario.model')(sequelize, DataTypes);  // ← NUEVO
 
 // ==================== ASOCIACIONES ====================
 
@@ -203,6 +204,38 @@ DiscrepanciaConteo.belongsTo(RondaConteo, {
   as: 'ultimaRonda'
 });
 
+// ==================== PAREJAS DE INVENTARIOS ====================
+
+// Inventario -> ParejaInventario (como base)
+Inventario.hasMany(ParejaInventario, {
+  foreignKey: 'inventarioBaseId',
+  as: 'parejasComoBase'
+});
+ParejaInventario.belongsTo(Inventario, {
+  foreignKey: 'inventarioBaseId',
+  as: 'inventarioBase'
+});
+
+// Inventario -> ParejaInventario (como comparado)
+Inventario.hasMany(ParejaInventario, {
+  foreignKey: 'inventarioComparadoId',
+  as: 'parejasComoComparado'
+});
+ParejaInventario.belongsTo(Inventario, {
+  foreignKey: 'inventarioComparadoId',
+  as: 'inventarioComparado'
+});
+
+// Zona -> ParejaInventario
+Zona.hasMany(ParejaInventario, {
+  foreignKey: 'zonaId',
+  as: 'parejasInventarios'
+});
+ParejaInventario.belongsTo(Zona, {
+  foreignKey: 'zonaId',
+  as: 'zona'
+});
+
 // ==================== EXPORTS ====================
 
 module.exports = {
@@ -218,5 +251,6 @@ module.exports = {
   Lectura,
   RondaConteo,
   AsignacionRonda,
-  DiscrepanciaConteo
+  DiscrepanciaConteo,
+  ParejaInventario
 };
