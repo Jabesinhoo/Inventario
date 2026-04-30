@@ -525,7 +525,7 @@ async function exportarComparacionExcel(req, res, next) {
       });
     }
 
-    // 🔥 Obtener cantidades aceptadas del query
+    // Obtener cantidades aceptadas
     let cantidadesAceptadas = {};
     if (req.query.cantidadesAceptadas) {
       try {
@@ -543,142 +543,228 @@ async function exportarComparacionExcel(req, res, next) {
       value.zonaComparadaId ? Number(value.zonaComparadaId) : null
     );
 
-    // 🔥 Modificar las diferencias con las cantidades aceptadas
-    const diferenciasConAceptadas = data.diferencias.map(diff => ({
-      ...diff,
-      cantidadAceptada: cantidadesAceptadas[diff.sku] !== undefined 
-        ? cantidadesAceptadas[diff.sku] 
-        : diff.cantidadComparada,
-      diferenciaAceptada: (cantidadesAceptadas[diff.sku] !== undefined 
-        ? cantidadesAceptadas[diff.sku] 
-        : diff.cantidadComparada) - diff.cantidadBase
-    }));
+    // Obtener información de productos desde SQL Server (precio coste, grupo, descripción)
+    const { getSqlServerPool } = require('../config/sqlserver');
+    let sqlServerData = new Map();
+    
+    try {
+      const sqlPool = await getSqlServerPool();
+      
+      // Obtener SKUs únicos de las diferencias
+      const skusUnicos = [...new Set(data.diferencias.map(d => d.sku))];
+      
+      if (skusUnicos.length > 0) {
+        const skusList = skusUnicos.map(s => `'${s.replace(/'/g, "''")}'`).join(',');
+        
+        const productosResult = await sqlPool.request().query(`
+          SELECT 
+            i.[CódigoInventario] as sku,
+            i.[Descripción] as descripcion,
+            i.UnidadDeMedida,
+            ISNULL(i.Iva, 0) as iva,
+            i.IdGrupoInventarioDos as grupoId,
+            g.Descripcion as grupoNombre,
+            ISNULL((
+              SELECT TOP 1 c.CostoPromedio 
+              FROM CCA_M_Inventarios c 
+              WHERE c.IdInventario = i.IdInventario 
+                AND c.CostoPromedio > 0
+              ORDER BY c.IdAsientoContable DESC
+            ), 0) as valorUnitario
+          FROM Inventarios i
+          LEFT JOIN [Inventarios - AgrupaciónDos] g ON g.IdGrupoInventarioDos = i.IdGrupoInventarioDos
+          WHERE i.[CódigoInventario] IN (${skusList})
+            AND i.Activo = -1
+        `);
+        
+        for (const row of productosResult.recordset) {
+          sqlServerData.set(row.sku, {
+            descripcion: row.descripcion || 'Sin descripción',
+            unidadMedida: row.UnidadDeMedida || 'Und.',
+            iva: row.iva || 0,
+            grupoNombre: row.grupoNombre || 'SIN GRUPO',
+            valorUnitario: row.valorUnitario || 0
+          });
+        }
+      }
+    } catch (sqlError) {
+      console.error('Error consultando SQL Server:', sqlError.message);
+      // Continuar con datos por defecto si SQL Server no está disponible
+    }
 
     const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('INVENTARIO');
 
-    const resumenSheet = workbook.addWorksheet('Resumen');
-    const coincidenSheet = workbook.addWorksheet('Coinciden');
-    const diferenciasSheet = workbook.addWorksheet('Difieren');
-    const gruposBaseSheet = workbook.addWorksheet('Grupos Base');
-    const gruposComparadoSheet = workbook.addWorksheet('Grupos Comparado');
-    const zonasBaseSheet = workbook.addWorksheet('Zonas Base');
-    const zonasComparadoSheet = workbook.addWorksheet('Zonas Comparado');
-    const miembrosBaseSheet = workbook.addWorksheet('Miembros Base');
-    const miembrosComparadoSheet = workbook.addWorksheet('Miembros Comparado');
+    // Columnas según formato Melissa
+    worksheet.columns = [
+      { header: 'Empresa', key: 'empresa', width: 30 },
+      { header: 'Tipo Documento', key: 'tipoDocumento', width: 15 },
+      { header: 'Documento Número', key: 'documentoNumero', width: 20 },
+      { header: 'Fecha', key: 'fecha', width: 12 },
+      { header: 'Elaborado', key: 'elaborado', width: 20 },
+      { header: 'Destino', key: 'destino', width: 25 },
+      { header: 'Nota', key: 'nota', width: 35 },
+      { header: 'Verificado', key: 'verificado', width: 12 },
+      { header: 'Anulado', key: 'anulado', width: 10 },
+      { header: 'Producto', key: 'producto', width: 20 },
+      { header: 'Bodega', key: 'bodega', width: 15 },
+      { header: 'Unidad De Medida', key: 'unidadMedida', width: 15 },
+      { header: 'Cantidad Físico', key: 'cantidadFisico', width: 15 },
+      { header: 'Cantidad Sistema', key: 'cantidadSistema', width: 15 },
+      { header: 'IVA', key: 'iva', width: 10 },
+      { header: 'Valor Unitario', key: 'valorUnitario', width: 15 },
+      { header: 'Descuento', key: 'descuento', width: 10 },
+      { header: 'Vencimiento', key: 'vencimiento', width: 12 },
+      { header: 'Lote', key: 'lote', width: 15 },
+      { header: 'Talla', key: 'talla', width: 10 },
+      { header: 'Color', key: 'color', width: 15 }
+    ];
 
+    // Estilos encabezado
+    worksheet.getRow(1).font = { bold: true };
+    worksheet.getRow(1).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF2563eb' }
+    };
+    worksheet.getRow(1).font = { color: { argb: 'FFFFFFFF' }, bold: true };
+
+    const fechaActual = new Date();
+    const fechaStr = fechaActual.toISOString().slice(0, 10);
+    const mesActual = fechaActual.toLocaleString('es', { month: 'long' });
+    const nombreEmpresa = 'TECNOCOMPUTER MELISSA SANDOVAL';
+    let totalRegistros = 0;
+    let totalUnidades = 0;
+
+    console.log('📝 Generando Excel de diferencias...');
+
+    // Generar filas para cada diferencia
+    for (const diff of data.diferencias) {
+      const cantidadAceptada = cantidadesAceptadas[diff.sku] || diff.cantidadComparada;
+      const productData = sqlServerData.get(diff.sku) || {};
+      
+      // Fila para BODEGA
+      worksheet.addRow({
+        empresa: nombreEmpresa,
+        tipoDocumento: 'AI',
+        documentoNumero: '',
+        fecha: fechaStr,
+        elaborado: req.user?.nombre || 'Admin',
+        destino: productData.grupoNombre || 'SIN GRUPO',
+        nota: `Ajuste de inventario - ${mesActual}`,
+        verificado: -1,
+        anulado: 0,
+        producto: diff.sku,
+        bodega: 'BODEGA',
+        unidadMedida: productData.unidadMedida || 'Und.',
+        cantidadFisico: cantidadAceptada,
+        cantidadSistema: 0,
+        iva: 0,
+        valorUnitario: productData.valorUnitario || 0,
+        descuento: 0,
+        vencimiento: fechaStr,
+        lote: '',
+        talla: '',
+        color: ''
+      });
+      totalRegistros++;
+      totalUnidades += cantidadAceptada;
+      
+      // Fila para EXHIBICION
+      worksheet.addRow({
+        empresa: nombreEmpresa,
+        tipoDocumento: 'AI',
+        documentoNumero: '',
+        fecha: fechaStr,
+        elaborado: req.user?.nombre || 'Admin',
+        destino: productData.grupoNombre || 'SIN GRUPO',
+        nota: `Ajuste de inventario - ${mesActual}`,
+        verificado: -1,
+        anulado: 0,
+        producto: diff.sku,
+        bodega: 'EXHIBICION',
+        unidadMedida: productData.unidadMedida || 'Und.',
+        cantidadFisico: cantidadAceptada,
+        cantidadSistema: 0,
+        iva: 0,
+        valorUnitario: productData.valorUnitario || 0,
+        descuento: 0,
+        vencimiento: fechaStr,
+        lote: '',
+        talla: '',
+        color: ''
+      });
+      totalRegistros++;
+      totalUnidades += cantidadAceptada;
+    }
+
+    // Hoja de resumen
+    const resumenSheet = workbook.addWorksheet('RESUMEN');
     resumenSheet.columns = [
-      { header: 'Concepto', key: 'concepto', width: 35 },
-      { header: 'Valor', key: 'valor', width: 25 }
+      { header: 'Concepto', key: 'concepto', width: 30 },
+      { header: 'Valor', key: 'valor', width: 20 }
     ];
-
-    coincidenSheet.columns = [
-      { header: 'SKU', key: 'sku', width: 20 },
-      { header: 'Descripción', key: 'descripcion', width: 60 },
-      { header: 'Cantidad Base', key: 'cantidadBase', width: 18 },
-      { header: 'Cantidad Comparada', key: 'cantidadComparada', width: 20 }
-    ];
-
-    // 🔥 NUEVO: Columnas de diferencias con cantidad aceptada
-    diferenciasSheet.columns = [
-      { header: 'SKU', key: 'sku', width: 20 },
-      { header: 'Descripción', key: 'descripcion', width: 60 },
-      { header: 'Cantidad Base', key: 'cantidadBase', width: 18 },
-      { header: 'Cantidad Comparada', key: 'cantidadComparada', width: 20 },
-      { header: 'Diferencia Original', key: 'diferencia', width: 15 },
-      { header: 'Cantidad Aceptada', key: 'cantidadAceptada', width: 18 },
-      { header: 'Diferencia vs Aceptada', key: 'diferenciaAceptada', width: 18 }
-    ];
-
-    gruposBaseSheet.columns = [
-      { header: 'Grupo', key: 'nombre', width: 30 },
-      { header: 'Zona', key: 'zona', width: 25 },
-      { header: 'Total Escaneos', key: 'totalEscaneos', width: 18 },
-      { header: 'Productos Únicos', key: 'productosUnicos', width: 18 }
-    ];
-
-    gruposComparadoSheet.columns = [...gruposBaseSheet.columns];
-
-    zonasBaseSheet.columns = [
-      { header: 'Zona', key: 'nombre', width: 30 },
-      { header: 'Código', key: 'codigo', width: 15 },
-      { header: 'Total Escaneos', key: 'totalEscaneos', width: 18 },
-      { header: 'Productos Únicos', key: 'productosUnicos', width: 18 }
-    ];
-
-    zonasComparadoSheet.columns = [...zonasBaseSheet.columns];
-
-    miembrosBaseSheet.columns = [
-      { header: 'Miembro', key: 'nombre', width: 30 },
-      { header: 'Email', key: 'email', width: 35 },
-      { header: 'Grupo', key: 'grupo', width: 25 },
-      { header: 'Zona', key: 'zona', width: 25 },
-      { header: 'Total Escaneos', key: 'totalEscaneos', width: 18 },
-      { header: 'Productos Únicos', key: 'productosUnicos', width: 18 }
-    ];
-
-    miembrosComparadoSheet.columns = [...miembrosBaseSheet.columns];
 
     resumenSheet.addRows([
+      { concepto: 'Fecha Exportación', valor: fechaActual.toLocaleString() },
+      { concepto: 'Empresa', valor: nombreEmpresa },
       { concepto: 'Inventario Base', valor: data.resumen.inventarioBaseId },
       { concepto: 'Inventario Comparado', valor: data.resumen.inventarioComparadoId },
-      { concepto: 'Zona Base', valor: data.filtros.zonaBase?.nombre || 'Todas' },
-      { concepto: 'Zona Comparada', valor: data.filtros.zonaComparada?.nombre || 'Todas' },
-      { concepto: 'Total Comparados', valor: data.resumen.totalItemsComparados },
-      { concepto: 'Total Coinciden', valor: data.coinciden.length },
-      { concepto: 'Total Difieren', valor: data.diferencias.length },
-      { concepto: 'Total SKU Ajustados', valor: Object.keys(cantidadesAceptadas).length }
+      { concepto: 'Total SKU con diferencias', valor: data.diferencias.length },
+      { concepto: 'Total Registros (Bodega+Exhibición)', valor: totalRegistros },
+      { concepto: 'Total Unidades Ajustadas', valor: totalUnidades.toLocaleString() },
+      { concepto: 'Tipo Documento', valor: 'AI' },
+      { concepto: 'Mes de Ajuste', valor: mesActual },
+      { concepto: 'Verificado', valor: '-1 (SI)' },
+      { concepto: 'Anulado', valor: '0 (NO)' },
+      { concepto: 'IVA', valor: '0' }
     ]);
 
-    coincidenSheet.addRows(data.coinciden);
-    
-    // 🔥 Agregar filas de diferencias con cantidad aceptada
-    diferenciasConAceptadas.forEach(diff => {
-      diferenciasSheet.addRow({
+    resumenSheet.getRow(1).font = { bold: true };
+
+    // Hoja de detalle de diferencias
+    const detalleSheet = workbook.addWorksheet('DETALLE_DIFERENCIAS');
+    detalleSheet.columns = [
+      { header: 'SKU', key: 'sku', width: 20 },
+      { header: 'Descripción', key: 'descripcion', width: 60 },
+      { header: 'Cantidad Base', key: 'cantidadBase', width: 15 },
+      { header: 'Cantidad Comparada', key: 'cantidadComparada', width: 15 },
+      { header: 'Cantidad Aceptada', key: 'cantidadAceptada', width: 15 },
+      { header: 'Diferencia', key: 'diferencia', width: 15 },
+      { header: 'Valor Unitario', key: 'valorUnitario', width: 15 },
+      { header: 'Grupo', key: 'grupo', width: 25 }
+    ];
+
+    detalleSheet.getRow(1).font = { bold: true };
+
+    for (const diff of data.diferencias) {
+      const cantidadAceptada = cantidadesAceptadas[diff.sku] || diff.cantidadComparada;
+      const productData = sqlServerData.get(diff.sku) || {};
+      
+      detalleSheet.addRow({
         sku: diff.sku,
-        descripcion: diff.descripcion,
+        descripcion: productData.descripcion || diff.descripcion,
         cantidadBase: diff.cantidadBase,
         cantidadComparada: diff.cantidadComparada,
-        diferencia: diff.diferencia,
-        cantidadAceptada: diff.cantidadAceptada,
-        diferenciaAceptada: diff.diferenciaAceptada
+        cantidadAceptada: cantidadAceptada,
+        diferencia: cantidadAceptada - diff.cantidadBase,
+        valorUnitario: productData.valorUnitario || 0,
+        grupo: productData.grupoNombre || 'SIN GRUPO'
       });
-    });
+    }
 
-    gruposBaseSheet.addRows(data.totales.base.grupos);
-    gruposComparadoSheet.addRows(data.totales.comparado.grupos);
-
-    zonasBaseSheet.addRows(data.totales.base.zonas);
-    zonasComparadoSheet.addRows(data.totales.comparado.zonas);
-
-    miembrosBaseSheet.addRows(data.totales.base.miembros);
-    miembrosComparadoSheet.addRows(data.totales.comparado.miembros);
-
-    [
-      resumenSheet,
-      coincidenSheet,
-      diferenciasSheet,
-      gruposBaseSheet,
-      gruposComparadoSheet,
-      zonasBaseSheet,
-      zonasComparadoSheet,
-      miembrosBaseSheet,
-      miembrosComparadoSheet
-    ].forEach((sheet) => {
-      sheet.getRow(1).font = { bold: true };
+    // Aplicar estilos a todas las hojas
+    workbook.eachWorksheet((sheet) => {
       sheet.views = [{ state: 'frozen', ySplit: 1 }];
     });
 
-    res.setHeader(
-      'Content-Type',
-      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
-    );
-    res.setHeader(
-      'Content-Disposition',
-      `attachment; filename=diferencias_${value.inventarioBaseId}_vs_${value.inventarioComparadoId}.xlsx`
-    );
+    // Enviar archivo
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename=inventario_diferencias_${value.inventarioBaseId}_vs_${value.inventarioComparadoId}_${fechaStr}.xlsx`);
 
     await workbook.xlsx.write(res);
     res.end();
+
   } catch (error) {
     if (error.status) {
       return res.status(error.status).json({

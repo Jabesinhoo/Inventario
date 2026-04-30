@@ -16,14 +16,14 @@ export async function compareInventariosDiferencias(params) {
   return response.data.data;
 }
 
-export async function exportarDiferenciasExcel(params) {
+export async function exportarDiferenciasExcel(params, cantidadesAceptadas = {}) {
   const cleanParams = {
     inventarioBaseId: params.inventarioBaseId,
-    inventarioComparadoId: params.inventarioComparadoId
+    inventarioComparadoId: params.inventarioComparadoId,
+    cantidadesAceptadas: JSON.stringify(cantidadesAceptadas)
   };
 
-  if (params.zonaBaseId) cleanParams.zonaBaseId = params.zonaBaseId;
-  if (params.zonaComparadaId) cleanParams.zonaComparadaId = params.zonaComparadaId;
+  if (params.zonaId) cleanParams.zonaId = params.zonaId;
 
   const response = await api.get('/diferencias/exportar', {
     params: cleanParams,
@@ -37,7 +37,7 @@ export async function exportarDiferenciasExcel(params) {
   const url = window.URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
-  link.download = `diferencias_${cleanParams.inventarioBaseId}_vs_${cleanParams.inventarioComparadoId}.xlsx`;
+  link.download = `inventario_diferencias_${cleanParams.inventarioBaseId}_vs_${cleanParams.inventarioComparadoId}.xlsx`;
   document.body.appendChild(link);
   link.click();
   link.remove();
