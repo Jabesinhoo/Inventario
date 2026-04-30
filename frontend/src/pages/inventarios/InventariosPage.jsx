@@ -88,12 +88,11 @@ export default function InventariosPage() {
     fecha: '',
     estado: 'borrador',
     requiereConteo3: false,
-    inventarioParejaId: ''  // ← NUEVO: inventario con el que forma pareja
+    inventarioParejaId: ''
   });
   const [loading, setLoading] = useState(true);
   const [loadingParejas, setLoadingParejas] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [filtroParejas, setFiltroParejas] = useState('todas');
 
   const [feedbackModal, setFeedbackModal] = useState({
     open: false,
@@ -120,8 +119,7 @@ export default function InventariosPage() {
   async function loadParejas() {
     setLoadingParejas(true);
     try {
-      const params = filtroParejas !== 'todas' ? { estado: filtroParejas } : {};
-      const response = await api.get('/diferencias/parejas', { params });
+      const response = await api.get('/diferencias/parejas');
       setParejas(response.data.data || []);
     } catch (error) {
       console.error('Error cargando parejas:', error);
@@ -145,7 +143,7 @@ export default function InventariosPage() {
 
   useEffect(() => {
     loadParejas();
-  }, [filtroParejas]);
+  }, []);
 
   const resetForm = () => {
     setForm({
@@ -180,6 +178,35 @@ export default function InventariosPage() {
     setFeedbackModal((prev) => ({ ...prev, open: false }));
   };
 
+  const getParejaDeInventario = (inventarioId) => {
+    const pareja = parejas.find(p => 
+      p.inventarioBaseId === inventarioId || 
+      p.inventarioComparadoId === inventarioId
+    );
+    
+    if (!pareja) return null;
+    
+    const esBase = pareja.inventarioBaseId === inventarioId;
+    const inventarioPareja = esBase ? pareja.inventarioComparado : pareja.inventarioBase;
+    
+    return {
+      id: pareja.id,
+      nombre: inventarioPareja?.nombre,
+      fecha: inventarioPareja?.fecha,
+      estado: pareja.estado,
+      esBase
+    };
+  };
+
+  const inventariosSinPareja = inventarios.filter(inv => {
+    if (editing === inv.id) return true;
+    const tienePareja = parejas.some(p => 
+      p.inventarioBaseId === inv.id || 
+      p.inventarioComparadoId === inv.id
+    );
+    return !tienePareja;
+  });
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setSaving(true);
@@ -207,11 +234,9 @@ export default function InventariosPage() {
         openSuccess('Inventario creado correctamente');
       }
 
-      // 🔥 NUEVO: Si se seleccionó un inventario pareja, crear la relación
       if (form.inventarioParejaId) {
         const inventarioParejaId = Number(form.inventarioParejaId);
         
-        // Verificar si ya existe la pareja
         const existePareja = parejas.some(p => 
           (p.inventarioBaseId === inventarioCreado.id && p.inventarioComparadoId === inventarioParejaId) ||
           (p.inventarioBaseId === inventarioParejaId && p.inventarioComparadoId === inventarioCreado.id)
@@ -298,14 +323,14 @@ export default function InventariosPage() {
     );
   };
 
-  // Filtrar inventarios que pueden ser pareja (excluir el actual)
-  const inventariosDisponiblesParaPareja = inventarios.filter(
-    inv => inv.id !== editing
-  );
+  if (loading) {
+    return <div className="card">Cargando inventarios...</div>;
+  }
 
   return (
     <>
       <div className="grid-2">
+        {/* Formulario de creación/edición */}
         <div className="card">
           <div
             style={{
@@ -382,10 +407,9 @@ export default function InventariosPage() {
               </label>
             </div>
 
-            {/* 🔥 NUEVO: Selector de inventario pareja */}
             <div className="form-group">
               <label>
-                <Link2 size={14} /> Inventario pareja (opcional)
+                <Link2 size={14} /> Inventario pareja (opcional - solo uno por inventario)
               </label>
               <select
                 value={form.inventarioParejaId}
@@ -394,14 +418,14 @@ export default function InventariosPage() {
                 }
               >
                 <option value="">Selecciona un inventario pareja</option>
-                {inventariosDisponiblesParaPareja.map((inv) => (
+                {inventariosSinPareja.map((inv) => (
                   <option key={inv.id} value={inv.id}>
                     {inv.nombre} - {inv.fecha} ({inv.estado})
                   </option>
                 ))}
               </select>
               <small className="text-muted">
-                Si seleccionas un inventario, se creará automáticamente una pareja entre ambos
+                Solo inventarios sin pareja aparecen aquí. Relación 1 a 1.
               </small>
             </div>
 
@@ -436,6 +460,7 @@ export default function InventariosPage() {
           </form>
         </div>
 
+        {/* Lista de inventarios */}
         <div className="card">
           <div
             style={{
@@ -449,76 +474,83 @@ export default function InventariosPage() {
             <h2 style={{ margin: 0 }}>Inventarios</h2>
           </div>
 
-          {loading ? (
-            <p>Cargando...</p>
-          ) : inventarios.length === 0 ? (
+          {inventarios.length === 0 ? (
             <p className="muted">No hay inventarios registrados.</p>
           ) : (
             <div className="table-list">
-              {inventarios.map((item) => (
-                <div
-                  key={item.id}
-                  className="list-row"
-                  style={{
-                    alignItems: 'center',
-                    justifyContent: 'space-between',
-                    gap: '12px'
-                  }}
-                >
-                  <div>
-                    <div
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '8px',
-                        marginBottom: '6px',
-                        flexWrap: 'wrap'
-                      }}
-                    >
-                      <strong>{item.nombre}</strong>
-                      <span className="badge">{item.estado}</span>
-                      {item.requiereConteo3 ? (
-                        <span className="badge">
-                          <ShieldCheck size={12} /> Conteo 3
-                        </span>
-                      ) : null}
+              {inventarios.map((item) => {
+                const parejaInfo = getParejaDeInventario(item.id);
+                
+                return (
+                  <div
+                    key={item.id}
+                    className="list-row"
+                    style={{
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      gap: '12px'
+                    }}
+                  >
+                    <div>
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '8px',
+                          marginBottom: '6px',
+                          flexWrap: 'wrap'
+                        }}
+                      >
+                        <strong>{item.nombre}</strong>
+                        <span className="badge">{item.estado}</span>
+                        {parejaInfo && (
+                          <span className="badge info">
+                            <Link2 size={12} /> Pareja: {parejaInfo.nombre}
+                          </span>
+                        )}
+                        {item.requiereConteo3 ? (
+                          <span className="badge">
+                            <ShieldCheck size={12} /> Conteo 3
+                          </span>
+                        ) : null}
+                      </div>
+
+                      <p
+                        className="muted"
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          margin: 0
+                        }}
+                      >
+                        <CalendarDays size={14} />
+                        <span>{item.fecha}</span>
+                      </p>
                     </div>
 
-                    <p
-                      className="muted"
-                      style={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: '6px',
-                        margin: 0
-                      }}
-                    >
-                      <CalendarDays size={14} />
-                      <span>{item.fecha}</span>
-                    </p>
-                  </div>
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                      <button
+                        className="btn btn-outline"
+                        type="button"
+                        onClick={() => handleEdit(item)}
+                      >
+                        <Pencil size={16} />
+                        <span>Editar</span>
+                      </button>
 
-                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-                    <button
-                      className="btn btn-outline"
-                      type="button"
-                      onClick={() => handleEdit(item)}
-                    >
-                      <Pencil size={16} />
-                      <span>Editar</span>
-                    </button>
-
-                    <button
-                      className="btn btn-danger"
-                      type="button"
-                      onClick={() => askDelete(item)}
-                    >
-                      <Trash2 size={16} />
-                      <span>Eliminar</span>
-                    </button>
+                      <button
+                        className="btn btn-danger"
+                        type="button"
+                        onClick={() => askDelete(item)}
+                      >
+                        <Trash2 size={16} />
+                        <span>Eliminar</span>
+                      </button>
+                    </div>
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
         </div>
@@ -530,50 +562,19 @@ export default function InventariosPage() {
           style={{
             display: 'flex',
             alignItems: 'center',
-            justifyContent: 'space-between',
-            flexWrap: 'wrap',
-            gap: '12px',
+            gap: '10px',
             marginBottom: '20px'
           }}
         >
-          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <Link2 size={22} />
-            <h2 style={{ margin: 0 }}>Parejas registradas</h2>
-          </div>
-
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-            <button
-              className={`btn ${filtroParejas === 'todas' ? 'btn-primary' : 'btn-outline'}`}
-              onClick={() => setFiltroParejas('todas')}
-            >
-              Todas
-            </button>
-            <button
-              className={`btn ${filtroParejas === 'pendiente' ? 'btn-primary' : 'btn-outline'}`}
-              onClick={() => setFiltroParejas('pendiente')}
-            >
-              <Clock size={14} /> Pendientes
-            </button>
-            <button
-              className={`btn ${filtroParejas === 'en_reconteo' ? 'btn-primary' : 'btn-outline'}`}
-              onClick={() => setFiltroParejas('en_reconteo')}
-            >
-              <RefreshCw size={14} /> En reconteo
-            </button>
-            <button
-              className={`btn ${filtroParejas === 'completada' ? 'btn-primary' : 'btn-outline'}`}
-              onClick={() => setFiltroParejas('completada')}
-            >
-              <CheckCircle size={14} /> Completadas
-            </button>
-          </div>
+          <Link2 size={22} />
+          <h2 style={{ margin: 0 }}>Parejas registradas</h2>
         </div>
 
         {loadingParejas ? (
           <p>Cargando parejas...</p>
         ) : parejas.length === 0 ? (
           <p className="muted">
-            No hay parejas registradas. Al crear un inventario puedes seleccionar su pareja.
+            No hay parejas registradas. Al crear un inventario puedes seleccionar su pareja única.
           </p>
         ) : (
           <div className="table-container">
@@ -583,28 +584,22 @@ export default function InventariosPage() {
                   <th>Inventario Base</th>
                   <th>Inventario Comparado</th>
                   <th>Estado</th>
-                  <th>Fecha</th>
-                  <th>Rondas</th>
-                  <th>Acciones</th>
-                </tr>
+                 </tr>
               </thead>
               <tbody>
                 {parejas.map((pareja) => (
                   <tr key={pareja.id}>
-                    <td>{pareja.inventarioBase?.nombre} <small>({pareja.inventarioBase?.fecha})</small></td>
-                    <td>{pareja.inventarioComparado?.nombre} <small>({pareja.inventarioComparado?.fecha})</small></td>
-                    <td>{getEstadoBadge(pareja.estado)}</td>
-                    <td>{new Date(pareja.createdAt).toLocaleDateString()}</td>
-                    <td className="text-center">{pareja.rondasReconteoGeneradas || 0}</td>
                     <td>
-                      <button
-                        className="btn btn-outline"
-                        style={{ padding: '4px 8px' }}
-                        onClick={() => setVerDetalleModal({ open: true, pareja })}
-                      >
-                        <Eye size={14} /> Ver
-                      </button>
+                      <strong>{pareja.inventarioBase?.nombre}</strong>
+                      <br />
+                      <small>{pareja.inventarioBase?.fecha}</small>
                     </td>
+                    <td>
+                      <strong>{pareja.inventarioComparado?.nombre}</strong>
+                      <br />
+                      <small>{pareja.inventarioComparado?.fecha}</small>
+                    </td>
+                    <td>{getEstadoBadge(pareja.estado)}</td>
                   </tr>
                 ))}
               </tbody>
@@ -613,7 +608,7 @@ export default function InventariosPage() {
         )}
       </div>
 
-      {/* Modales... (mantén los mismos modales que tenías) */}
+      {/* Modales */}
       <Modal
         open={feedbackModal.open}
         title={feedbackModal.title}
@@ -653,47 +648,6 @@ export default function InventariosPage() {
           ¿Seguro que quieres eliminar el inventario{' '}
           <strong>{deleteModal.inventario?.nombre}</strong>?
         </p>
-      </Modal>
-
-      <Modal
-        open={verDetalleModal.open}
-        title="Detalle de pareja"
-        onClose={() => setVerDetalleModal({ open: false, pareja: null })}
-        footer={
-          <button
-            className="btn btn-primary"
-            onClick={() => setVerDetalleModal({ open: false, pareja: null })}
-          >
-            Cerrar
-          </button>
-        }
-      >
-        {verDetalleModal.pareja && (
-          <div>
-            <div style={{ marginBottom: '12px' }}>
-              <strong>Inventario Base:</strong> {verDetalleModal.pareja.inventarioBase?.nombre}
-              <br />
-              <small>{verDetalleModal.pareja.inventarioBase?.fecha}</small>
-            </div>
-            <div style={{ marginBottom: '12px' }}>
-              <strong>Inventario Comparado:</strong> {verDetalleModal.pareja.inventarioComparado?.nombre}
-              <br />
-              <small>{verDetalleModal.pareja.inventarioComparado?.fecha}</small>
-            </div>
-            <div style={{ marginBottom: '12px' }}>
-              <strong>Estado:</strong> {getEstadoBadge(verDetalleModal.pareja.estado)}
-            </div>
-            <div style={{ marginBottom: '12px' }}>
-              <strong>Rondas generadas:</strong> {verDetalleModal.pareja.rondasReconteoGeneradas || 0}
-            </div>
-            {verDetalleModal.pareja.observaciones && (
-              <div>
-                <strong>Observaciones:</strong>
-                <p>{verDetalleModal.pareja.observaciones}</p>
-              </div>
-            )}
-          </div>
-        )}
       </Modal>
     </>
   );

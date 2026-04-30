@@ -10,7 +10,8 @@ import {
   Users,
   MapPin,
   User,
-  Repeat
+  Repeat,
+  Link2
 } from 'lucide-react';
 import { getInventarios } from '../../services/inventarios.service';
 import { getGrupos } from '../../services/grupos.service';
@@ -19,6 +20,7 @@ import {
   exportarDiferenciasExcel,
   generarRondaReconteoDesdeComparacion
 } from '../../services/diferencias.service';
+import api from '../../services/api';
 
 function normalizeZoneText(value) {
   return String(value || '')
@@ -76,11 +78,9 @@ function getZonaLabel(zona) {
 
 export default function DiferenciasPage() {
   const navigate = useNavigate();
-  const fetchParejas = async () => {
-    const response = await api.get('/diferencias/parejas');
-    setParejas(response.data.data);
-  };
+
   const [inventarios, setInventarios] = useState([]);
+  const [parejas, setParejas] = useState([]);
   const [inventarioBaseId, setInventarioBaseId] = useState('');
   const [inventarioComparadoId, setInventarioComparadoId] = useState('');
 
@@ -115,6 +115,42 @@ export default function DiferenciasPage() {
   const zonasBaseFiltradas = zonaComparadaSeleccionada
     ? zonasBaseOptions.filter((z) => zonesAreEquivalent(z, zonaComparadaSeleccionada))
     : zonasBaseOptions;
+
+  // Función para obtener la pareja de un inventario
+  const getParejaDelInventario = (inventarioId) => {
+    const pareja = parejas.find(p => 
+      p.inventarioBaseId === inventarioId || 
+      p.inventarioComparadoId === inventarioId
+    );
+    
+    if (!pareja) return null;
+    
+    const esBase = pareja.inventarioBaseId === inventarioId;
+    const inventarioPareja = esBase ? pareja.inventarioComparado : pareja.inventarioBase;
+    
+    return {
+      id: pareja.id,
+      inventarioId: inventarioPareja?.id,
+      nombre: inventarioPareja?.nombre,
+      fecha: inventarioPareja?.fecha,
+      estado: pareja.estado
+    };
+  };
+
+  // Cuando selecciona inventario base, buscar y seleccionar automáticamente su pareja
+  const handleInventarioBaseChange = (id) => {
+    setInventarioBaseId(id);
+    const pareja = getParejaDelInventario(Number(id));
+    if (pareja && pareja.inventarioId) {
+      setInventarioComparadoId(pareja.inventarioId);
+      setMessage(`Pareja automática: ${pareja.nombre}`);
+      setTimeout(() => setMessage(''), 3000);
+    } else if (id) {
+      setInventarioComparadoId('');
+      setError('Este inventario no tiene una pareja asignada. Ve a Inventarios para asignarla.');
+      setTimeout(() => setError(''), 5000);
+    }
+  };
 
   const resumen = data?.resumen || {
     totalItemsComparados: 0,
@@ -155,12 +191,22 @@ export default function DiferenciasPage() {
 
   async function loadInventariosData() {
     try {
-      const rows = await getInventarios();
+      const [rows, parejasResponse] = await Promise.all([
+        getInventarios(),
+        api.get('/diferencias/parejas')
+      ]);
       setInventarios(rows || []);
+      setParejas(parejasResponse.data.data || []);
 
       if (rows?.length >= 2) {
         setInventarioBaseId(rows[0].id);
-        setInventarioComparadoId(rows[1].id);
+        // Buscar pareja automática
+        const pareja = getParejaDelInventario(rows[0].id);
+        if (pareja && pareja.inventarioId) {
+          setInventarioComparadoId(pareja.inventarioId);
+        } else {
+          setInventarioComparadoId(rows[1].id);
+        }
       } else if (rows?.length === 1) {
         setInventarioBaseId(rows[0].id);
       }
@@ -395,14 +441,18 @@ export default function DiferenciasPage() {
             <label>Inventario base</label>
             <select
               value={inventarioBaseId}
-              onChange={(e) => setInventarioBaseId(Number(e.target.value))}
+              onChange={(e) => handleInventarioBaseChange(Number(e.target.value))}
             >
               <option value="">Selecciona</option>
-              {inventarios.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.nombre} - {item.fecha}
-                </option>
-              ))}
+              {inventarios.map((item) => {
+                const parejaInfo = getParejaDelInventario(item.id);
+                return (
+                  <option key={item.id} value={item.id}>
+                    {item.nombre} - {item.fecha}
+                    {parejaInfo ? ` (Pareja: ${parejaInfo.nombre})` : ' (Sin pareja)'}
+                  </option>
+                );
+              })}
             </select>
           </div>
 
@@ -413,11 +463,13 @@ export default function DiferenciasPage() {
               onChange={(e) => setInventarioComparadoId(Number(e.target.value))}
             >
               <option value="">Selecciona</option>
-              {inventarios.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.nombre} - {item.fecha}
-                </option>
-              ))}
+              {inventarios
+                .filter(item => item.id !== Number(inventarioBaseId))
+                .map((item) => (
+                  <option key={item.id} value={item.id}>
+                    {item.nombre} - {item.fecha}
+                  </option>
+                ))}
             </select>
           </div>
         </div>
@@ -490,8 +542,8 @@ export default function DiferenciasPage() {
         ) : null}
 
         {zonaBaseSeleccionada &&
-          zonaComparadaSeleccionada &&
-          !zonesAreEquivalent(zonaBaseSeleccionada, zonaComparadaSeleccionada) ? (
+        zonaComparadaSeleccionada &&
+        !zonesAreEquivalent(zonaBaseSeleccionada, zonaComparadaSeleccionada) ? (
           <div className="alert-warning" style={{ marginTop: '12px' }}>
             <AlertTriangle size={16} />
             <span>No puedes comparar ni generar reconteo entre zonas distintas.</span>
@@ -582,7 +634,7 @@ export default function DiferenciasPage() {
                       <td className="text-danger text-center">
                         {row.cantidadComparada - row.cantidadBase > 0
                           ? `+${row.diferencia}`
-                          : `-${row.diferencia}`}
+                          : `${row.diferencia}`}
                       </td>
                     ) : null}
                   </tr>
