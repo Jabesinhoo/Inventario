@@ -525,6 +525,16 @@ async function exportarComparacionExcel(req, res, next) {
       });
     }
 
+    // 🔥 Obtener cantidades aceptadas del query
+    let cantidadesAceptadas = {};
+    if (req.query.cantidadesAceptadas) {
+      try {
+        cantidadesAceptadas = JSON.parse(req.query.cantidadesAceptadas);
+      } catch (e) {
+        console.error('Error parsing cantidadesAceptadas:', e);
+      }
+    }
+
     const data = await buildComparisonData(
       req,
       Number(value.inventarioBaseId),
@@ -532,6 +542,17 @@ async function exportarComparacionExcel(req, res, next) {
       value.zonaBaseId ? Number(value.zonaBaseId) : null,
       value.zonaComparadaId ? Number(value.zonaComparadaId) : null
     );
+
+    // 🔥 Modificar las diferencias con las cantidades aceptadas
+    const diferenciasConAceptadas = data.diferencias.map(diff => ({
+      ...diff,
+      cantidadAceptada: cantidadesAceptadas[diff.sku] !== undefined 
+        ? cantidadesAceptadas[diff.sku] 
+        : diff.cantidadComparada,
+      diferenciaAceptada: (cantidadesAceptadas[diff.sku] !== undefined 
+        ? cantidadesAceptadas[diff.sku] 
+        : diff.cantidadComparada) - diff.cantidadBase
+    }));
 
     const workbook = new ExcelJS.Workbook();
 
@@ -557,12 +578,15 @@ async function exportarComparacionExcel(req, res, next) {
       { header: 'Cantidad Comparada', key: 'cantidadComparada', width: 20 }
     ];
 
+    // 🔥 NUEVO: Columnas de diferencias con cantidad aceptada
     diferenciasSheet.columns = [
       { header: 'SKU', key: 'sku', width: 20 },
       { header: 'Descripción', key: 'descripcion', width: 60 },
       { header: 'Cantidad Base', key: 'cantidadBase', width: 18 },
       { header: 'Cantidad Comparada', key: 'cantidadComparada', width: 20 },
-      { header: 'Diferencia', key: 'diferencia', width: 15 }
+      { header: 'Diferencia Original', key: 'diferencia', width: 15 },
+      { header: 'Cantidad Aceptada', key: 'cantidadAceptada', width: 18 },
+      { header: 'Diferencia vs Aceptada', key: 'diferenciaAceptada', width: 18 }
     ];
 
     gruposBaseSheet.columns = [
@@ -601,11 +625,24 @@ async function exportarComparacionExcel(req, res, next) {
       { concepto: 'Zona Comparada', valor: data.filtros.zonaComparada?.nombre || 'Todas' },
       { concepto: 'Total Comparados', valor: data.resumen.totalItemsComparados },
       { concepto: 'Total Coinciden', valor: data.coinciden.length },
-      { concepto: 'Total Difieren', valor: data.diferencias.length }
+      { concepto: 'Total Difieren', valor: data.diferencias.length },
+      { concepto: 'Total SKU Ajustados', valor: Object.keys(cantidadesAceptadas).length }
     ]);
 
     coincidenSheet.addRows(data.coinciden);
-    diferenciasSheet.addRows(data.diferencias);
+    
+    // 🔥 Agregar filas de diferencias con cantidad aceptada
+    diferenciasConAceptadas.forEach(diff => {
+      diferenciasSheet.addRow({
+        sku: diff.sku,
+        descripcion: diff.descripcion,
+        cantidadBase: diff.cantidadBase,
+        cantidadComparada: diff.cantidadComparada,
+        diferencia: diff.diferencia,
+        cantidadAceptada: diff.cantidadAceptada,
+        diferenciaAceptada: diff.diferenciaAceptada
+      });
+    });
 
     gruposBaseSheet.addRows(data.totales.base.grupos);
     gruposComparadoSheet.addRows(data.totales.comparado.grupos);

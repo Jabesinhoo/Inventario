@@ -99,6 +99,9 @@ export default function DiferenciasPage() {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
 
+  // 🔥 NUEVO: Estado para cantidades editables
+  const [cantidadesEditables, setCantidadesEditables] = useState({});
+
   const zonasBaseOptions = useMemo(() => buildZoneOptions(gruposBase), [gruposBase]);
   const zonasComparadoOptions = useMemo(() => buildZoneOptions(gruposComparado), [gruposComparado]);
 
@@ -152,6 +155,27 @@ export default function DiferenciasPage() {
     }
   };
 
+  // 🔥 NUEVO: Inicializar cantidades editables cuando cambian los datos
+  useEffect(() => {
+    if (data?.diferencias) {
+      const inicial = {};
+      data.diferencias.forEach(row => {
+        // Por defecto, usar la cantidad del inventario comparado
+        inicial[row.sku] = row.cantidadComparada;
+      });
+      setCantidadesEditables(inicial);
+    }
+  }, [data]);
+
+  // 🔥 NUEVO: Función para actualizar cantidad editable
+  const handleCantidadChange = (sku, value) => {
+    const nuevaCantidad = parseInt(value) || 0;
+    setCantidadesEditables(prev => ({
+      ...prev,
+      [sku]: nuevaCantidad
+    }));
+  };
+
   const resumen = data?.resumen || {
     totalItemsComparados: 0,
     totalDiferencias: 0,
@@ -200,7 +224,6 @@ export default function DiferenciasPage() {
 
       if (rows?.length >= 2) {
         setInventarioBaseId(rows[0].id);
-        // Buscar pareja automática
         const pareja = getParejaDelInventario(rows[0].id);
         if (pareja && pareja.inventarioId) {
           setInventarioComparadoId(pareja.inventarioId);
@@ -343,7 +366,8 @@ export default function DiferenciasPage() {
 
       const params = {
         inventarioBaseId,
-        inventarioComparadoId
+        inventarioComparadoId,
+        cantidadesAceptadas: cantidadesEditables // 🔥 Enviar cantidades editables
       };
 
       if (
@@ -604,10 +628,6 @@ export default function DiferenciasPage() {
 
         {!data ? (
           <p className="muted">Selecciona dos inventarios y compara.</p>
-        ) : rowsActivos.length === 0 ? (
-          <p className="muted">
-            {tab === 'coinciden' ? 'No hay coincidencias.' : 'No hay diferencias.'}
-          </p>
         ) : (
           <div className="table-container">
             <table className="data-table">
@@ -617,28 +637,54 @@ export default function DiferenciasPage() {
                   <th>Descripción</th>
                   <th>Base</th>
                   <th>Comparado</th>
-                  {tab === 'diferencias' ? <th>Diferencia</th> : null}
+                  {tab === 'diferencias' ? (
+                    <>
+                      <th>Diferencia</th>
+                      <th className="cantidad-aceptada-col">Cantidad Aceptada</th>
+                    </>
+                  ) : null}
                 </tr>
               </thead>
               <tbody>
-                {rowsActivos.map((row, index) => (
-                  <tr
-                    key={`${row.sku || 'sku'}-${row.zonaId || 'zona'}-${index}`}
-                    className={tab === 'diferencias' ? 'row-warning' : 'row-success'}
-                  >
-                    <td>{row.sku}</td>
-                    <td>{row.descripcion || 'Sin descripción'}</td>
-                    <td className="text-center">{row.cantidadBase}</td>
-                    <td className="text-center">{row.cantidadComparada}</td>
-                    {tab === 'diferencias' ? (
+                {tab === 'coinciden' ? (
+                  rowsActivos.map((row, index) => (
+                    <tr key={`${row.sku}-${index}`} className="row-success">
+                      <td>{row.sku}</td>
+                      <td>{row.descripcion || 'Sin descripción'}</td>
+                      <td className="text-center">{row.cantidadBase}</td>
+                      <td className="text-center">{row.cantidadComparada}</td>
+                    </tr>
+                  ))
+                ) : (
+                  rowsActivos.map((row, index) => (
+                    <tr key={`${row.sku}-${index}`} className="row-warning">
+                      <td>{row.sku}</td>
+                      <td>{row.descripcion || 'Sin descripción'}</td>
+                      <td className="text-center">{row.cantidadBase}</td>
+                      <td className="text-center">{row.cantidadComparada}</td>
                       <td className="text-danger text-center">
-                        {row.cantidadComparada - row.cantidadBase > 0
-                          ? `+${row.diferencia}`
-                          : `${row.diferencia}`}
+                        {row.diferencia > 0 ? `+${row.diferencia}` : `${row.diferencia}`}
                       </td>
-                    ) : null}
-                  </tr>
-                ))}
+                      <td className="text-center cantidad-aceptada-cell">
+                        <input
+                          type="number"
+                          min="0"
+                          value={cantidadesEditables[row.sku] || row.cantidadComparada}
+                          onChange={(e) => handleCantidadChange(row.sku, e.target.value)}
+                          className="cantidad-aceptada-input"
+                          style={{
+                            width: '90px',
+                            padding: '6px 8px',
+                            textAlign: 'center',
+                            border: '1px solid #ccc',
+                            borderRadius: '4px',
+                            fontSize: '14px'
+                          }}
+                        />
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>
