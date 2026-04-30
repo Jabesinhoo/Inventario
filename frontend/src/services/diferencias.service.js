@@ -54,3 +54,19 @@ export async function generarRondaReconteoDesdeComparacion(data) {
   
   return response;
 }
+export async function exportarDiferenciasExcel(params, cantidadesAceptadas = {}) {
+  const cleanParams = {
+    inventarioBaseId: params.inventarioBaseId,
+    inventarioComparadoId: params.inventarioComparadoId,
+    cantidadesAceptadas: JSON.stringify(cantidadesAceptadas) // ← Enviar como string
+  };
+
+  if (params.zonaId) cleanParams.zonaId = params.zonaId;
+  if (params.zonaBaseId) cleanParams.zonaBaseId = params.zonaBaseId;
+  if (params.zonaComparadaId) cleanParams.zonaComparadaId = params.zonaComparadaId;
+
+  const response = await api.get('/diferencias/exportar', {
+    params: cleanParams,
+    responseType: 'blob'
+  });
+}

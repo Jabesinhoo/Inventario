@@ -21,6 +21,7 @@ import {
   generarRondaReconteoDesdeComparacion
 } from '../../services/diferencias.service';
 import api from '../../services/api';
+import './DiferenciasPage.css'; // 🔥 Importar CSS
 
 function normalizeZoneText(value) {
   return String(value || '')
@@ -99,7 +100,7 @@ export default function DiferenciasPage() {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
 
-  // 🔥 NUEVO: Estado para cantidades editables
+  // Estado para cantidades editables
   const [cantidadesEditables, setCantidadesEditables] = useState({});
 
   const zonasBaseOptions = useMemo(() => buildZoneOptions(gruposBase), [gruposBase]);
@@ -119,7 +120,6 @@ export default function DiferenciasPage() {
     ? zonasBaseOptions.filter((z) => zonesAreEquivalent(z, zonaComparadaSeleccionada))
     : zonasBaseOptions;
 
-  // Función para obtener la pareja de un inventario
   const getParejaDelInventario = (inventarioId) => {
     const pareja = parejas.find(p => 
       p.inventarioBaseId === inventarioId || 
@@ -140,7 +140,6 @@ export default function DiferenciasPage() {
     };
   };
 
-  // Cuando selecciona inventario base, buscar y seleccionar automáticamente su pareja
   const handleInventarioBaseChange = (id) => {
     setInventarioBaseId(id);
     const pareja = getParejaDelInventario(Number(id));
@@ -155,19 +154,17 @@ export default function DiferenciasPage() {
     }
   };
 
-  // 🔥 NUEVO: Inicializar cantidades editables cuando cambian los datos
+  // Inicializar cantidades editables cuando cambian los datos
   useEffect(() => {
     if (data?.diferencias) {
       const inicial = {};
       data.diferencias.forEach(row => {
-        // Por defecto, usar la cantidad del inventario comparado
         inicial[row.sku] = row.cantidadComparada;
       });
       setCantidadesEditables(inicial);
     }
   }, [data]);
 
-  // 🔥 NUEVO: Función para actualizar cantidad editable
   const handleCantidadChange = (sku, value) => {
     const nuevaCantidad = parseInt(value) || 0;
     setCantidadesEditables(prev => ({
@@ -367,7 +364,7 @@ export default function DiferenciasPage() {
       const params = {
         inventarioBaseId,
         inventarioComparadoId,
-        cantidadesAceptadas: cantidadesEditables // 🔥 Enviar cantidades editables
+        cantidadesAceptadas: cantidadesEditables
       };
 
       if (
@@ -630,61 +627,43 @@ export default function DiferenciasPage() {
           <p className="muted">Selecciona dos inventarios y compara.</p>
         ) : (
           <div className="table-container">
-            <table className="data-table">
+            <table className="data-table diferencias-table">
               <thead>
                 <tr>
                   <th>SKU</th>
                   <th>Descripción</th>
                   <th>Base</th>
                   <th>Comparado</th>
-                  {tab === 'diferencias' ? (
-                    <>
-                      <th>Diferencia</th>
-                      <th className="cantidad-aceptada-col">Cantidad Aceptada</th>
-                    </>
-                  ) : null}
+                  {tab === 'diferencias' ? <th>Diferencia</th> : null}
+                  <th className="cantidad-aceptada-col">Cantidad Aceptada</th>
                 </tr>
               </thead>
               <tbody>
-                {tab === 'coinciden' ? (
-                  rowsActivos.map((row, index) => (
-                    <tr key={`${row.sku}-${index}`} className="row-success">
-                      <td>{row.sku}</td>
-                      <td>{row.descripcion || 'Sin descripción'}</td>
-                      <td className="text-center">{row.cantidadBase}</td>
-                      <td className="text-center">{row.cantidadComparada}</td>
-                    </tr>
-                  ))
-                ) : (
-                  rowsActivos.map((row, index) => (
-                    <tr key={`${row.sku}-${index}`} className="row-warning">
-                      <td>{row.sku}</td>
-                      <td>{row.descripcion || 'Sin descripción'}</td>
-                      <td className="text-center">{row.cantidadBase}</td>
-                      <td className="text-center">{row.cantidadComparada}</td>
-                      <td className="text-danger text-center">
+                {rowsActivos.map((row, index) => (
+                  <tr
+                    key={`${row.sku}-${index}`}
+                    className={tab === 'diferencias' ? 'row-warning' : 'row-success'}
+                  >
+                    <td>{row.sku}</td>
+                    <td>{row.descripcion || 'Sin descripción'}</td>
+                    <td className="text-center cantidad-base">{row.cantidadBase}</td>
+                    <td className="text-center cantidad-comparada">{row.cantidadComparada}</td>
+                    {tab === 'diferencias' && (
+                      <td className={`text-center diferencia ${row.diferencia > 0 ? 'text-danger' : row.diferencia < 0 ? 'text-success' : ''}`}>
                         {row.diferencia > 0 ? `+${row.diferencia}` : `${row.diferencia}`}
                       </td>
-                      <td className="text-center cantidad-aceptada-cell">
-                        <input
-                          type="number"
-                          min="0"
-                          value={cantidadesEditables[row.sku] || row.cantidadComparada}
-                          onChange={(e) => handleCantidadChange(row.sku, e.target.value)}
-                          className="cantidad-aceptada-input"
-                          style={{
-                            width: '90px',
-                            padding: '6px 8px',
-                            textAlign: 'center',
-                            border: '1px solid #ccc',
-                            borderRadius: '4px',
-                            fontSize: '14px'
-                          }}
-                        />
-                      </td>
-                    </tr>
-                  ))
-                )}
+                    )}
+                    <td className="text-center cantidad-aceptada-cell">
+                      <input
+                        type="number"
+                        min="0"
+                        value={cantidadesEditables[row.sku] || row.cantidadComparada}
+                        onChange={(e) => handleCantidadChange(row.sku, e.target.value)}
+                        className="cantidad-aceptada-input"
+                      />
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
