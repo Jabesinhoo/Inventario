@@ -17,14 +17,12 @@ function normalizeText(value) {
 
 function getCellValue(cell) {
   if (!cell) return null;
-
   if (cell.value && typeof cell.value === 'object') {
     if (cell.value.text) return String(cell.value.text).trim();
     if (cell.value.result !== undefined && cell.value.result !== null) {
       return String(cell.value.result).trim();
     }
   }
-
   return normalizeText(cell.value);
 }
 
@@ -34,24 +32,6 @@ function resolveColumnIndex(headerMap, aliases) {
     if (headerMap[key] !== undefined) return headerMap[key];
   }
   return null;
-}
-
-// 🔥 NUEVA FUNCIÓN: Normalizar zona para formato Melissa
-function normalizarZonaMelissa(zonaTexto) {
-  const valor = String(zonaTexto || '').trim().toUpperCase();
-  
-  // Mapeo de BODEGA
-  if (valor === 'BODEGA' || valor === 'BOD' || valor === 'BODEGA PRINCIPAL') {
-    return { nombre: 'Bodega Principal', codigo: 'BOD', tipo: 'BODEGA' };
-  }
-  
-  // Mapeo de EXHIBICION
-  if (valor === 'EXHIBICION' || valor === 'EXHIBICIÓN' || valor === 'EXH' || valor === 'EXHIBICION PRINCIPAL') {
-    return { nombre: 'Exhibición', codigo: 'EXH', tipo: 'EXHIBICION' };
-  }
-  
-  // Si no coincide, devolver el original
-  return { nombre: valor, codigo: valor.slice(0, 10), tipo: 'OTRO' };
 }
 
 async function parseConteoInicialExcel(buffer) {
@@ -64,7 +44,6 @@ async function parseConteoInicialExcel(buffer) {
   }
 
   console.log('[PARSER] Hoja encontrada:', worksheet.name);
-  console.log('[PARSER] Número de filas:', worksheet.rowCount);
 
   const headerRow = worksheet.getRow(1);
   const headerMap = {};
@@ -72,41 +51,28 @@ async function parseConteoInicialExcel(buffer) {
   headerRow.eachCell((cell, colNumber) => {
     const headerValue = normalizeHeader(cell.value);
     headerMap[headerValue] = colNumber;
-    console.log(`[PARSER] Columna ${colNumber}: "${cell.value}" → normalizado: "${headerValue}"`);
+    console.log(`[PARSER] Columna ${colNumber}: "${cell.value}" → "${headerValue}"`);
   });
 
-  // Columnas esperadas para formato Melissa
-  const zonaCol = resolveColumnIndex(headerMap, ['zona', 'ubicacion', 'location']);
-  const skuCol = resolveColumnIndex(headerMap, ['sku', 'codigo', 'code', 'código']);
-  const descripcionCol = resolveColumnIndex(headerMap, [
-    'descripcion',
-    'descripción',
-    'nombre',
-    'detalle',
-    'producto'
-  ]);
-  const cantidadCol = resolveColumnIndex(headerMap, ['cantidad', 'quantity', 'stock', 'existencia']);
-  const codigoBarraCol = resolveColumnIndex(headerMap, [
-    'codigobarra',
-    'codigo de barras',
-    'codigo barras',
-    'codbarras',
-    'barcode',
-    'ean'
-  ]);
+  // Buscar columnas
+  const skuCol = resolveColumnIndex(headerMap, ['sku', 'codigo', 'código', 'producto']);
+  const descripcionCol = resolveColumnIndex(headerMap, ['descripcion', 'descripción', 'nombre']);
+  const cantidadBodegaCol = resolveColumnIndex(headerMap, ['cantidadbodega', 'cantidad bodega', 'bodega']);
+  const cantidadExhibicionCol = resolveColumnIndex(headerMap, ['cantidadexhibicion', 'cantidad exhibicion', 'exhibicion', 'exhibición']);
 
   console.log('[PARSER] Columnas encontradas:', {
-    zonaCol,
     skuCol,
     descripcionCol,
-    cantidadCol,
-    codigoBarraCol
+    cantidadBodegaCol,
+    cantidadExhibicionCol
   });
 
-  if (!zonaCol || !skuCol || !cantidadCol) {
-    throw new Error(
-      `El Excel debe tener al menos: zona (columna ${zonaCol}), sku/codigo (columna ${skuCol}) y cantidad (columna ${cantidadCol})`
-    );
+  if (!skuCol) {
+    throw new Error('El Excel debe tener una columna "sku" o "codigo"');
+  }
+
+  if (!cantidadBodegaCol && !cantidadExhibicionCol) {
+    throw new Error('El Excel debe tener al menos una columna de cantidad (Bodega o Exhibición)');
   }
 
   const rows = [];
@@ -115,61 +81,42 @@ async function parseConteoInicialExcel(buffer) {
   worksheet.eachRow((row, rowNumber) => {
     if (rowNumber === 1) return;
 
-    const zonaRaw = getCellValue(row.getCell(zonaCol));
-    const zona = normalizeText(zonaRaw);
     const sku = normalizeText(getCellValue(row.getCell(skuCol)));
-    const descripcion = descripcionCol
-      ? normalizeText(getCellValue(row.getCell(descripcionCol)))
-      : null;
-    const codigoBarra = codigoBarraCol
-      ? normalizeText(getCellValue(row.getCell(codigoBarraCol)))
-      : null;
-
-    const cantidadRaw = getCellValue(row.getCell(cantidadCol));
-    const cantidad = Number(cantidadRaw);
-
-    if (rowNumber % 100 === 0) {
-      console.log(
-        `[PARSER] Procesando fila ${rowNumber}: zona="${zona}", sku="${sku}", descripcion="${descripcion}", cantidad=${cantidad}`
-      );
-    }
-
-    if (!zona || !sku) {
-      errors.push({
-        row: rowNumber,
-        message: `Fila inválida: zona="${zona}", sku="${sku}"`
-      });
-      return;
-    }
-
-    if (Number.isNaN(cantidad)) {
-      errors.push({
-        row: rowNumber,
-        message: `Cantidad inválida: "${cantidadRaw}"`
-      });
-      return;
-    }
-
-    // 🔥 Normalizar zona para formato Melissa
-    const zonaNormalizada = normalizarZonaMelissa(zona);
+    const descripcion = descripcionCol ? normalizeText(getCellValue(row.getCell(descripcionCol))) : null;
     
+    let cantidadBodega = 0;
+    if (cantidadBodegaCol) {
+      const val = getCellValue(row.getCell(cantidadBodegaCol));
+      cantidadBodega = Number(val) || 0;
+    }
+    
+    let cantidadExhibicion = 0;
+    if (cantidadExhibicionCol) {
+      const val = getCellValue(row.getCell(cantidadExhibicionCol));
+      cantidadExhibicion = Number(val) || 0;
+    }
+
+    if (!sku) {
+      errors.push({ row: rowNumber, message: 'SKU vacío' });
+      return;
+    }
+
+    if (cantidadBodega === 0 && cantidadExhibicion === 0) {
+      errors.push({ row: rowNumber, message: `SKU ${sku} sin cantidades` });
+      return;
+    }
+
     rows.push({
-      zona: zonaNormalizada.tipo,
-      zonaNombre: zonaNormalizada.nombre,
-      zonaCodigo: zonaNormalizada.codigo,
-      sku: String(sku).trim(),
-      codigoLeido: codigoBarra || String(sku).trim(),
+      sku,
       descripcion: descripcion || null,
-      cantidad
+      cantidadBodega,
+      cantidadExhibicion,
+      cantidadTotal: cantidadBodega + cantidadExhibicion
     });
   });
 
-  console.log(`[PARSER] Total filas procesadas: ${rows.length}`);
-  console.log(`[PARSER] Total errores: ${errors.length}`);
-
+  console.log(`[PARSER] Filas procesadas: ${rows.length}, Errores: ${errors.length}`);
   return { rows, errors };
 }
 
-module.exports = {
-  parseConteoInicialExcel
-};
+module.exports = { parseConteoInicialExcel };

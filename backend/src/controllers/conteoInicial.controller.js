@@ -82,29 +82,19 @@ async function importConteoInicialExcel(req, res, next) {
 
     // En la función importConteoInicialExcel, reemplaza el bucle for:
 
+    // En la función importConteoInicialExcel, reemplaza el bucle:
+
     for (const item of rows) {
       try {
-        // Usar la zona ya normalizada desde el parser
-        let zona = await Zona.findOne({
-          where: {
-            [Op.or]: [
-              { codigo: item.zonaCodigo },
-              { nombre: item.zonaNombre }
-            ]
-          },
-          transaction
-        });
+        // Buscar o crear la zona BODEGA y EXHIBICION
+        let zonaBodega = await Zona.findOne({ where: { codigo: 'BOD' }, transaction });
+        if (!zonaBodega) {
+          zonaBodega = await Zona.create({ nombre: 'Bodega Principal', codigo: 'BOD', activa: true }, { transaction });
+        }
 
-        if (!zona) {
-          zona = await Zona.create(
-            {
-              nombre: item.zonaNombre,
-              codigo: item.zonaCodigo,
-              activa: true
-            },
-            { transaction }
-          );
-          console.log(`[IMPORT] Zona creada: ${zona.nombre} (${zona.codigo})`);
+        let zonaExhibicion = await Zona.findOne({ where: { codigo: 'EXH' }, transaction });
+        if (!zonaExhibicion) {
+          zonaExhibicion = await Zona.create({ nombre: 'Exhibición', codigo: 'EXH', activa: true }, { transaction });
         }
 
         let descripcionCorta = item.descripcion || 'Sin descripción';
@@ -113,63 +103,39 @@ async function importConteoInicialExcel(req, res, next) {
         }
 
         const sku = String(item.sku).trim();
-        const cantidad = Number(item.cantidad) || 0;
 
-        // Determinar cantidades según tipo de zona
-        let cantidadBodega = 0;
-        let cantidadExhibicion = 0;
-
-        if (item.zona === 'BODEGA') {
-          cantidadBodega = cantidad;
-          cantidadExhibicion = 0;
-        } else if (item.zona === 'EXHIBICION') {
-          cantidadBodega = 0;
-          cantidadExhibicion = cantidad;
-        } else {
-          cantidadBodega = cantidad;
-          cantidadExhibicion = cantidad;
-        }
-
-        const [registro, created] = await ConteoInicialDetalle.findOrCreate({
-          where: {
+        // Guardar en BODEGA
+        if (item.cantidadBodega > 0) {
+          await ConteoInicialDetalle.upsert({
             inventarioId: value.inventarioId,
-            zonaId: zona.id,
-            sku
-          },
-          defaults: {
-            inventarioId: value.inventarioId,
-            zonaId: zona.id,
-            productoId: null,
+            zonaId: zonaBodega.id,
             sku,
-            codigoLeido: item.codigoLeido,
             descripcionSnapshot: descripcionCorta,
-            cantidadBodega,
-            cantidadExhibicion,
-            cantidadTotal: cantidad,
-            origenArchivo: req.file.originalname
-          },
-          transaction
-        });
-
-        if (!created) {
-          await registro.update({
-            codigoLeido: item.codigoLeido,
-            descripcionSnapshot: descripcionCorta,
-            cantidadBodega,
-            cantidadExhibicion,
-            cantidadTotal: cantidad,
+            cantidadBodega: item.cantidadBodega,
+            cantidadExhibicion: 0,
+            cantidadTotal: item.cantidadBodega,
             origenArchivo: req.file.originalname
           }, { transaction });
-          actualizados++;
-        } else {
-          insertados++;
         }
+
+        // Guardar en EXHIBICION
+        if (item.cantidadExhibicion > 0) {
+          await ConteoInicialDetalle.upsert({
+            inventarioId: value.inventarioId,
+            zonaId: zonaExhibicion.id,
+            sku,
+            descripcionSnapshot: descripcionCorta,
+            cantidadBodega: 0,
+            cantidadExhibicion: item.cantidadExhibicion,
+            cantidadTotal: item.cantidadExhibicion,
+            origenArchivo: req.file.originalname
+          }, { transaction });
+        }
+
+        insertados++;
       } catch (err) {
         console.error(`[IMPORT] Error con SKU ${item.sku}:`, err.message);
-        noResueltos.push({
-          sku: item.sku,
-          message: err.message
-        });
+        noResueltos.push({ sku: item.sku, message: err.message });
       }
     }
     await transaction.commit();

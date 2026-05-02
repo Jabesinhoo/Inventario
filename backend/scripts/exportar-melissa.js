@@ -39,18 +39,23 @@ async function exportarInventarioMelissa() {
     const nombreEmpresa = empresaResult.recordset[0]?.nombre || 'TECNOCOMPUTER MELISSA SANDOVAL';
     console.log(`🏢 Empresa: ${nombreEmpresa}\n`);
 
-    // 2. Obtener productos con sus grupos y destinos (usando JOIN correcto)
-    console.log('📊 Consultando productos con grupos...');
+    // 2. Obtener productos con PRECIO COSTE (CostoPromedio) y grupos
+    console.log('📊 Consultando productos con precio coste...');
     const productosResult = await pool.request().query(`
       SELECT 
         i.IdInventario,
         i.[CódigoInventario] as sku,
         i.[Descripción] as descripcion,
         i.UnidadDeMedida,
-        ISNULL(i.Iva, 0) as iva,
-        ISNULL(i.Precio1, 0) as valorUnitario,
         i.IdGrupoInventarioDos as grupoId,
-        g.Descripcion as grupoNombre
+        g.Descripcion as grupoNombre,
+        ISNULL((
+          SELECT TOP 1 c.CostoPromedio 
+          FROM CCA_M_Inventarios c 
+          WHERE c.IdInventario = i.IdInventario 
+            AND c.CostoPromedio > 0
+          ORDER BY c.IdAsientoContable DESC
+        ), 0) as precioCoste
       FROM Inventarios i
       LEFT JOIN [Inventarios - AgrupaciónDos] g ON g.IdGrupoInventarioDos = i.IdGrupoInventarioDos
       WHERE i.Activo = -1
@@ -59,29 +64,16 @@ async function exportarInventarioMelissa() {
 
     console.log(`✅ Productos encontrados: ${productosResult.recordset.length}\n`);
 
-    // 3. Obtener existencias actuales por bodega
-    console.log('📊 Consultando existencias por bodega...');
+    // 3. Obtener existencias actuales por bodega (sumando todas, no solo última)
+    console.log('📊 Consultando existencias por bodega (totales)...');
     const cantidadesResult = await pool.request().query(`
-      WITH UltimosMovimientos AS (
-        SELECT 
-          c.IdInventario,
-          c.IdBodegaInventario,
-          c.Cantidad,
-          c.Dcto,
-          c.Vencimiento,
-          c.IdLote,
-          ROW_NUMBER() OVER (PARTITION BY c.IdInventario, c.IdBodegaInventario ORDER BY c.IdAsientoContable DESC) as rn
-        FROM CCA_M_Inventarios c
-      )
       SELECT 
         IdInventario,
         IdBodegaInventario,
-        Cantidad,
-        Dcto,
-        Vencimiento,
-        IdLote
-      FROM UltimosMovimientos
-      WHERE rn = 1
+        SUM(Cantidad) as CantidadTotal
+      FROM CCA_M_Inventarios
+      WHERE IdBodegaInventario IN ('BOD', 'EXH')
+      GROUP BY IdInventario, IdBodegaInventario
     `);
 
     // Crear mapa de cantidades
@@ -89,10 +81,7 @@ async function exportarInventarioMelissa() {
     for (const row of cantidadesResult.recordset) {
       const key = `${row.IdInventario}|${row.IdBodegaInventario}`;
       cantidadesMap.set(key, {
-        cantidad: row.Cantidad || 0,
-        descuento: row.Dcto || 0,
-        vencimiento: row.Vencimiento,
-        lote: row.IdLote
+        cantidad: row.CantidadTotal || 0
       });
     }
 
@@ -105,39 +94,25 @@ async function exportarInventarioMelissa() {
         sku: prod.sku,
         descripcion: prod.descripcion,
         unidadMedida: prod.UnidadDeMedida || 'Und.',
-        iva: prod.iva,
-        valorUnitario: prod.valorUnitario,
-        grupoNombre: prod.grupoNombre || 'SIN GRUPO'
+        grupoNombre: prod.grupoNombre || 'SIN GRUPO',
+        precioCoste: prod.precioCoste || 0
       });
     }
 
-    // Crear Excel
+    // Crear Excel con UNA SOLA FILA por producto
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('INVENTARIO');
 
-    // Columnas según formato Melissa
+    // Columnas para importación (formato simple)
     worksheet.columns = [
-      { header: 'Empresa', key: 'empresa', width: 30 },
-      { header: 'Tipo Documento', key: 'tipoDocumento', width: 15 },
-      { header: 'Documento Número', key: 'documentoNumero', width: 20 },
-      { header: 'Fecha', key: 'fecha', width: 12 },
-      { header: 'Elaborado', key: 'elaborado', width: 20 },
-      { header: 'Destino', key: 'destino', width: 25 },
-      { header: 'Nota', key: 'nota', width: 35 },
-      { header: 'Verificado', key: 'verificado', width: 12 },
-      { header: 'Anulado', key: 'anulado', width: 10 },
-      { header: 'Producto', key: 'producto', width: 20 },
-      { header: 'Bodega', key: 'bodega', width: 15 },
-      { header: 'Unidad De Medida', key: 'unidadMedida', width: 15 },
-      { header: 'Cantidad Físico', key: 'cantidadFisico', width: 15 },
-      { header: 'Cantidad Sistema', key: 'cantidadSistema', width: 15 },
-      { header: 'IVA', key: 'iva', width: 10 },
-      { header: 'Valor Unitario', key: 'valorUnitario', width: 15 },
-      { header: 'Descuento', key: 'descuento', width: 10 },
-      { header: 'Vencimiento', key: 'vencimiento', width: 12 },
-      { header: 'Lote', key: 'lote', width: 15 },
-      { header: 'Talla', key: 'talla', width: 10 },
-      { header: 'Color', key: 'color', width: 15 }
+      { header: 'SKU', key: 'sku', width: 20 },
+      { header: 'Descripción', key: 'descripcion', width: 60 },
+      { header: 'Unidad Medida', key: 'unidadMedida', width: 15 },
+      { header: 'Cantidad Bodega', key: 'cantidadBodega', width: 18 },
+      { header: 'Cantidad Exhibición', key: 'cantidadExhibicion', width: 18 },
+      { header: 'Total Unidades', key: 'total', width: 15 },
+      { header: 'Precio Coste', key: 'precioCoste', width: 18 },
+      { header: 'Grupo', key: 'grupo', width: 25 }
     ];
 
     // Estilos encabezado
@@ -150,104 +125,68 @@ async function exportarInventarioMelissa() {
     worksheet.getRow(1).font = { color: { argb: 'FFFFFFFF' }, bold: true };
 
     const fechaActual = new Date();
-    const fechaStr = fechaActual.toISOString().slice(0, 10);
-    const mesActual = fechaActual.toLocaleString('es', { month: 'long' });
-    let totalRegistros = 0;
-    let totalUnidades = 0;
+    let totalBodega = 0;
+    let totalExhibicion = 0;
+    let productosConStock = 0;
 
-    console.log('📝 Generando Excel...');
+    console.log('📝 Generando Excel (una fila por producto)...');
 
-    // Iterar sobre los productos
+    // Iterar sobre los productos y crear UNA SOLA FILA
     for (const [idInventario, producto] of productosMap) {
       const bodegaKey = `${idInventario}|BOD`;
       const exhibicionKey = `${idInventario}|EXH`;
       
-      const bodegaData = cantidadesMap.get(bodegaKey);
-      const exhibicionData = cantidadesMap.get(exhibicionKey);
+      const cantidadBodega = cantidadesMap.get(bodegaKey)?.cantidad || 0;
+      const cantidadExhibicion = cantidadesMap.get(exhibicionKey)?.cantidad || 0;
       
-      const cantidadBodega = bodegaData?.cantidad || 0;
-      const cantidadExhibicion = exhibicionData?.cantidad || 0;
+      if (cantidadBodega > 0 || cantidadExhibicion > 0) {
+        productosConStock++;
+      }
       
-      // Fecha de vencimiento
-      const fechaVencimiento = bodegaData?.vencimiento || exhibicionData?.vencimiento || null;
-      const fechaVencimientoStr = fechaVencimiento ? new Date(fechaVencimiento).toISOString().slice(0, 10) : fechaStr;
+      totalBodega += cantidadBodega;
+      totalExhibicion += cantidadExhibicion;
       
-      // Fila para BODEGA
       worksheet.addRow({
-        empresa: nombreEmpresa,
-        tipoDocumento: 'AI',
-        documentoNumero: '',
-        fecha: fechaStr,
-        elaborado: 'Admin',
-        destino: producto.grupoNombre,
-        nota: `Ajuste de inventario - ${mesActual}`,
-        verificado: -1,
-        anulado: 0,
-        producto: producto.sku,
-        bodega: 'BODEGA',
+        sku: producto.sku,
+        descripcion: producto.descripcion || 'Sin descripción',
         unidadMedida: producto.unidadMedida,
-        cantidadFisico: cantidadBodega,
-        cantidadSistema: 0,
-        iva: 0,
-        valorUnitario: producto.valorUnitario,
-        descuento: bodegaData?.descuento || 0,
-        vencimiento: fechaVencimientoStr,
-        lote: bodegaData?.lote || '',
-        talla: '',
-        color: ''
+        cantidadBodega: cantidadBodega,
+        cantidadExhibicion: cantidadExhibicion,
+        total: cantidadBodega + cantidadExhibicion,
+        precioCoste: producto.precioCoste,
+        grupo: producto.grupoNombre
       });
-      totalRegistros++;
-      totalUnidades += cantidadBodega;
-      
-      // Fila para EXHIBICION
-      worksheet.addRow({
-        empresa: nombreEmpresa,
-        tipoDocumento: 'AI',
-        documentoNumero: '',
-        fecha: fechaStr,
-        elaborado: 'Admin',
-        destino: producto.grupoNombre,
-        nota: `Ajuste de inventario - ${mesActual}`,
-        verificado: -1,
-        anulado: 0,
-        producto: producto.sku,
-        bodega: 'EXHIBICION',
-        unidadMedida: producto.unidadMedida,
-        cantidadFisico: cantidadExhibicion,
-        cantidadSistema: 0,
-        iva: 0,
-        valorUnitario: producto.valorUnitario,
-        descuento: exhibicionData?.descuento || 0,
-        vencimiento: fechaVencimientoStr,
-        lote: exhibicionData?.lote || '',
-        talla: '',
-        color: ''
-      });
-      totalRegistros++;
-      totalUnidades += cantidadExhibicion;
     }
 
-    // Hoja de resumen
+    // ==================== HOJA DE RESUMEN ====================
     const resumenSheet = workbook.addWorksheet('RESUMEN');
     resumenSheet.columns = [
-      { header: 'Concepto', key: 'concepto', width: 30 },
-      { header: 'Valor', key: 'valor', width: 20 }
+      { header: 'Concepto', key: 'concepto', width: 35 },
+      { header: 'Valor', key: 'valor', width: 25 }
     ];
 
+    resumenSheet.getRow(1).font = { bold: true };
+    resumenSheet.getRow(1).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF2563eb' }
+    };
+    resumenSheet.getRow(1).font = { color: { argb: 'FFFFFFFF' }, bold: true };
+
     resumenSheet.addRows([
+      { concepto: '📊 INFORMACIÓN GENERAL', valor: '' },
       { concepto: 'Fecha Exportación', valor: fechaActual.toLocaleString() },
       { concepto: 'Empresa', valor: nombreEmpresa },
+      { concepto: '', valor: '' },
+      { concepto: '📦 PRODUCTOS', valor: '' },
       { concepto: 'Total Productos Activos', valor: productosMap.size },
-      { concepto: 'Total Registros (Bodega+Exhibición)', valor: totalRegistros },
-      { concepto: 'Total Unidades', valor: totalUnidades.toLocaleString() },
-      { concepto: 'Tipo Documento', valor: 'AI' },
-      { concepto: 'Mes de Ajuste', valor: mesActual },
-      { concepto: 'Verificado', valor: '-1 (SI)' },
-      { concepto: 'Anulado', valor: '0 (NO)' },
-      { concepto: 'IVA', valor: '0' }
+      { concepto: 'Productos con Stock', valor: productosConStock },
+      { concepto: '', valor: '' },
+      { concepto: '📦 CANTIDADES', valor: '' },
+      { concepto: 'Total Unidades en Bodega', valor: totalBodega.toLocaleString() },
+      { concepto: 'Total Unidades en Exhibición', valor: totalExhibicion.toLocaleString() },
+      { concepto: 'Total General Unidades', valor: (totalBodega + totalExhibicion).toLocaleString() }
     ]);
-
-    resumenSheet.getRow(1).font = { bold: true };
 
     // Guardar archivo
     const exportsDir = path.join(__dirname, '../exports');
@@ -263,9 +202,13 @@ async function exportarInventarioMelissa() {
     console.log('\n📊 RESUMEN FINAL:');
     console.log(`   - Empresa: ${nombreEmpresa}`);
     console.log(`   - Productos activos: ${productosMap.size}`);
-    console.log(`   - Registros generados: ${totalRegistros}`);
-    console.log(`   - Total unidades: ${totalUnidades.toLocaleString()}`);
+    console.log(`   - Productos con stock: ${productosConStock}`);
+    console.log(`   - Total unidades Bodega: ${totalBodega.toLocaleString()}`);
+    console.log(`   - Total unidades Exhibición: ${totalExhibicion.toLocaleString()}`);
+    console.log(`   - Total general: ${(totalBodega + totalExhibicion).toLocaleString()}`);
     console.log(`\n✅ Archivo guardado: ${filepath}`);
+    console.log(`\n📥 Formato: Una fila por producto con columnas:`);
+    console.log(`   - SKU | Descripción | Unidad Medida | Cantidad Bodega | Cantidad Exhibición | Total | Precio Coste | Grupo`);
 
     await pool.close();
     console.log('\n👋 Conexión cerrada');
