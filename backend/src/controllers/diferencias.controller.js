@@ -533,7 +533,8 @@ async function exportarComparacionExcel(req, res, next) {
     if (req.query.cantidadesAceptadas) {
       try {
         cantidadesAceptadas = JSON.parse(req.query.cantidadesAceptadas);
-      } catch (e) { }
+        console.log('📦 Cantidades aceptadas:', Object.keys(cantidadesAceptadas).length);
+      } catch (e) {}
     }
 
     // Obtener datos de comparación
@@ -545,14 +546,15 @@ async function exportarComparacionExcel(req, res, next) {
       value.zonaComparadaId ? Number(value.zonaComparadaId) : null
     );
 
+    // 🔥 Obtener datos de productos desde SQL Server
+    const skusUnicos = [...new Set(data.comparacion.map(p => p.sku))];
+    const sqlServerData = await obtenerDatosProductosDesdeSQLServer(skusUnicos);
+
     const workbook = new ExcelJS.Workbook();
-
-    // Colores para las gráficas
-    const colores = ['#2563eb', '#16a34a', '#dc2626', '#f59e0b', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
-
+    
     // ==================== HOJA 1: INVENTARIO ====================
     const inventarioSheet = workbook.addWorksheet('INVENTARIO');
-
+    
     inventarioSheet.columns = [
       { header: 'Empresa', key: 'empresa', width: 30 },
       { header: 'Tipo Documento', key: 'tipoDocumento', width: 15 },
@@ -590,12 +592,15 @@ async function exportarComparacionExcel(req, res, next) {
     const mesActual = fechaActual.toLocaleString('es', { month: 'long' });
     const nombreEmpresa = 'TECNOCOMPUTER MELISSA SANDOVAL';
 
-    // Agregar TODOS los productos de la comparación (coincidencias y diferencias)
     const todosProductos = [...(data.comparacion || [])];
-
+    
     for (const producto of todosProductos) {
       const cantidadAceptada = cantidadesAceptadas[producto.sku] || producto.cantidadComparada;
-
+      const productoData = sqlServerData.get(producto.sku) || {};
+      
+      const valorUnitario = productoData.valorUnitario || 0;
+      const fechaVencimiento = productoData.vencimiento ? new Date(productoData.vencimiento).toISOString().slice(0, 10) : fechaStr;
+      
       // BODEGA
       inventarioSheet.addRow({
         empresa: nombreEmpresa,
@@ -603,24 +608,24 @@ async function exportarComparacionExcel(req, res, next) {
         documentoNumero: '',
         fecha: fechaStr,
         elaborado: req.user?.nombre || 'Admin',
-        destino: 'SIN GRUPO',
-        nota: `Inventario - ${mesActual}`,
+        destino: productoData.grupoNombre || 'SIN GRUPO',
+        nota: `Ajuste de inventario - ${mesActual}`,
         verificado: -1,
         anulado: 0,
         producto: producto.sku,
         bodega: 'BODEGA',
-        unidadMedida: 'Und.',
+        unidadMedida: productoData.unidadMedida || 'Und.',
         cantidadFisico: cantidadAceptada,
         cantidadSistema: 0,
         iva: 0,
-        valorUnitario: 0,
+        valorUnitario: valorUnitario,
         descuento: 0,
-        vencimiento: fechaStr,
-        lote: '',
+        vencimiento: fechaVencimiento,
+        lote: productoData.lote || '',
         talla: '',
         color: ''
       });
-
+      
       // EXHIBICION
       inventarioSheet.addRow({
         empresa: nombreEmpresa,
@@ -628,20 +633,20 @@ async function exportarComparacionExcel(req, res, next) {
         documentoNumero: '',
         fecha: fechaStr,
         elaborado: req.user?.nombre || 'Admin',
-        destino: 'SIN GRUPO',
-        nota: `Inventario - ${mesActual}`,
+        destino: productoData.grupoNombre || 'SIN GRUPO',
+        nota: `Ajuste de inventario - ${mesActual}`,
         verificado: -1,
         anulado: 0,
         producto: producto.sku,
         bodega: 'EXHIBICION',
-        unidadMedida: 'Und.',
+        unidadMedida: productoData.unidadMedida || 'Und.',
         cantidadFisico: cantidadAceptada,
         cantidadSistema: 0,
         iva: 0,
-        valorUnitario: 0,
+        valorUnitario: valorUnitario,
         descuento: 0,
-        vencimiento: fechaStr,
-        lote: '',
+        vencimiento: fechaVencimiento,
+        lote: productoData.lote || '',
         talla: '',
         color: ''
       });
@@ -651,8 +656,7 @@ async function exportarComparacionExcel(req, res, next) {
     const resumenSheet = workbook.addWorksheet('RESUMEN GENERAL');
     resumenSheet.columns = [
       { header: 'Concepto', key: 'concepto', width: 35 },
-      { header: 'Valor', key: 'valor', width: 25 },
-      { header: 'Detalle', key: 'detalle', width: 30 }
+      { header: 'Valor', key: 'valor', width: 25 }
     ];
 
     resumenSheet.getRow(1).font = { bold: true };
@@ -663,33 +667,34 @@ async function exportarComparacionExcel(req, res, next) {
     };
     resumenSheet.getRow(1).font = { color: { argb: 'FFFFFFFF' }, bold: true };
 
-    const totalUnidadesBase = todosProductos.reduce((sum, p) => sum + p.cantidadBase, 0);
-    const totalUnidadesComparado = todosProductos.reduce((sum, p) => sum + p.cantidadComparada, 0);
     const totalUnidadesAceptadas = todosProductos.reduce((sum, p) => sum + (cantidadesAceptadas[p.sku] || p.cantidadComparada), 0);
+    const valorTotalInventario = todosProductos.reduce((sum, p) => {
+      const cantidad = cantidadesAceptadas[p.sku] || p.cantidadComparada;
+      const valorUnitario = sqlServerData.get(p.sku)?.valorUnitario || 0;
+      return sum + (cantidad * valorUnitario);
+    }, 0);
 
     resumenSheet.addRows([
-      { concepto: '📊 INFORMACIÓN GENERAL', valor: '', detalle: '' },
-      { concepto: 'Fecha Exportación', valor: fechaActual.toLocaleString(), detalle: '' },
-      { concepto: 'Empresa', valor: nombreEmpresa, detalle: '' },
-      { concepto: 'Elaborado Por', valor: req.user?.nombre || 'Admin', detalle: '' },
-      { concepto: '', valor: '', detalle: '' },
-      { concepto: '📦 INVENTARIOS COMPARADOS', valor: '', detalle: '' },
-      { concepto: 'Inventario Base ID', valor: data.resumen.inventarioBaseId, detalle: '' },
-      { concepto: 'Inventario Comparado ID', valor: data.resumen.inventarioComparadoId, detalle: '' },
-      { concepto: 'Zona Base', valor: data.filtros.zonaBase?.nombre || 'Todas', detalle: '' },
-      { concepto: 'Zona Comparada', valor: data.filtros.zonaComparada?.nombre || 'Todas', detalle: '' },
-      { concepto: '', valor: '', detalle: '' },
-      { concepto: '📈 ESTADÍSTICAS', valor: '', detalle: '' },
-      { concepto: 'Total Productos', valor: todosProductos.length, detalle: '' },
-      { concepto: 'Total Coincidencias', valor: data.coinciden.length, detalle: '' },
-      { concepto: 'Total Diferencias', valor: data.diferencias.length, detalle: '' },
-      { concepto: 'Total SKU Ajustados', valor: Object.keys(cantidadesAceptadas).length, detalle: '' },
-      { concepto: '', valor: '', detalle: '' },
-      { concepto: '📊 CANTIDADES', valor: '', detalle: '' },
-      { concepto: 'Total Unidades Base', valor: totalUnidadesBase.toLocaleString(), detalle: '' },
-      { concepto: 'Total Unidades Comparado', valor: totalUnidadesComparado.toLocaleString(), detalle: '' },
-      { concepto: 'Total Unidades Aceptadas', valor: totalUnidadesAceptadas.toLocaleString(), detalle: '' },
-      { concepto: 'Diferencia Global', valor: (totalUnidadesAceptadas - totalUnidadesBase).toLocaleString(), detalle: '' }
+      { concepto: '📊 INFORMACIÓN GENERAL', valor: '' },
+      { concepto: 'Fecha Exportación', valor: fechaActual.toLocaleString() },
+      { concepto: 'Empresa', valor: nombreEmpresa },
+      { concepto: 'Elaborado Por', valor: req.user?.nombre || 'Admin' },
+      { concepto: '', valor: '' },
+      { concepto: '📦 INVENTARIOS COMPARADOS', valor: '' },
+      { concepto: 'Inventario Base ID', valor: data.resumen.inventarioBaseId },
+      { concepto: 'Inventario Comparado ID', valor: data.resumen.inventarioComparadoId },
+      { concepto: 'Zona Base', valor: data.filtros.zonaBase?.nombre || 'Todas' },
+      { concepto: 'Zona Comparada', valor: data.filtros.zonaComparada?.nombre || 'Todas' },
+      { concepto: '', valor: '' },
+      { concepto: '📈 ESTADÍSTICAS', valor: '' },
+      { concepto: 'Total Productos', valor: todosProductos.length },
+      { concepto: 'Total Coincidencias', valor: data.coinciden.length },
+      { concepto: 'Total Diferencias', valor: data.diferencias.length },
+      { concepto: 'Total SKU Ajustados', valor: Object.keys(cantidadesAceptadas).length },
+      { concepto: '', valor: '' },
+      { concepto: '💰 VALORES', valor: '' },
+      { concepto: 'Total Unidades Aceptadas', valor: totalUnidadesAceptadas.toLocaleString() },
+      { concepto: 'Valor Total Inventario', valor: `$${valorTotalInventario.toLocaleString()}` }
     ]);
 
     // ==================== HOJA 3: RESULTADOS POR GRUPO ====================
@@ -699,8 +704,7 @@ async function exportarComparacionExcel(req, res, next) {
       { header: 'Inventario', key: 'inventario', width: 20 },
       { header: 'Zona', key: 'zona', width: 25 },
       { header: 'Total Escaneos', key: 'totalEscaneos', width: 15 },
-      { header: 'Productos Únicos', key: 'productosUnicos', width: 15 },
-      { header: 'Participación', key: 'participacion', width: 12 }
+      { header: 'Productos Únicos', key: 'productosUnicos', width: 15 }
     ];
 
     gruposSheet.getRow(1).font = { bold: true };
@@ -711,116 +715,29 @@ async function exportarComparacionExcel(req, res, next) {
     };
     gruposSheet.getRow(1).font = { color: { argb: 'FFFFFFFF' }, bold: true };
 
-    // Grupos Base
     for (const grupo of data.totales.base.grupos) {
       gruposSheet.addRow({
         grupo: grupo.nombre,
         inventario: 'BASE',
         zona: grupo.zona || 'N/A',
         totalEscaneos: grupo.totalEscaneos,
-        productosUnicos: grupo.productosUnicos,
-        participacion: ''
+        productosUnicos: grupo.productosUnicos
       });
     }
-
-    gruposSheet.addRow({ grupo: '', inventario: '', zona: '', totalEscaneos: '', productosUnicos: '', participacion: '' });
-
-    // Grupos Comparado
+    
+    gruposSheet.addRow({ grupo: '', inventario: '', zona: '', totalEscaneos: '', productosUnicos: '' });
+    
     for (const grupo of data.totales.comparado.grupos) {
       gruposSheet.addRow({
         grupo: grupo.nombre,
         inventario: 'COMPARADO',
         zona: grupo.zona || 'N/A',
         totalEscaneos: grupo.totalEscaneos,
-        productosUnicos: grupo.productosUnicos,
-        participacion: ''
+        productosUnicos: grupo.productosUnicos
       });
     }
 
-    // ==================== HOJA 4: RESULTADOS POR ZONA ====================
-    const zonasSheet = workbook.addWorksheet('RESULTADOS POR ZONA');
-    zonasSheet.columns = [
-      { header: 'Zona', key: 'zona', width: 25 },
-      { header: 'Código', key: 'codigo', width: 15 },
-      { header: 'Inventario', key: 'inventario', width: 20 },
-      { header: 'Total Escaneos', key: 'totalEscaneos', width: 15 },
-      { header: 'Productos Únicos', key: 'productosUnicos', width: 15 }
-    ];
-
-    zonasSheet.getRow(1).font = { bold: true };
-    zonasSheet.getRow(1).fill = {
-      type: 'pattern',
-      pattern: 'solid',
-      fgColor: { argb: 'FF2563eb' }
-    };
-    zonasSheet.getRow(1).font = { color: { argb: 'FFFFFFFF' }, bold: true };
-
-    for (const zona of data.totales.base.zonas) {
-      zonasSheet.addRow({
-        zona: zona.nombre,
-        codigo: zona.codigo || 'N/A',
-        inventario: 'BASE',
-        totalEscaneos: zona.totalEscaneos,
-        productosUnicos: zona.productosUnicos
-      });
-    }
-
-    zonasSheet.addRow({ zona: '', codigo: '', inventario: '', totalEscaneos: '', productosUnicos: '' });
-
-    for (const zona of data.totales.comparado.zonas) {
-      zonasSheet.addRow({
-        zona: zona.nombre,
-        codigo: zona.codigo || 'N/A',
-        inventario: 'COMPARADO',
-        totalEscaneos: zona.totalEscaneos,
-        productosUnicos: zona.productosUnicos
-      });
-    }
-
-    // ==================== HOJA 5: RESULTADOS POR MIEMBRO ====================
-    const miembrosSheet = workbook.addWorksheet('RESULTADOS POR MIEMBRO');
-    miembrosSheet.columns = [
-      { header: 'Miembro', key: 'miembro', width: 25 },
-      { header: 'Email', key: 'email', width: 30 },
-      { header: 'Grupo', key: 'grupo', width: 20 },
-      { header: 'Zona', key: 'zona', width: 20 },
-      { header: 'Inventario', key: 'inventario', width: 20 },
-      { header: 'Total Escaneos', key: 'totalEscaneos', width: 15 }
-    ];
-
-    miembrosSheet.getRow(1).font = { bold: true };
-    miembrosSheet.getRow(1).fill = {
-      type: 'pattern',
-      pattern: 'solid',
-      fgColor: { argb: 'FF2563eb' }
-    };
-    miembrosSheet.getRow(1).font = { color: { argb: 'FFFFFFFF' }, bold: true };
-
-    for (const miembro of data.totales.base.miembros) {
-      miembrosSheet.addRow({
-        miembro: miembro.nombre,
-        email: miembro.email || 'N/A',
-        grupo: miembro.grupo || 'N/A',
-        zona: miembro.zona || 'N/A',
-        inventario: 'BASE',
-        totalEscaneos: miembro.totalEscaneos
-      });
-    }
-
-    miembrosSheet.addRow({ miembro: '', email: '', grupo: '', zona: '', inventario: '', totalEscaneos: '' });
-
-    for (const miembro of data.totales.comparado.miembros) {
-      miembrosSheet.addRow({
-        miembro: miembro.nombre,
-        email: miembro.email || 'N/A',
-        grupo: miembro.grupo || 'N/A',
-        zona: miembro.zona || 'N/A',
-        inventario: 'COMPARADO',
-        totalEscaneos: miembro.totalEscaneos
-      });
-    }
-
-    // ==================== HOJA 6: DETALLE DE DIFERENCIAS ====================
+    // ==================== HOJA 4: DETALLE DE DIFERENCIAS ====================
     const diferenciasSheet = workbook.addWorksheet('DETALLE DE DIFERENCIAS');
     diferenciasSheet.columns = [
       { header: 'SKU', key: 'sku', width: 20 },
@@ -828,7 +745,10 @@ async function exportarComparacionExcel(req, res, next) {
       { header: 'Cantidad Base', key: 'cantidadBase', width: 15 },
       { header: 'Cantidad Comparada', key: 'cantidadComparada', width: 15 },
       { header: 'Cantidad Aceptada', key: 'cantidadAceptada', width: 15 },
-      { header: 'Diferencia', key: 'diferencia', width: 15 }
+      { header: 'Diferencia', key: 'diferencia', width: 15 },
+      { header: 'Valor Unitario', key: 'valorUnitario', width: 15 },
+      { header: 'Subtotal', key: 'subtotal', width: 15 },
+      { header: 'Grupo', key: 'grupo', width: 25 }
     ];
 
     diferenciasSheet.getRow(1).font = { bold: true };
@@ -841,57 +761,30 @@ async function exportarComparacionExcel(req, res, next) {
 
     for (const diff of data.diferencias) {
       const cantidadAceptada = cantidadesAceptadas[diff.sku] || diff.cantidadComparada;
+      const productoData = sqlServerData.get(diff.sku) || {};
+      const valorUnitario = productoData.valorUnitario || 0;
+      
       diferenciasSheet.addRow({
         sku: diff.sku,
-        descripcion: diff.descripcion,
+        descripcion: productoData.descripcion || diff.descripcion,
         cantidadBase: diff.cantidadBase,
         cantidadComparada: diff.cantidadComparada,
         cantidadAceptada: cantidadAceptada,
-        diferencia: cantidadAceptada - diff.cantidadBase
+        diferencia: cantidadAceptada - diff.cantidadBase,
+        valorUnitario: valorUnitario,
+        subtotal: cantidadAceptada * valorUnitario,
+        grupo: productoData.grupoNombre || 'SIN GRUPO'
       });
     }
 
-    // ==================== HOJA 7: GRÁFICAS ====================
-    const graficasSheet = workbook.addWorksheet('GRÁFICAS');
-
-    // Título
-    graficasSheet.mergeCells('A1:D1');
-    graficasSheet.getCell('A1').value = 'DASHBOARD DE INVENTARIO';
-    graficasSheet.getCell('A1').font = { bold: true, size: 16 };
-    graficasSheet.getCell('A1').alignment = { horizontal: 'center' };
-
-    // Resumen visual
-    graficasSheet.getCell('A3').value = 'Resumen General:';
-    graficasSheet.getCell('A3').font = { bold: true };
-
-    graficasSheet.getCell('A4').value = 'Total Productos:';
-    graficasSheet.getCell('B4').value = todosProductos.length;
-    graficasSheet.getCell('A5').value = 'Coincidencias:';
-    graficasSheet.getCell('B5').value = data.coinciden.length;
-    graficasSheet.getCell('A6').value = 'Diferencias:';
-    graficasSheet.getCell('B6').value = data.diferencias.length;
-
-    // Top productos por cantidad
-    graficasSheet.getCell('D3').value = 'Top 5 Productos por Cantidad:';
-    graficasSheet.getCell('D3').font = { bold: true };
-
-    const topProductos = [...todosProductos]
-      .sort((a, b) => b.cantidadComparada - a.cantidadComparada)
-      .slice(0, 5);
-
-    let row = 4;
-    for (let i = 0; i < topProductos.length; i++) {
-      graficasSheet.getCell(`D${row + i}`).value = `${i + 1}. ${topProductos[i].sku} - ${topProductos[i].cantidadComparada} unidades`;
-    }
-
-    // Estilos para todas las hojas
-    // ✅ Línea correcta
+    // Aplicar estilos a todas las hojas
     workbook.eachSheet((sheet) => {
       sheet.views = [{ state: 'frozen', ySplit: 1 }];
     });
+
     // Enviar archivo
     const filename = `inventario_completo_${value.inventarioBaseId}_vs_${value.inventarioComparadoId}_${fechaStr}.xlsx`;
-
+    
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
 
@@ -901,7 +794,7 @@ async function exportarComparacionExcel(req, res, next) {
     console.log('✅ Exportación completa finalizada');
 
   } catch (error) {
-    console.error('❌ Error:', error);
+    console.error('❌ Error en exportarComparacionExcel:', error);
     res.status(500).json({
       ok: false,
       message: 'Error al exportar: ' + error.message
@@ -925,7 +818,6 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       });
     }
 
-    // Validar que los inventarios existan
     const [inventarioBase, inventarioComparado] = await Promise.all([
       Inventario.findByPk(inventarioBaseId),
       Inventario.findByPk(inventarioComparadoId)
@@ -938,7 +830,6 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       });
     }
 
-    // Obtener las diferencias entre los dos inventarios
     const allowedGroupIds = await getAllowedGroupIds(req);
 
     const comparisonRows = await getSkuComparisonRows(
@@ -958,10 +849,8 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       });
     }
 
-    // Crear una nueva ronda de reconteo en el inventario base
     const zona = zonaId ? await Zona.findByPk(zonaId) : null;
 
-    // Obtener el último número de ronda para este inventario y zona
     const lastRonda = await RondaConteo.findOne({
       where: {
         inventarioId: inventarioBaseId,
@@ -981,8 +870,6 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       estado: 'borrador'
     });
 
-    // Crear o actualizar discrepancias_conteo para cada SKU que difiere
-    // Crear discrepancias
     for (const diferencia of diferencias) {
       await DiscrepanciaConteo.create({
         inventarioId: inventarioBaseId,
@@ -993,7 +880,7 @@ async function generarReconteoDesdeComparacion(req, res, next) {
         diferencia: diferencia.diferencia,
         estado: 'pendiente_reconteo',
         rondaReconteoId: nuevaRonda.id,
-        rondaBaseId: lastRonda?.id || 1,  // ← AGREGAR ESTO
+        rondaBaseId: lastRonda?.id || 1, 
         reconteoCount: 0,
         descripcionSnapshot: diferencia.descripcion || 'Sin descripción'
       });
@@ -1093,10 +980,85 @@ async function completarPareja(req, res, next) {
     next(error);
   }
 }
+// Función para obtener datos de productos desde SQL Server
+async function obtenerDatosProductosDesdeSQLServer(skusUnicos) {
+  if (!skusUnicos || skusUnicos.length === 0) return new Map();
+  
+  try {
+    const { getSqlServerPool } = require('../config/sqlserver');
+    
+    // Verificar si SQL Server está habilitado
+    if (process.env.SQLSERVER_ENABLED !== 'true') {
+      console.log('⚠️ SQL Server deshabilitado, usando datos por defecto');
+      return new Map();
+    }
+    
+    const sqlPool = await getSqlServerPool();
+    
+    // Escapar SKUs para SQL injection
+    const skusList = skusUnicos.map(s => `'${s.replace(/'/g, "''")}'`).join(',');
+    
+    const query = `
+      SELECT 
+        i.[CódigoInventario] as sku,
+        i.[Descripción] as descripcion,
+        i.UnidadDeMedida,
+        i.IdGrupoInventarioDos,
+        g.Descripcion as grupoNombre,
+        ISNULL((
+          SELECT TOP 1 c.CostoPromedio 
+          FROM CCA_M_Inventarios c 
+          WHERE c.IdInventario = i.IdInventario 
+            AND c.CostoPromedio > 0
+          ORDER BY c.IdAsientoContable DESC
+        ), 0) as valorUnitario,
+        ISNULL((
+          SELECT TOP 1 c.IdLote
+          FROM CCA_M_Inventarios c 
+          WHERE c.IdInventario = i.IdInventario 
+          ORDER BY c.IdAsientoContable DESC
+        ), '') as lote,
+        ISNULL((
+          SELECT TOP 1 c.Vencimiento
+          FROM CCA_M_Inventarios c 
+          WHERE c.IdInventario = i.IdInventario 
+          ORDER BY c.IdAsientoContable DESC
+        ), NULL) as vencimiento
+      FROM Inventarios i
+      LEFT JOIN [Inventarios - AgrupaciónDos] g ON g.IdGrupoInventarioDos = i.IdGrupoInventarioDos
+      WHERE i.[CódigoInventario] IN (${skusList})
+        AND i.Activo = -1
+    `;
+    
+    console.log('📊 Consultando SQL Server para', skusUnicos.length, 'SKUs');
+    const result = await sqlPool.request().query(query);
+    
+    const productosMap = new Map();
+    for (const row of result.recordset) {
+      productosMap.set(row.sku, {
+        descripcion: row.descripcion || 'Sin descripción',
+        unidadMedida: row.UnidadDeMedida || 'Und.',
+        grupoNombre: row.grupoNombre || 'SIN GRUPO',
+        valorUnitario: parseFloat(row.valorUnitario) || 0,
+        lote: row.lote || '',
+        vencimiento: row.vencimiento
+      });
+    }
+    
+    console.log(`✅ Datos SQL Server obtenidos: ${productosMap.size} productos`);
+    return productosMap;
+    
+  } catch (error) {
+    console.error('❌ Error consultando SQL Server:', error.message);
+    return new Map();
+  }
+}
+
 module.exports = {
   compareInventarios,
   exportarComparacionExcel,
   generarReconteoDesdeComparacion,
   completarPareja,
-  generarReconteoDesdeComparacion
+  generarReconteoDesdeComparacion,
+  obtenerDatosProductosDesdeSQLServer
 };

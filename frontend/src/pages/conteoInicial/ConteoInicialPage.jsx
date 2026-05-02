@@ -19,6 +19,7 @@ import {
   syncFromSqlServer,
   getSqlServerConnectionStatus
 } from '../../services/conteoInicial.service';
+import api from '../../services/api';
 
 export default function ConteoInicialPage() {
   const [inventarioActivo, setInventarioActivo] = useState(null);
@@ -154,13 +155,34 @@ export default function ConteoInicialPage() {
     }
   };
 
+  const handleDescargarPlantilla = async () => {
+    try {
+      const response = await api.post('/scripts/exportar-excel', {}, {
+        responseType: 'blob'
+      });
+      
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', 'plantilla_conteo_inicial.xlsx');
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      
+      setMessage('Plantilla descargada correctamente');
+    } catch (err) {
+      setError('Error al descargar plantilla');
+    }
+  };
+
   const totalProductos = filteredResumen.length;
   const totalUnidades = filteredResumen.reduce((sum, item) => sum + (item.total || 0), 0);
   const totalBodega = filteredResumen.reduce((sum, item) => sum + (item.cantidadBodega || 0), 0);
   const totalExhibicion = filteredResumen.reduce((sum, item) => sum + (item.cantidadExhibicion || 0), 0);
 
   if (loading) return <div className="card">Cargando...</div>;
-
+  
   return (
     <div className="dashboard-container">
       {/* Tarjetas de resumen */}
@@ -194,7 +216,7 @@ export default function ConteoInicialPage() {
           </div>
         </div>
       </div>
-
+        
       {/* Importadores */}
       <div className="grid-2">
         <div className="card">
@@ -214,7 +236,35 @@ export default function ConteoInicialPage() {
             </button>
           </form>
         </div>
+
+        <div className="card">
+          <h2 className="section-title"><Server size={20} /> Descargar plantilla</h2>
+          <p className="muted">
+            Descarga la plantilla con el formato correcto para importar inventario desde Melissa.
+          </p>
+          <button className="btn btn-outline" onClick={handleDescargarPlantilla}>
+            <Download size={16} /> Descargar plantilla Melissa
+          </button>
+        </div>
       </div>
+
+      {/* Estado de SQL Server */}
+      {sqlServerStatus && (
+        <div className={`alert-${sqlServerStatus.connected ? 'success' : 'warning'}`}>
+          <Server size={18} />
+          <span>
+            SQL Server: {sqlServerStatus.connected ? 'Conectado' : 'Desconectado'}
+            {sqlServerStatus.database && ` - ${sqlServerStatus.database}`}
+            {sqlServerStatus.error && ` - ${sqlServerStatus.error}`}
+          </span>
+          {!sqlServerStatus.connected && (
+            <button className="btn btn-outline ml-2" onClick={handleSyncFromSqlServer} disabled={syncing}>
+              <RefreshCw size={14} className={syncing ? 'spin' : ''} />
+              <span>Reintentar</span>
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Buscador */}
       <div className="card">

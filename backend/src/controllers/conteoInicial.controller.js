@@ -80,15 +80,16 @@ async function importConteoInicialExcel(req, res, next) {
     let actualizados = 0;
     const noResueltos = [];
 
+    // En la función importConteoInicialExcel, reemplaza el bucle for:
+
     for (const item of rows) {
       try {
-        const zonaNormalizada = normalizarZonaEntrada(item.zona);
-
+        // Usar la zona ya normalizada desde el parser
         let zona = await Zona.findOne({
           where: {
             [Op.or]: [
-              { nombre: zonaNormalizada.nombre },
-              { codigo: zonaNormalizada.codigo }
+              { codigo: item.zonaCodigo },
+              { nombre: item.zonaNombre }
             ]
           },
           transaction
@@ -97,13 +98,13 @@ async function importConteoInicialExcel(req, res, next) {
         if (!zona) {
           zona = await Zona.create(
             {
-              nombre: zonaNormalizada.nombre,
-              codigo: zonaNormalizada.codigo,
+              nombre: item.zonaNombre,
+              codigo: item.zonaCodigo,
               activa: true
             },
             { transaction }
           );
-          console.log(`[IMPORT] Zona creada: ${zona.nombre}`);
+          console.log(`[IMPORT] Zona creada: ${zona.nombre} (${zona.codigo})`);
         }
 
         let descripcionCorta = item.descripcion || 'Sin descripción';
@@ -111,48 +112,57 @@ async function importConteoInicialExcel(req, res, next) {
           descripcionCorta = descripcionCorta.substring(0, 247) + '...';
         }
 
-        const codigoLeido = String(item.codigoLeido || item.sku || '').trim();
-        const sku = String(item.sku || '').trim();
+        const sku = String(item.sku).trim();
+        const cantidad = Number(item.cantidad) || 0;
 
-        const existing = await ConteoInicialDetalle.findOne({
+        // Determinar cantidades según tipo de zona
+        let cantidadBodega = 0;
+        let cantidadExhibicion = 0;
+
+        if (item.zona === 'BODEGA') {
+          cantidadBodega = cantidad;
+          cantidadExhibicion = 0;
+        } else if (item.zona === 'EXHIBICION') {
+          cantidadBodega = 0;
+          cantidadExhibicion = cantidad;
+        } else {
+          cantidadBodega = cantidad;
+          cantidadExhibicion = cantidad;
+        }
+
+        const [registro, created] = await ConteoInicialDetalle.findOrCreate({
           where: {
             inventarioId: value.inventarioId,
             zonaId: zona.id,
             sku
           },
+          defaults: {
+            inventarioId: value.inventarioId,
+            zonaId: zona.id,
+            productoId: null,
+            sku,
+            codigoLeido: item.codigoLeido,
+            descripcionSnapshot: descripcionCorta,
+            cantidadBodega,
+            cantidadExhibicion,
+            cantidadTotal: cantidad,
+            origenArchivo: req.file.originalname
+          },
           transaction
         });
 
-        if (!existing) {
-          await ConteoInicialDetalle.create(
-            {
-              inventarioId: value.inventarioId,
-              zonaId: zona.id,
-              productoId: null,
-              sku,
-              codigoLeido,
-              descripcionSnapshot: descripcionCorta,
-              cantidadBodega: zona.codigo === 'BOD' ? item.cantidad : 0,
-              cantidadExhibicion: zona.codigo === 'EXH' ? item.cantidad : 0,
-              cantidadTotal: item.cantidad,
-              origenArchivo: req.file.originalname
-            },
-            { transaction }
-          );
-          insertados++;
-        } else {
-          await existing.update(
-            {
-              codigoLeido,
-              descripcionSnapshot: descripcionCorta,
-              cantidadBodega: zona.codigo === 'BOD' ? item.cantidad : 0,
-              cantidadExhibicion: zona.codigo === 'EXH' ? item.cantidad : 0,
-              cantidadTotal: item.cantidad,
-              origenArchivo: req.file.originalname
-            },
-            { transaction }
-          );
+        if (!created) {
+          await registro.update({
+            codigoLeido: item.codigoLeido,
+            descripcionSnapshot: descripcionCorta,
+            cantidadBodega,
+            cantidadExhibicion,
+            cantidadTotal: cantidad,
+            origenArchivo: req.file.originalname
+          }, { transaction });
           actualizados++;
+        } else {
+          insertados++;
         }
       } catch (err) {
         console.error(`[IMPORT] Error con SKU ${item.sku}:`, err.message);
@@ -162,7 +172,6 @@ async function importConteoInicialExcel(req, res, next) {
         });
       }
     }
-
     await transaction.commit();
 
     res.json({

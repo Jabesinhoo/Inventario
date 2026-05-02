@@ -245,6 +245,24 @@ async function descargarExportacion(req, res, next) {
     next(error);
   }
 }
+async function descargarExportacionMelissa(req, res, next) {
+  try {
+    const { filename } = req.params;
+    
+    const filePath = path.join(__dirname, '../../exports', filename);
+    
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({
+        ok: false,
+        message: 'Archivo no encontrado'
+      });
+    }
+    
+    res.download(filePath, filename);
+  } catch (error) {
+    next(error);
+  }
+}
 async function exportarJson(req, res, next) {
   try {
     const { getSqlServerPool } = require('../config/sqlserver');
@@ -289,5 +307,6 @@ module.exports = {
   ejecutarBackup,
   listarExportaciones,
   descargarExportacion,
+  descargarExportacionMelissa,
   exportarJson
 };

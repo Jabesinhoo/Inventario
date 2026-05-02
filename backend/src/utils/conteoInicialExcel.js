@@ -36,6 +36,24 @@ function resolveColumnIndex(headerMap, aliases) {
   return null;
 }
 
+// 🔥 NUEVA FUNCIÓN: Normalizar zona para formato Melissa
+function normalizarZonaMelissa(zonaTexto) {
+  const valor = String(zonaTexto || '').trim().toUpperCase();
+  
+  // Mapeo de BODEGA
+  if (valor === 'BODEGA' || valor === 'BOD' || valor === 'BODEGA PRINCIPAL') {
+    return { nombre: 'Bodega Principal', codigo: 'BOD', tipo: 'BODEGA' };
+  }
+  
+  // Mapeo de EXHIBICION
+  if (valor === 'EXHIBICION' || valor === 'EXHIBICIÓN' || valor === 'EXH' || valor === 'EXHIBICION PRINCIPAL') {
+    return { nombre: 'Exhibición', codigo: 'EXH', tipo: 'EXHIBICION' };
+  }
+  
+  // Si no coincide, devolver el original
+  return { nombre: valor, codigo: valor.slice(0, 10), tipo: 'OTRO' };
+}
+
 async function parseConteoInicialExcel(buffer) {
   const workbook = new ExcelJS.Workbook();
   await workbook.xlsx.load(buffer);
@@ -57,6 +75,7 @@ async function parseConteoInicialExcel(buffer) {
     console.log(`[PARSER] Columna ${colNumber}: "${cell.value}" → normalizado: "${headerValue}"`);
   });
 
+  // Columnas esperadas para formato Melissa
   const zonaCol = resolveColumnIndex(headerMap, ['zona', 'ubicacion', 'location']);
   const skuCol = resolveColumnIndex(headerMap, ['sku', 'codigo', 'code', 'código']);
   const descripcionCol = resolveColumnIndex(headerMap, [
@@ -96,7 +115,8 @@ async function parseConteoInicialExcel(buffer) {
   worksheet.eachRow((row, rowNumber) => {
     if (rowNumber === 1) return;
 
-    const zona = normalizeText(getCellValue(row.getCell(zonaCol)));
+    const zonaRaw = getCellValue(row.getCell(zonaCol));
+    const zona = normalizeText(zonaRaw);
     const sku = normalizeText(getCellValue(row.getCell(skuCol)));
     const descripcion = descripcionCol
       ? normalizeText(getCellValue(row.getCell(descripcionCol)))
@@ -130,8 +150,13 @@ async function parseConteoInicialExcel(buffer) {
       return;
     }
 
+    // 🔥 Normalizar zona para formato Melissa
+    const zonaNormalizada = normalizarZonaMelissa(zona);
+    
     rows.push({
-      zona: zona.toUpperCase(),
+      zona: zonaNormalizada.tipo,
+      zonaNombre: zonaNormalizada.nombre,
+      zonaCodigo: zonaNormalizada.codigo,
       sku: String(sku).trim(),
       codigoLeido: codigoBarra || String(sku).trim(),
       descripcion: descripcion || null,
