@@ -18,7 +18,8 @@ function normalizarZonaEntrada(zonaTexto) {
   if (valor === 'BODEGA' || valor === 'BOD' || valor === 'BODEGA PRINCIPAL') {
     return {
       nombre: 'Bodega Principal',
-      codigo: 'BOD'
+      codigo: 'BOD',
+      tipo: 'bodega'
     };
   }
 
@@ -30,13 +31,15 @@ function normalizarZonaEntrada(zonaTexto) {
   ) {
     return {
       nombre: 'Exhibición',
-      codigo: 'EXH'
+      codigo: 'EXH',
+      tipo: 'exhibicion'
     };
   }
 
   return {
     nombre: zonaTexto,
-    codigo: valor.slice(0, 10) || 'GEN'
+    codigo: valor.slice(0, 10) || 'GEN',
+    tipo: 'otro'
   };
 }
 
@@ -85,17 +88,16 @@ async function importConteoInicialExcel(req, res, next) {
       });
     }
 
-    // 🔥 BUSCAR ZONAS EXISTENTES (NO CREARLAS)
-    let zonaBodega = await Zona.findOne({
-      where: {
+    let zonaBodega = await Zona.findOne({ 
+      where: { 
         [Op.or]: [
           { codigo: 'BOD' },
           { nombre: 'Bodega Principal' }
         ]
-      },
-      transaction
+      }, 
+      transaction 
     });
-
+    
     if (!zonaBodega) {
       await transaction.rollback();
       return res.status(400).json({
@@ -103,17 +105,17 @@ async function importConteoInicialExcel(req, res, next) {
         message: 'No se encuentra la zona BODEGA. Verifica que exista en la base de datos.'
       });
     }
-
-    let zonaExhibicion = await Zona.findOne({
-      where: {
+    
+    let zonaExhibicion = await Zona.findOne({ 
+      where: { 
         [Op.or]: [
           { codigo: 'EXH' },
           { nombre: 'Exhibición' }
         ]
-      },
-      transaction
+      }, 
+      transaction 
     });
-
+    
     if (!zonaExhibicion) {
       await transaction.rollback();
       return res.status(400).json({
@@ -130,7 +132,6 @@ async function importConteoInicialExcel(req, res, next) {
 
     for (const item of rows) {
       try {
-        // Verificar SKU válido
         if (!item.sku || item.sku === 'VACIO' || item.sku === 'VACÍO' || item.sku.length < 2) {
           console.log(`[IMPORT] SKU inválido omitido: ${item.sku}`);
           noResueltos.push({ sku: item.sku, message: 'SKU inválido' });
@@ -144,7 +145,6 @@ async function importConteoInicialExcel(req, res, next) {
 
         const sku = String(item.sku).trim();
 
-        // Guardar en BODEGA
         if (item.cantidadBodega > 0) {
           await ConteoInicialDetalle.upsert({
             inventarioId: value.inventarioId,
@@ -163,7 +163,6 @@ async function importConteoInicialExcel(req, res, next) {
           insertados++;
         }
 
-        // Guardar en EXHIBICION
         if (item.cantidadExhibicion > 0) {
           await ConteoInicialDetalle.upsert({
             inventarioId: value.inventarioId,
@@ -219,57 +218,55 @@ async function getConteoInicialResumen(req, res, next) {
       });
     }
 
-    // 🔥 Usar SQL raw para evitar problemas de Sequelize
+    console.log(`[RESUMEN] Consultando inventarioId: ${inventarioId}`);
+
+    // Consulta que agrupa por SKU y suma cantidades
     const data = await sequelize.query(`
       SELECT 
         c.sku,
-        c."descripcionSnapshot" as descripcion,
-        c."cantidadBodega",
-        c."cantidadExhibicion",
-        c."cantidadTotal",
-        c."origenArchivo",
-        z.nombre as zona,
-        c."grupoNombre"
+        MAX(c."descripcionSnapshot") as descripcion,
+        SUM(CASE WHEN c."zonaId" = 3 THEN c."cantidadTotal" ELSE 0 END) as cantidadBodega,
+        SUM(CASE WHEN c."zonaId" = 4 THEN c."cantidadTotal" ELSE 0 END) as cantidadExhibicion,
+        SUM(c."cantidadTotal") as total,
+        MAX(c."origenArchivo") as origenArchivo,
+        MAX(c."grupoNombre") as grupoNombre,
+        MAX(c."unidadMedida") as unidadMedida,
+        MAX(c."precioCoste") as precioCoste
       FROM conteo_inicial_detalle c
-      LEFT JOIN zonas z ON z.id = c."zonaId"
       WHERE c."inventarioId" = :inventarioId
-      ORDER BY c."zonaId" ASC, c.sku ASC
+        AND c.sku IS NOT NULL
+        AND c.sku != ''
+      GROUP BY c.sku
+      ORDER BY c.sku ASC
     `, {
-      replacements: { inventarioId },
+      replacements: { inventarioId: Number(inventarioId) },
       type: sequelize.QueryTypes.SELECT
     });
 
-    // Agrupar por SKU
-    const productosMap = new Map();
+    console.log(`[RESUMEN] Productos encontrados: ${data.length}`);
 
-    for (const item of data) {
-      const key = item.sku;
+    const resumen = data.map(item => ({
+      sku: item.sku,
+      descripcionSnapshot: item.descripcion || 'Sin descripción',
+      cantidadBodega: Number(item.cantidadBodega) || 0,
+      cantidadExhibicion: Number(item.cantidadExhibicion) || 0,
+      total: Number(item.total) || 0,
+      origenArchivo: item.origenArchivo || 'Manual',
+      grupoNombre: item.grupoNombre || 'SIN GRUPO',
+      unidadMedida: item.unidadMedida || 'Und.',
+      precioCoste: Number(item.precioCoste) || 0
+    }));
 
-      if (!productosMap.has(key)) {
-        productosMap.set(key, {
-          sku: item.sku,
-          descripcion: item.descripcion,
-          cantidadBodega: 0,
-          cantidadExhibicion: 0,
-          total: 0,
-          zona: item.zona || 'N/A',
-          origen: item.origenArchivo || 'Manual',
-          grupo: item.grupoNombre || 'SIN GRUPO'
-        });
-      }
-
-      const producto = productosMap.get(key);
-      
-      if (item.zona === 'Bodega Principal' || item.zona === 'BODEGA') {
-        producto.cantidadBodega += item.cantidadBodega;
-      } else {
-        producto.cantidadExhibicion += item.cantidadExhibicion;
-      }
-      
-      producto.total += item.cantidadTotal;
-    }
-
-    const resumen = Array.from(productosMap.values());
+    // Calcular totales para logs
+    const totalProductos = resumen.length;
+    const totalUnidades = resumen.reduce((sum, item) => sum + item.total, 0);
+    const totalBodega = resumen.reduce((sum, item) => sum + item.cantidadBodega, 0);
+    const totalExhibicion = resumen.reduce((sum, item) => sum + item.cantidadExhibicion, 0);
+    
+    console.log(`[RESUMEN] Total productos: ${totalProductos}`);
+    console.log(`[RESUMEN] Total unidades: ${totalUnidades}`);
+    console.log(`[RESUMEN] Total bodega: ${totalBodega}`);
+    console.log(`[RESUMEN] Total exhibición: ${totalExhibicion}`);
 
     res.json({
       ok: true,
@@ -378,7 +375,6 @@ async function syncFromSqlServer(req, res, next) {
         i.[CódigoInventario] as sku,
         i.[CodigoBarras] as codigoBarra,
         i.[Descripción] as descripcion,
-        i.[Nombre_Generico] as categoria,
         i.UnidadDeMedida,
         i.IdGrupoInventarioDos as grupoId,
         g.Descripcion as grupoNombre,
@@ -401,7 +397,6 @@ async function syncFromSqlServer(req, res, next) {
         i.[CódigoInventario],
         i.[CodigoBarras],
         i.[Descripción],
-        i.[Nombre_Generico],
         i.UnidadDeMedida,
         i.IdGrupoInventarioDos,
         g.Descripcion
@@ -413,7 +408,6 @@ async function syncFromSqlServer(req, res, next) {
 
     console.log('[SYNC] Productos encontrados:', productosResult.recordset.length);
 
-    // 🔥 BUSCAR ZONAS EXISTENTES (NO CREARLAS)
     let zonaBodega = await Zona.findOne({ where: { codigo: 'BOD' } });
     if (!zonaBodega) {
       zonaBodega = await Zona.findOne({ where: { nombre: 'Bodega Principal' } });
@@ -437,7 +431,6 @@ async function syncFromSqlServer(req, res, next) {
     let totalBodega = 0;
     let totalExhibicion = 0;
 
-    // Limpiar datos anteriores de estas zonas para este inventario
     await ConteoInicialDetalle.destroy({
       where: {
         inventarioId,
@@ -552,7 +545,7 @@ async function exportConteoInicial(req, res, next) {
 
     const data = await ConteoInicialDetalle.findAll({
       where: { inventarioId },
-      include: [{ model: Zona, as: 'zona', attributes: ['nombre'] }],
+      include: [{ model: Zona, as: 'zona', attributes: ['nombre', 'codigo'] }],
       order: [['zonaId', 'ASC'], ['sku', 'ASC']]
     });
 
@@ -565,6 +558,15 @@ async function exportConteoInicial(req, res, next) {
         origen: item.origenArchivo || 'Manual'
       });
     }
+
+    // Aplicar estilos
+    sheet.getRow(1).font = { bold: true };
+    sheet.getRow(1).fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FF2563eb' }
+    };
+    sheet.getRow(1).font = { color: { argb: 'FFFFFFFF' }, bold: true };
 
     res.setHeader(
       'Content-Type',
