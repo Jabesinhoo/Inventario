@@ -35,16 +35,19 @@ module.exports = (sequelize, DataTypes) => {
       unidadMedida: {
         type: DataTypes.STRING(20),
         allowNull: true,
-        defaultValue: 'Und.'
+        defaultValue: 'Und.',
+        field: 'unidadMedida'  // ← Agregar field explícito
       },
       grupoNombre: {
         type: DataTypes.STRING(100),
-        allowNull: true
+        allowNull: true,
+        field: 'grupoNombre'   // ← Agregar field explícito
       },
       precioCoste: {
         type: DataTypes.DECIMAL(15, 2),
         allowNull: true,
-        defaultValue: 0
+        defaultValue: 0,
+        field: 'precioCoste'    // ← Agregar field explícito
       },
       cantidadBodega: {
         type: DataTypes.INTEGER,
