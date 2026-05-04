@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
-import { 
-  Database, 
-  Upload, 
-  FileSpreadsheet, 
-  CheckCircle, 
-  AlertCircle, 
+import {
+  Database,
+  Upload,
+  FileSpreadsheet,
+  CheckCircle,
+  AlertCircle,
   RefreshCw,
   Download,
   Server,
@@ -13,8 +13,8 @@ import {
   MapPin
 } from 'lucide-react';
 import { getInventarios } from '../../services/inventarios.service';
-import { 
-  importConteoInicialExcel, 
+import {
+  importConteoInicialExcel,
   getConteoInicialResumen,
   syncFromSqlServer,
   getSqlServerConnectionStatus
@@ -92,8 +92,8 @@ export default function ConteoInicialPage() {
       setFilteredResumen(resumen);
     } else {
       const term = searchTerm.toLowerCase();
-      const filtered = resumen.filter(item => 
-        item.sku?.toLowerCase().includes(term) || 
+      const filtered = resumen.filter(item =>
+        item.sku?.toLowerCase().includes(term) ||
         item.descripcion?.toLowerCase().includes(term)
       );
       setFilteredResumen(filtered);
@@ -122,7 +122,7 @@ export default function ConteoInicialPage() {
       setMessage(result.message || 'Conteo inicial importado correctamente');
       setFile(null);
       await loadResumen(inventarioActivo.id);
-      
+
       const fileInput = document.getElementById('excel-file');
       if (fileInput) fileInput.value = '';
     } catch (err) {
@@ -160,7 +160,7 @@ export default function ConteoInicialPage() {
       const response = await api.post('/scripts/exportar-excel', {}, {
         responseType: 'blob'
       });
-      
+
       const url = window.URL.createObjectURL(new Blob([response.data]));
       const link = document.createElement('a');
       link.href = url;
@@ -169,20 +169,28 @@ export default function ConteoInicialPage() {
       link.click();
       link.remove();
       window.URL.revokeObjectURL(url);
-      
+
       setMessage('Plantilla descargada correctamente');
     } catch (err) {
       setError('Error al descargar plantilla');
     }
   };
 
-  const totalProductos = filteredResumen.length;
-  const totalUnidades = filteredResumen.reduce((sum, item) => sum + (item.total || 0), 0);
-  const totalBodega = filteredResumen.reduce((sum, item) => sum + (item.cantidadBodega || 0), 0);
-  const totalExhibicion = filteredResumen.reduce((sum, item) => sum + (item.cantidadExhibicion || 0), 0);
+useEffect(() => {
+  if (filteredResumen.length > 0) {
+    const test = filteredResumen.slice(0, 5);
+    console.log('Primeros 5 productos:', test);
+    console.log('Suma total:', filteredResumen.reduce((s, i) => s + (i.total || 0), 0));
+  }
+}, [filteredResumen]);  const totalProductos = filteredResumen.length;
+  const totalUnidades = filteredResumen.reduce((sum, item) => sum + (Number(item.total) || 0), 0);
+  const totalBodega = filteredResumen.reduce((sum, item) => sum + (Number(item.cantidadBodega) || 0), 0);
+  const totalExhibicion = filteredResumen.reduce((sum, item) => sum + (Number(item.cantidadExhibicion) || 0), 0);
+
+  console.log('Debug KPIs:', { totalProductos, totalUnidades, totalBodega, totalExhibicion });
 
   if (loading) return <div className="card">Cargando...</div>;
-  
+
   return (
     <div className="dashboard-container">
       {/* Tarjetas de resumen */}
@@ -216,7 +224,7 @@ export default function ConteoInicialPage() {
           </div>
         </div>
       </div>
-        
+
       {/* Importadores */}
       <div className="grid-2">
         <div className="card">
