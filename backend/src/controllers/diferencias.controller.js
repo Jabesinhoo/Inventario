@@ -517,22 +517,17 @@ async function compareInventarios(req, res, next) {
 
 
 async function exportarComparacionExcel(req, res, next) {
-  try {
+   try {
     console.log('📥 Exportando diferencias a Excel...');
-    console.log('📋 Query recibido:', req.query);
-    console.log('📋 Body recibido:', req.body);
 
     const { error, value } = compareSchema.validate(req.query);
 
     if (error) {
-      console.log('❌ Error de validación:', error.details[0].message);
       return res.status(400).json({
         ok: false,
         message: error.details[0].message
       });
     }
-
-    console.log('✅ Validación exitosa. Value:', value);
 
     // Obtener cantidades aceptadas desde el frontend
     let cantidadesAceptadas = {};
@@ -554,40 +549,30 @@ async function exportarComparacionExcel(req, res, next) {
       value.zonaComparadaId ? Number(value.zonaComparadaId) : null
     );
 
-    // 🔥 Obtener datos de productos desde NUESTRA BD (conteo_inicial_detalle)
-    const { ConteoInicialDetalle, Zona } = require('../models');
-
-    // Obtener todos los SKU de la comparación
+    // Obtener datos de productos desde nuestra BD
+    const { ConteoInicialDetalle } = require('../models');
+    
     const skusUnicos = [...new Set(data.comparacion.map(p => p.sku))];
-
-    // Buscar en nuestra BD los datos de cada SKU
+    
     const productosInfo = await ConteoInicialDetalle.findAll({
       where: {
-        inventarioId: value.inventarioBaseId, // Usar el inventario base
+        inventarioId: value.inventarioBaseId,
         sku: { [Op.in]: skusUnicos }
       },
-      include: [{ model: Zona, as: 'zona', attributes: ['nombre', 'codigo'] }],
       attributes: ['sku', 'descripcionSnapshot', 'unidadMedida', 'grupoNombre', 'precioCoste']
     });
-
-    // Crear mapa de datos por SKU
+    
     const datosProductosMap = new Map();
     for (const prod of productosInfo) {
-      if (!datosProductosMap.has(prod.sku)) {
-        datosProductosMap.set(prod.sku, {
-          descripcion: prod.descripcionSnapshot || 'Sin descripción',
-          unidadMedida: prod.unidadMedida || 'Und.',
-          grupoNombre: prod.grupoNombre || 'SIN GRUPO',
-          precioCoste: prod.precioCoste || 0
-        });
-      }
+      datosProductosMap.set(prod.sku, {
+        descripcion: prod.descripcionSnapshot || 'Sin descripción',
+        unidadMedida: prod.unidadMedida || 'Und.',
+        grupoNombre: prod.grupoNombre || 'SIN GRUPO',
+        precioCoste: prod.precioCoste || 0
+      });
     }
 
-    console.log(`✅ Datos encontrados en BD: ${datosProductosMap.size} productos`);
-
     const workbook = new ExcelJS.Workbook();
-
-    // ==================== HOJA 1: INVENTARIO (Formato Melissa) ====================
     const inventarioSheet = workbook.addWorksheet('INVENTARIO');
 
     inventarioSheet.columns = [
@@ -614,7 +599,6 @@ async function exportarComparacionExcel(req, res, next) {
       { header: 'Color', key: 'color', width: 15 }
     ];
 
-    // Estilos encabezado
     inventarioSheet.getRow(1).font = { bold: true };
     inventarioSheet.getRow(1).fill = {
       type: 'pattern',
@@ -631,29 +615,25 @@ async function exportarComparacionExcel(req, res, next) {
     let totalUnidades = 0;
     let valorTotalInventario = 0;
 
-    // ==================== GENERAR FILAS (UNA POR PRODUCTO, UNA SOLA VEZ) ====================
-    // Recorremos TODOS los productos de la comparación (coincidencias y diferencias)
     const todosProductos = data.comparacion || [];
-
+    
     for (const producto of todosProductos) {
-      // 🔥 Usar cantidad aceptada si existe, si no usar la cantidad del inventario comparado
-      const cantidadAceptada = cantidadesAceptadas[producto.sku] !== undefined
-        ? cantidadesAceptadas[producto.sku]
+      // 🔥 CLAVE: Usar cantidad aceptada si existe
+      const cantidadAceptada = cantidadesAceptadas[producto.sku] !== undefined 
+        ? cantidadesAceptadas[producto.sku] 
         : producto.cantidadComparada;
-
-      // 🔥 Obtener datos desde nuestra BD
+      
       const datosBD = datosProductosMap.get(producto.sku) || {};
-
+      
       const descripcion = datosBD.descripcion || producto.descripcion || 'Sin descripción';
       const unidadMedida = datosBD.unidadMedida || 'Und.';
       const destino = datosBD.grupoNombre || 'SIN GRUPO';
       const precioCoste = datosBD.precioCoste || 0;
-
+      
       totalRegistros++;
       totalUnidades += cantidadAceptada;
       valorTotalInventario += cantidadAceptada * precioCoste;
-
-      // 🔥 UNA SOLA FILA por producto (no se duplica)
+      
       inventarioSheet.addRow({
         empresa: nombreEmpresa,
         tipoDocumento: 'AI',
@@ -667,7 +647,7 @@ async function exportarComparacionExcel(req, res, next) {
         producto: producto.sku,
         descripcion: descripcion,
         unidadMedida: unidadMedida,
-        cantidadFisico: cantidadAceptada,
+        cantidadFisico: cantidadAceptada,  // ← Aquí va la cantidad aceptada
         cantidadSistema: 0,
         iva: 0,
         valorUnitario: precioCoste,
@@ -811,24 +791,16 @@ async function exportarComparacionExcel(req, res, next) {
     });
 
     // Enviar archivo
-    const filename = `inventario_diferencias_${value.inventarioBaseId}_vs_${value.inventarioComparadoId}_${fechaStr}.xlsx`;
-
+      const filename = `inventario_diferencias_${value.inventarioBaseId}_vs_${value.inventarioComparadoId}_${fechaStr}.xlsx`;
+    
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
 
     await workbook.xlsx.write(res);
     res.end();
 
-    console.log(`✅ Excel generado: ${totalRegistros} registros, ${totalUnidades} unidades, $${valorTotalInventario.toLocaleString()}`);
-
   } catch (error) {
     console.error('❌ Error en exportarComparacionExcel:', error);
-    if (error.status) {
-      return res.status(error.status).json({
-        ok: false,
-        message: error.message
-      });
-    }
     next(error);
   }
 }
