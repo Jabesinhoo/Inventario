@@ -62,14 +62,14 @@ async function parseConteoInicialExcel(buffer) {
   const grupoCol = resolveColumnIndex(headerMap, ['grupo', 'destino', 'group']);
   const cantidadBodegaCol = resolveColumnIndex(headerMap, ['cantidadbodega', 'cantidad bodega', 'bodega', 'warehouse']);
   const cantidadExhibicionCol = resolveColumnIndex(headerMap, ['cantidadexhibicion', 'cantidad exhibicion', 'exhibicion', 'exhibición', 'showroom']);
-  
+
   // 🔥 CORREGIDO: Múltiples formas de escribir "Precio Coste"
   const precioCosteCol = resolveColumnIndex(headerMap, [
-    'preciocoste', 
-    'precio coste', 
-    'preciocoste', 
-    'costopromedio', 
-    'costo promedio', 
+    'preciocoste',
+    'precio coste',
+    'preciocoste',
+    'costopromedio',
+    'costo promedio',
     'price',
     'valorunitario',
     'valor unitario'
@@ -97,14 +97,14 @@ async function parseConteoInicialExcel(buffer) {
 
     const skuRaw = getCellValue(row.getCell(skuCol));
     let sku = normalizeText(skuRaw);
-    
+
     // Filtrar SKU inválidos
     if (!sku || sku === 'VACIO' || sku === 'VACÍO' || sku === 'EMPTY' || sku === '') {
       console.log(`[PARSER] Fila ${rowNumber}: SKU inválido "${skuRaw}", omitiendo`);
       errors.push({ row: rowNumber, message: `SKU inválido: "${skuRaw}"` });
       return;
     }
-    
+
     // Filtrar SKU sospechosos
     if (sku.length < 3 && !/^\d+$/.test(sku)) {
       console.log(`[PARSER] Fila ${rowNumber}: SKU sospechoso "${sku}", omitiendo`);
@@ -115,13 +115,13 @@ async function parseConteoInicialExcel(buffer) {
     const descripcion = descripcionCol ? normalizeText(getCellValue(row.getCell(descripcionCol))) : null;
     const unidadMedida = unidadMedidaCol ? normalizeText(getCellValue(row.getCell(unidadMedidaCol))) : 'Und.';
     const grupo = grupoCol ? normalizeText(getCellValue(row.getCell(grupoCol))) : null;
-    
+
     let cantidadBodega = 0;
     if (cantidadBodegaCol) {
       const val = getCellValue(row.getCell(cantidadBodegaCol));
       cantidadBodega = Number(val) || 0;
     }
-    
+
     let cantidadExhibicion = 0;
     if (cantidadExhibicionCol) {
       const val = getCellValue(row.getCell(cantidadExhibicionCol));
@@ -134,12 +134,11 @@ async function parseConteoInicialExcel(buffer) {
       precioCoste = Number(val) || 0;
       console.log(`[PARSER] Fila ${rowNumber}: SKU=${sku}, precioCoste=${precioCoste}`);
     }
-
-    if (cantidadBodega === 0 && cantidadExhibicion === 0) {
-      console.log(`[PARSER] Fila ${rowNumber}: SKU ${sku} sin stock, omitiendo`);
-      return;
-    }
-
+    // Comenta este bloque para que NO omita productos sin stock
+    // if (cantidadBodega === 0 && cantidadExhibicion === 0) {
+    //   console.log(`[PARSER] Fila ${rowNumber}: SKU ${sku} sin stock, omitiendo`);
+    //   return;
+    // }
     rows.push({
       sku,
       descripcion: descripcion || null,
