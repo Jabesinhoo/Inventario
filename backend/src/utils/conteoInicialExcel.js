@@ -62,7 +62,28 @@ async function parseConteoInicialExcel(buffer) {
   const grupoCol = resolveColumnIndex(headerMap, ['grupo', 'destino', 'group']);
   const cantidadBodegaCol = resolveColumnIndex(headerMap, ['cantidadbodega', 'cantidad bodega', 'bodega', 'warehouse']);
   const cantidadExhibicionCol = resolveColumnIndex(headerMap, ['cantidadexhibicion', 'cantidad exhibicion', 'exhibicion', 'exhibición', 'showroom']);
-  const precioCosteCol = resolveColumnIndex(headerMap, ['preciocoste', 'precio coste', 'costopromedio', 'costo promedio', 'price']);
+  
+  // 🔥 CORREGIDO: Múltiples formas de escribir "Precio Coste"
+  const precioCosteCol = resolveColumnIndex(headerMap, [
+    'preciocoste', 
+    'precio coste', 
+    'preciocoste', 
+    'costopromedio', 
+    'costo promedio', 
+    'price',
+    'valorunitario',
+    'valor unitario'
+  ]);
+
+  console.log('[PARSER] Columnas encontradas:', {
+    skuCol,
+    descripcionCol,
+    unidadMedidaCol,
+    grupoCol,
+    cantidadBodegaCol,
+    cantidadExhibicionCol,
+    precioCosteCol
+  });
 
   if (!skuCol) {
     throw new Error('El Excel debe tener una columna "sku" o "codigo" o "producto"');
@@ -77,14 +98,14 @@ async function parseConteoInicialExcel(buffer) {
     const skuRaw = getCellValue(row.getCell(skuCol));
     let sku = normalizeText(skuRaw);
     
-    // 🔥 FILTRAR SKU INVÁLIDOS
+    // Filtrar SKU inválidos
     if (!sku || sku === 'VACIO' || sku === 'VACÍO' || sku === 'EMPTY' || sku === '') {
       console.log(`[PARSER] Fila ${rowNumber}: SKU inválido "${skuRaw}", omitiendo`);
       errors.push({ row: rowNumber, message: `SKU inválido: "${skuRaw}"` });
       return;
     }
     
-    // 🔥 FILTRAR SKU que sean solo números (válidos) o alfanuméricos
+    // Filtrar SKU sospechosos
     if (sku.length < 3 && !/^\d+$/.test(sku)) {
       console.log(`[PARSER] Fila ${rowNumber}: SKU sospechoso "${sku}", omitiendo`);
       errors.push({ row: rowNumber, message: `SKU sospechoso: "${skuRaw}"` });
@@ -111,6 +132,7 @@ async function parseConteoInicialExcel(buffer) {
     if (precioCosteCol) {
       const val = getCellValue(row.getCell(precioCosteCol));
       precioCoste = Number(val) || 0;
+      console.log(`[PARSER] Fila ${rowNumber}: SKU=${sku}, precioCoste=${precioCoste}`);
     }
 
     if (cantidadBodega === 0 && cantidadExhibicion === 0) {

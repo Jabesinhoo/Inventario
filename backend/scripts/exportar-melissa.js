@@ -38,9 +38,9 @@ async function exportarInventarioMelissa() {
     const nombreEmpresa = empresaResult.recordset[0]?.nombre || 'TECNOCOMPUTER MELISSA SANDOVAL';
     console.log(`🏢 Empresa: ${nombreEmpresa}\n`);
 
-    // Consulta con cantidades ACTUALES (una sola fila por producto)
-    console.log('📊 Consultando productos con cantidades ACTUALES...');
-    
+    // 🔥 CONSULTA MODIFICADA: Exporta TODOS los productos activos (incluyendo cantidad 0)
+    console.log('📊 Consultando TODOS los productos activos...');
+
     const productosResult = await pool.request().query(`
       WITH UltimasCantidades AS (
         SELECT 
@@ -66,8 +66,8 @@ async function exportarInventarioMelissa() {
         i.IdGrupoInventarioDos as grupoId,
         g.Descripcion as grupoNombre,
         ISNULL(pc.CostoPromedio, 0) as precioCoste,
-        MAX(CASE WHEN uc.IdBodegaInventario = 'BOD' THEN uc.Cantidad ELSE 0 END) as cantidadBodega,
-        MAX(CASE WHEN uc.IdBodegaInventario = 'EXH' THEN uc.Cantidad ELSE 0 END) as cantidadExhibicion
+        ISNULL(MAX(CASE WHEN uc.IdBodegaInventario = 'BOD' THEN uc.Cantidad ELSE 0 END), 0) as cantidadBodega,
+        ISNULL(MAX(CASE WHEN uc.IdBodegaInventario = 'EXH' THEN uc.Cantidad ELSE 0 END), 0) as cantidadExhibicion
       FROM Inventarios i
       LEFT JOIN [Inventarios - AgrupaciónDos] g ON g.IdGrupoInventarioDos = i.IdGrupoInventarioDos
       LEFT JOIN UltimasCantidades uc ON uc.IdInventario = i.IdInventario AND uc.rn = 1
@@ -80,19 +80,17 @@ async function exportarInventarioMelissa() {
         i.IdGrupoInventarioDos,
         g.Descripcion,
         pc.CostoPromedio
-      HAVING 
-        MAX(CASE WHEN uc.IdBodegaInventario = 'BOD' THEN uc.Cantidad ELSE 0 END) > 0
-        OR MAX(CASE WHEN uc.IdBodegaInventario = 'EXH' THEN uc.Cantidad ELSE 0 END) > 0
+      -- 🔥 ELIMINADO EL HAVING: ahora incluye productos con cantidad 0
       ORDER BY i.[CódigoInventario]
     `);
 
-    console.log(`✅ Productos con stock actual: ${productosResult.recordset.length}\n`);
+    console.log(`✅ Productos activos encontrados: ${productosResult.recordset.length}\n`);
 
     // Crear Excel
     const workbook = new ExcelJS.Workbook();
     const worksheet = workbook.addWorksheet('INVENTARIO');
 
-    // 🔥 COLUMNAS COMPLETAS - UNA SOLA FILA POR PRODUCTO
+    // Columnas completas - Formato Melissa
     worksheet.columns = [
       { header: 'Empresa', key: 'empresa', width: 30 },
       { header: 'Tipo Documento', key: 'tipoDocumento', width: 15 },
@@ -132,8 +130,9 @@ async function exportarInventarioMelissa() {
     const mesActual = fechaActual.toLocaleString('es', { month: 'long' });
     let totalBodega = 0;
     let totalExhibicion = 0;
+    let productosConStock = 0;
 
-    console.log('📝 Generando Excel (una fila por producto)...');
+    console.log('📝 Generando Excel con todos los productos...');
 
     for (const row of productosResult.recordset) {
       const cantidadBodega = Number(row.cantidadBodega) || 0;
@@ -141,7 +140,9 @@ async function exportarInventarioMelissa() {
       
       totalBodega += cantidadBodega;
       totalExhibicion += cantidadExhibicion;
+      if (cantidadBodega > 0 || cantidadExhibicion > 0) productosConStock++;
       
+      // Una sola fila por producto
       worksheet.addRow({
         empresa: nombreEmpresa,
         tipoDocumento: 'AI',
@@ -193,12 +194,14 @@ async function exportarInventarioMelissa() {
       { concepto: 'IVA', valor: '0' },
       { concepto: '', valor: '' },
       { concepto: '📦 PRODUCTOS', valor: '' },
-      { concepto: 'Productos con Stock', valor: productosResult.recordset.length },
+      { concepto: 'Total Productos Activos', valor: productosResult.recordset.length },
+      { concepto: 'Productos con Stock', valor: productosConStock },
+      { concepto: 'Productos sin Stock', valor: productosResult.recordset.length - productosConStock },
       { concepto: '', valor: '' },
       { concepto: '📦 CANTIDADES', valor: '' },
       { concepto: 'Total Unidades en Bodega', valor: totalBodega.toLocaleString() },
       { concepto: 'Total Unidades en Exhibición', valor: totalExhibicion.toLocaleString() },
-      { concepto: 'Total General', valor: (totalBodega + totalExhibicion).toLocaleString() }
+      { concepto: 'Total General Unidades', valor: (totalBodega + totalExhibicion).toLocaleString() }
     ]);
 
     // Guardar archivo
@@ -214,13 +217,14 @@ async function exportarInventarioMelissa() {
 
     console.log('\n📊 RESUMEN FINAL:');
     console.log(`   - Empresa: ${nombreEmpresa}`);
-    console.log(`   - Productos con stock: ${productosResult.recordset.length}`);
+    console.log(`   - Productos activos: ${productosResult.recordset.length}`);
+    console.log(`   - Productos con stock: ${productosConStock}`);
+    console.log(`   - Productos sin stock: ${productosResult.recordset.length - productosConStock}`);
     console.log(`   - Total unidades Bodega: ${totalBodega.toLocaleString()}`);
     console.log(`   - Total unidades Exhibición: ${totalExhibicion.toLocaleString()}`);
     console.log(`   - Total general: ${(totalBodega + totalExhibicion).toLocaleString()}`);
     console.log(`\n✅ Archivo guardado: ${filepath}`);
-    console.log(`\n📥 Formato COMPLETO para Melissa (una fila por producto):`);
-    console.log(`   Columnas: Empresa | Tipo Doc | Fecha | Producto | Descripción | Unidad | Cantidad Bodega | Cantidad Exhibición | Valor Unitario | Destino | etc.`);
+    console.log(`\n📥 Exportación completa (todos los productos activos)`);
 
     await pool.close();
     console.log('\n👋 Conexión cerrada');
