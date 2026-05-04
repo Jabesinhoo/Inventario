@@ -176,13 +176,13 @@ export default function ConteoInicialPage() {
     }
   };
 
-useEffect(() => {
-  if (filteredResumen.length > 0) {
-    const test = filteredResumen.slice(0, 5);
-    console.log('Primeros 5 productos:', test);
-    console.log('Suma total:', filteredResumen.reduce((s, i) => s + (i.total || 0), 0));
-  }
-}, [filteredResumen]);  const totalProductos = filteredResumen.length;
+  useEffect(() => {
+    if (filteredResumen.length > 0) {
+      const test = filteredResumen.slice(0, 5);
+      console.log('Primeros 5 productos:', test);
+      console.log('Suma total:', filteredResumen.reduce((s, i) => s + (i.total || 0), 0));
+    }
+  }, [filteredResumen]); const totalProductos = filteredResumen.length;
   const totalUnidades = filteredResumen.reduce((sum, item) => sum + (Number(item.total) || 0), 0);
   const totalBodega = filteredResumen.reduce((sum, item) => sum + (Number(item.cantidadBodega) || 0), 0);
   const totalExhibicion = filteredResumen.reduce((sum, item) => sum + (Number(item.cantidadExhibicion) || 0), 0);
