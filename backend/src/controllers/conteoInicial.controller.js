@@ -85,16 +85,16 @@ async function importConteoInicialExcel(req, res, next) {
       });
     }
 
-    let zonaBodega = await Zona.findOne({ 
-      where: { 
+    let zonaBodega = await Zona.findOne({
+      where: {
         [Op.or]: [
           { codigo: 'BOD' },
           { nombre: 'Bodega Principal' }
         ]
-      }, 
-      transaction 
+      },
+      transaction
     });
-    
+
     if (!zonaBodega) {
       await transaction.rollback();
       return res.status(400).json({
@@ -102,17 +102,17 @@ async function importConteoInicialExcel(req, res, next) {
         message: 'No se encuentra la zona BODEGA. Verifica que exista en la base de datos.'
       });
     }
-    
-    let zonaExhibicion = await Zona.findOne({ 
-      where: { 
+
+    let zonaExhibicion = await Zona.findOne({
+      where: {
         [Op.or]: [
           { codigo: 'EXH' },
           { nombre: 'Exhibición' }
         ]
-      }, 
-      transaction 
+      },
+      transaction
     });
-    
+
     if (!zonaExhibicion) {
       await transaction.rollback();
       return res.status(400).json({
@@ -142,41 +142,40 @@ async function importConteoInicialExcel(req, res, next) {
 
         const sku = String(item.sku).trim();
 
-        if (item.cantidadBodega > 0) {
-          await ConteoInicialDetalle.upsert({
-            inventarioId: value.inventarioId,
-            zonaId: zonaBodega.id,
-            sku,
-            codigoLeido: sku,
-            descripcionSnapshot: descripcionCorta,
-            unidadMedida: item.unidadMedida || 'Und.',
-            grupoNombre: item.grupo || null,
-            precioCoste: item.precioCoste || 0,
-            cantidadBodega: item.cantidadBodega,
-            cantidadExhibicion: 0,
-            cantidadTotal: item.cantidadBodega,
-            origenArchivo: req.file.originalname
-          }, { transaction });
-          insertados++;
-        }
+        // 🔥 GUARDAR SIEMPRE, incluso con cantidad 0
+        // Guardar en BODEGA (siempre)
+        await ConteoInicialDetalle.upsert({
+          inventarioId: value.inventarioId,
+          zonaId: zonaBodega.id,
+          sku,
+          codigoLeido: sku,
+          descripcionSnapshot: descripcionCorta,
+          unidadMedida: item.unidadMedida || 'Und.',
+          grupoNombre: item.grupo || null,
+          precioCoste: item.precioCoste || 0,
+          cantidadBodega: item.cantidadBodega,
+          cantidadExhibicion: 0,
+          cantidadTotal: item.cantidadBodega,
+          origenArchivo: req.file.originalname
+        }, { transaction });
+        insertados++;
 
-        if (item.cantidadExhibicion > 0) {
-          await ConteoInicialDetalle.upsert({
-            inventarioId: value.inventarioId,
-            zonaId: zonaExhibicion.id,
-            sku,
-            codigoLeido: sku,
-            descripcionSnapshot: descripcionCorta,
-            unidadMedida: item.unidadMedida || 'Und.',
-            grupoNombre: item.grupo || null,
-            precioCoste: item.precioCoste || 0,
-            cantidadBodega: 0,
-            cantidadExhibicion: item.cantidadExhibicion,
-            cantidadTotal: item.cantidadExhibicion,
-            origenArchivo: req.file.originalname
-          }, { transaction });
-          insertados++;
-        }
+        // Guardar en EXHIBICION (siempre)
+        await ConteoInicialDetalle.upsert({
+          inventarioId: value.inventarioId,
+          zonaId: zonaExhibicion.id,
+          sku,
+          codigoLeido: sku,
+          descripcionSnapshot: descripcionCorta,
+          unidadMedida: item.unidadMedida || 'Und.',
+          grupoNombre: item.grupo || null,
+          precioCoste: item.precioCoste || 0,
+          cantidadBodega: 0,
+          cantidadExhibicion: item.cantidadExhibicion,
+          cantidadTotal: item.cantidadExhibicion,
+          origenArchivo: req.file.originalname
+        }, { transaction });
+        insertados++;
 
       } catch (err) {
         console.error(`[IMPORT] Error con SKU ${item.sku}:`, err.message);
@@ -254,13 +253,13 @@ async function getConteoInicialResumen(req, res, next) {
       }
 
       const producto = productosMap.get(key);
-      
+
       if (item.zona === 'Bodega Principal' || item.zona === 'BODEGA') {
         producto.cantidadBodega = item.cantidadBodega;
       } else {
         producto.cantidadExhibicion = item.cantidadExhibicion;
       }
-      
+
       producto.total = item.cantidadTotal;
     }
 
