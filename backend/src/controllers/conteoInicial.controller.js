@@ -219,12 +219,27 @@ async function getConteoInicialResumen(req, res, next) {
       });
     }
 
-    const data = await ConteoInicialDetalle.findAll({
-      where: { inventarioId },
-      include: [{ model: Zona, as: 'zona', attributes: ['id', 'nombre', 'codigo'] }],
-      attributes: ['id', 'inventarioId', 'zonaId', 'productoId', 'sku', 'codigoLeido', 'descripcionSnapshot', 'cantidadBodega', 'cantidadExhibicion', 'cantidadTotal', 'origenArchivo', 'createdAt', 'updatedAt'],
-      order: [['zonaId', 'ASC'], ['sku', 'ASC']]
+    // 🔥 Usar SQL raw para evitar problemas de Sequelize
+    const data = await sequelize.query(`
+      SELECT 
+        c.sku,
+        c."descripcionSnapshot" as descripcion,
+        c."cantidadBodega",
+        c."cantidadExhibicion",
+        c."cantidadTotal",
+        c."origenArchivo",
+        z.nombre as zona,
+        c."grupoNombre"
+      FROM conteo_inicial_detalle c
+      LEFT JOIN zonas z ON z.id = c."zonaId"
+      WHERE c."inventarioId" = :inventarioId
+      ORDER BY c."zonaId" ASC, c.sku ASC
+    `, {
+      replacements: { inventarioId },
+      type: sequelize.QueryTypes.SELECT
     });
+
+    // Agrupar por SKU
     const productosMap = new Map();
 
     for (const item of data) {
@@ -233,33 +248,25 @@ async function getConteoInicialResumen(req, res, next) {
       if (!productosMap.has(key)) {
         productosMap.set(key, {
           sku: item.sku,
-          descripcion: item.descripcionSnapshot,
+          descripcion: item.descripcion,
           cantidadBodega: 0,
           cantidadExhibicion: 0,
           total: 0,
-          zona: item.zona?.nombre || 'N/A',
-          origen: item.origenArchivo || 'Manual'
+          zona: item.zona || 'N/A',
+          origen: item.origenArchivo || 'Manual',
+          grupo: item.grupoNombre || 'SIN GRUPO'
         });
       }
 
       const producto = productosMap.get(key);
-      const zonaCodigo = item.zona?.codigo;
-
-      if (zonaCodigo === 'BOD') {
-        producto.cantidadBodega = item.cantidadTotal;
-      } else if (zonaCodigo === 'EXH') {
-        producto.cantidadExhibicion = item.cantidadTotal;
+      
+      if (item.zona === 'Bodega Principal' || item.zona === 'BODEGA') {
+        producto.cantidadBodega += item.cantidadBodega;
+      } else {
+        producto.cantidadExhibicion += item.cantidadExhibicion;
       }
-
-      if (
-        (!producto.descripcion || producto.descripcion === 'Sin descripción') &&
-        item.descripcionSnapshot &&
-        item.descripcionSnapshot !== 'Sin descripción'
-      ) {
-        producto.descripcion = item.descripcionSnapshot;
-      }
-
-      producto.total += Number(item.cantidadTotal || 0);
+      
+      producto.total += item.cantidadTotal;
     }
 
     const resumen = Array.from(productosMap.values());
