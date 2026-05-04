@@ -517,7 +517,7 @@ async function compareInventarios(req, res, next) {
 
 
 async function exportarComparacionExcel(req, res, next) {
-   try {
+  try {
     console.log('📥 Exportando diferencias a Excel...');
 
     const { error, value } = compareSchema.validate(req.query);
@@ -549,11 +549,13 @@ async function exportarComparacionExcel(req, res, next) {
       value.zonaComparadaId ? Number(value.zonaComparadaId) : null
     );
 
-    // Obtener datos de productos desde nuestra BD
+    // Obtener datos de productos desde NUESTRA BD (conteo_inicial_detalle)
     const { ConteoInicialDetalle } = require('../models');
     
+    // Obtener todos los SKU de la comparación
     const skusUnicos = [...new Set(data.comparacion.map(p => p.sku))];
     
+    // Buscar en nuestra BD los datos de cada SKU
     const productosInfo = await ConteoInicialDetalle.findAll({
       where: {
         inventarioId: value.inventarioBaseId,
@@ -562,19 +564,26 @@ async function exportarComparacionExcel(req, res, next) {
       attributes: ['sku', 'descripcionSnapshot', 'unidadMedida', 'grupoNombre', 'precioCoste']
     });
     
+    // Crear mapa de datos por SKU
     const datosProductosMap = new Map();
     for (const prod of productosInfo) {
-      datosProductosMap.set(prod.sku, {
-        descripcion: prod.descripcionSnapshot || 'Sin descripción',
-        unidadMedida: prod.unidadMedida || 'Und.',
-        grupoNombre: prod.grupoNombre || 'SIN GRUPO',
-        precioCoste: prod.precioCoste || 0
-      });
+      if (!datosProductosMap.has(prod.sku)) {
+        datosProductosMap.set(prod.sku, {
+          descripcion: prod.descripcionSnapshot || 'Sin descripción',
+          unidadMedida: prod.unidadMedida || 'Und.',
+          grupoNombre: prod.grupoNombre || 'SIN GRUPO',
+          precioCoste: prod.precioCoste || 0
+        });
+      }
     }
+    
+    console.log(`✅ Datos encontrados en BD: ${datosProductosMap.size} productos`);
 
     const workbook = new ExcelJS.Workbook();
+    
+    // ==================== HOJA 1: INVENTARIO (Formato Melissa) ====================
     const inventarioSheet = workbook.addWorksheet('INVENTARIO');
-
+    
     inventarioSheet.columns = [
       { header: 'Empresa', key: 'empresa', width: 30 },
       { header: 'Tipo Documento', key: 'tipoDocumento', width: 15 },
@@ -599,6 +608,7 @@ async function exportarComparacionExcel(req, res, next) {
       { header: 'Color', key: 'color', width: 15 }
     ];
 
+    // Estilos encabezado
     inventarioSheet.getRow(1).font = { bold: true };
     inventarioSheet.getRow(1).fill = {
       type: 'pattern',
@@ -615,14 +625,16 @@ async function exportarComparacionExcel(req, res, next) {
     let totalUnidades = 0;
     let valorTotalInventario = 0;
 
+    // Recorremos TODOS los productos de la comparación (coincidencias y diferencias)
     const todosProductos = data.comparacion || [];
     
     for (const producto of todosProductos) {
-      // 🔥 CLAVE: Usar cantidad aceptada si existe
+      // 🔥 USAR LA CANTIDAD ACEPTADA (si existe, si no usar la cantidad comparada)
       const cantidadAceptada = cantidadesAceptadas[producto.sku] !== undefined 
         ? cantidadesAceptadas[producto.sku] 
         : producto.cantidadComparada;
       
+      // Obtener datos desde nuestra BD
       const datosBD = datosProductosMap.get(producto.sku) || {};
       
       const descripcion = datosBD.descripcion || producto.descripcion || 'Sin descripción';
@@ -634,6 +646,7 @@ async function exportarComparacionExcel(req, res, next) {
       totalUnidades += cantidadAceptada;
       valorTotalInventario += cantidadAceptada * precioCoste;
       
+      // Una sola fila por producto
       inventarioSheet.addRow({
         empresa: nombreEmpresa,
         tipoDocumento: 'AI',
@@ -647,7 +660,7 @@ async function exportarComparacionExcel(req, res, next) {
         producto: producto.sku,
         descripcion: descripcion,
         unidadMedida: unidadMedida,
-        cantidadFisico: cantidadAceptada,  // ← Aquí va la cantidad aceptada
+        cantidadFisico: cantidadAceptada,
         cantidadSistema: 0,
         iva: 0,
         valorUnitario: precioCoste,
@@ -726,12 +739,12 @@ async function exportarComparacionExcel(req, res, next) {
     diferenciasSheet.getRow(1).font = { color: { argb: 'FFFFFFFF' }, bold: true };
 
     for (const diff of data.diferencias) {
-      const cantidadAceptada = cantidadesAceptadas[diff.sku] !== undefined
-        ? cantidadesAceptadas[diff.sku]
+      const cantidadAceptada = cantidadesAceptadas[diff.sku] !== undefined 
+        ? cantidadesAceptadas[diff.sku] 
         : diff.cantidadComparada;
       const datosBD = datosProductosMap.get(diff.sku) || {};
       const precioCoste = datosBD.precioCoste || 0;
-
+      
       diferenciasSheet.addRow({
         sku: diff.sku,
         descripcion: datosBD.descripcion || diff.descripcion,
@@ -772,9 +785,9 @@ async function exportarComparacionExcel(req, res, next) {
         productosUnicos: grupo.productosUnicos
       });
     }
-
+    
     gruposSheet.addRow({ grupo: '', inventario: '', zona: '', totalEscaneos: '', productosUnicos: '' });
-
+    
     for (const grupo of data.totales.comparado.grupos) {
       gruposSheet.addRow({
         grupo: grupo.nombre,
@@ -791,7 +804,7 @@ async function exportarComparacionExcel(req, res, next) {
     });
 
     // Enviar archivo
-      const filename = `inventario_diferencias_${value.inventarioBaseId}_vs_${value.inventarioComparadoId}_${fechaStr}.xlsx`;
+    const filename = `inventario_diferencias_${value.inventarioBaseId}_vs_${value.inventarioComparadoId}_${fechaStr}.xlsx`;
     
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
@@ -799,11 +812,20 @@ async function exportarComparacionExcel(req, res, next) {
     await workbook.xlsx.write(res);
     res.end();
 
+    console.log(`✅ Excel generado: ${totalRegistros} registros, ${totalUnidades} unidades, $${valorTotalInventario.toLocaleString()}`);
+
   } catch (error) {
     console.error('❌ Error en exportarComparacionExcel:', error);
+    if (error.status) {
+      return res.status(error.status).json({
+        ok: false,
+        message: error.message
+      });
+    }
     next(error);
   }
 }
+
 
 async function generarReconteoDesdeComparacion(req, res, next) {
   console.log('🔥🔥🔥 FUCIÓN LLAMADA: generarReconteoDesdeComparacion 🔥🔥🔥');
