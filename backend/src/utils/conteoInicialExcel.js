@@ -55,24 +55,51 @@ async function parseConteoInicialExcel(buffer) {
     console.log(`[PARSER] Columna ${colNumber}: "${cell.value}" → "${headerValue}"`);
   });
 
-  // Buscar columnas
-  const skuCol = resolveColumnIndex(headerMap, ['sku', 'codigo', 'código', 'producto', 'product']);
-  const descripcionCol = resolveColumnIndex(headerMap, ['descripcion', 'descripción', 'nombre', 'description']);
-  const unidadMedidaCol = resolveColumnIndex(headerMap, ['unidadmedida', 'unidad medida', 'und', 'unitmeasure']);
-  const grupoCol = resolveColumnIndex(headerMap, ['grupo', 'destino', 'group']);
-  const cantidadBodegaCol = resolveColumnIndex(headerMap, ['cantidadbodega', 'cantidad bodega', 'bodega', 'warehouse']);
-  const cantidadExhibicionCol = resolveColumnIndex(headerMap, ['cantidadexhibicion', 'cantidad exhibicion', 'exhibicion', 'exhibición', 'showroom']);
+  // Buscar columnas - MÁS OPCIONES PARA CADA UNA
+  const skuCol = resolveColumnIndex(headerMap, [
+    'sku', 'codigo', 'código', 'producto', 'product', 
+    'codigoinventario', 'códigoinventario', 'cod'
+  ]);
+  
+  const descripcionCol = resolveColumnIndex(headerMap, [
+    'descripcion', 'descripción', 'nombre', 'description', 
+    'producto', 'product', 'detalle'
+  ]);
+  
+  const unidadMedidaCol = resolveColumnIndex(headerMap, [
+    'unidadmedida', 'unidad medida', 'und', 'unitmeasure', 
+    'unidad', 'medida', 'um'
+  ]);
+  
+  const grupoCol = resolveColumnIndex(headerMap, [
+    'grupo', 'destino', 'group', 'clasificacion', 
+    'categoria', 'grupo2', 'grupodos'
+  ]);
+  
+  const cantidadBodegaCol = resolveColumnIndex(headerMap, [
+    'cantidadbodega', 'cantidad bodega', 'bodega', 'warehouse',
+    'cantidad_bodega', 'cantidadbodega', 'cant bodega',
+    'stock bodega', 'inventario bodega', 'bodega cantidad'
+  ]);
+  
+  const cantidadExhibicionCol = resolveColumnIndex(headerMap, [
+    'cantidadexhibicion', 'cantidad exhibicion', 'exhibicion', 'exhibición',
+    'showroom', 'cantidad_exhibicion', 'cantidadexhibicion',
+    'stock exhibicion', 'inventario exhibicion', 'exhibicion cantidad'
+  ]);
+  
+  // Si no encuentra columnas separadas, buscar columna única "cantidad"
+  let cantidadUnicaCol = null;
+  if (!cantidadBodegaCol && !cantidadExhibicionCol) {
+    cantidadUnicaCol = resolveColumnIndex(headerMap, [
+      'cantidad', 'quantity', 'stock', 'existencia', 'total', 'unidades'
+    ]);
+  }
 
-  // 🔥 CORREGIDO: Múltiples formas de escribir "Precio Coste"
   const precioCosteCol = resolveColumnIndex(headerMap, [
-    'preciocoste',
-    'precio coste',
-    'preciocoste',
-    'costopromedio',
-    'costo promedio',
-    'price',
-    'valorunitario',
-    'valor unitario'
+    'preciocoste', 'precio coste', 'costopromedio', 'costo promedio', 
+    'price', 'valorunitario', 'valor unitario', 'precio', 'costo',
+    'preciocoste', 'precio_coste', 'coste'
   ]);
 
   console.log('[PARSER] Columnas encontradas:', {
@@ -82,6 +109,7 @@ async function parseConteoInicialExcel(buffer) {
     grupoCol,
     cantidadBodegaCol,
     cantidadExhibicionCol,
+    cantidadUnicaCol,
     precioCosteCol
   });
 
@@ -98,17 +126,9 @@ async function parseConteoInicialExcel(buffer) {
     const skuRaw = getCellValue(row.getCell(skuCol));
     let sku = normalizeText(skuRaw);
 
-    // Filtrar SKU inválidos
     if (!sku || sku === 'VACIO' || sku === 'VACÍO' || sku === 'EMPTY' || sku === '') {
       console.log(`[PARSER] Fila ${rowNumber}: SKU inválido "${skuRaw}", omitiendo`);
       errors.push({ row: rowNumber, message: `SKU inválido: "${skuRaw}"` });
-      return;
-    }
-
-    // Filtrar SKU sospechosos
-    if (sku.length < 3 && !/^\d+$/.test(sku)) {
-      console.log(`[PARSER] Fila ${rowNumber}: SKU sospechoso "${sku}", omitiendo`);
-      errors.push({ row: rowNumber, message: `SKU sospechoso: "${skuRaw}"` });
       return;
     }
 
@@ -117,15 +137,25 @@ async function parseConteoInicialExcel(buffer) {
     const grupo = grupoCol ? normalizeText(getCellValue(row.getCell(grupoCol))) : null;
 
     let cantidadBodega = 0;
+    let cantidadExhibicion = 0;
+
+    // Si tiene columnas separadas
     if (cantidadBodegaCol) {
       const val = getCellValue(row.getCell(cantidadBodegaCol));
       cantidadBodega = Number(val) || 0;
     }
 
-    let cantidadExhibicion = 0;
     if (cantidadExhibicionCol) {
       const val = getCellValue(row.getCell(cantidadExhibicionCol));
       cantidadExhibicion = Number(val) || 0;
+    }
+
+    // Si solo hay una columna de cantidad (formato antiguo)
+    if (cantidadUnicaCol && cantidadBodega === 0 && cantidadExhibicion === 0) {
+      const val = getCellValue(row.getCell(cantidadUnicaCol));
+      const cantidad = Number(val) || 0;
+      // Por defecto, asignar a exhibición
+      cantidadExhibicion = cantidad;
     }
 
     let precioCoste = 0;
@@ -134,11 +164,8 @@ async function parseConteoInicialExcel(buffer) {
       precioCoste = Number(val) || 0;
       console.log(`[PARSER] Fila ${rowNumber}: SKU=${sku}, precioCoste=${precioCoste}`);
     }
-    // Comenta este bloque para que NO omita productos sin stock
-    // if (cantidadBodega === 0 && cantidadExhibicion === 0) {
-    //   console.log(`[PARSER] Fila ${rowNumber}: SKU ${sku} sin stock, omitiendo`);
-    //   return;
-    // }
+
+    // Guardar siempre, incluso con cantidad 0
     rows.push({
       sku,
       descripcion: descripcion || null,
