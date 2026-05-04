@@ -1,7 +1,7 @@
 const Joi = require('joi');
 const ExcelJS = require('exceljs');
-const { QueryTypes, Op } = require('sequelize');  // ← AGREGAR Op
-const { sequelize, Zona, Inventario, RondaConteo, DiscrepanciaConteo } = require('../models');
+const { QueryTypes, Op } = require('sequelize');
+const { sequelize, Zona, Inventario, RondaConteo, DiscrepanciaConteo, ParejaInventario } = require('../models');
 const parejaService = require('../services/parejaInventario.service');
 
 const compareSchema = Joi.object({
@@ -9,7 +9,7 @@ const compareSchema = Joi.object({
   inventarioComparadoId: Joi.number().integer().required(),
   zonaBaseId: Joi.number().integer().allow(null, ''),
   zonaComparadaId: Joi.number().integer().allow(null, ''),
-  zonaId: Joi.number().integer().allow(null, ''),  // ← AGREGAR ESTO
+  zonaId: Joi.number().integer().allow(null, ''),
   cantidadesAceptadas: Joi.string().allow(null, '', '{}')
 });
 
@@ -81,6 +81,7 @@ function buildLecturasFilterSql({
 
   return sql;
 }
+
 async function getSkuComparisonRows(
   inventarioBaseId,
   inventarioComparadoId,
@@ -104,7 +105,6 @@ async function getSkuComparisonRows(
     zonaParam: 'zonaComparadaId'
   });
 
-  // 🔥 CORREGIDO: Sumar TODAS las lecturas de la última ronda de cada SKU
   const baseRows = await sequelize.query(
     `
     WITH ultima_ronda_por_sku AS (
@@ -443,7 +443,7 @@ async function buildComparisonData(
       totalDiferencias: diferencias.length,
       totalDiferenciaUnidades: diferencias.reduce((sum, row) => sum + Math.abs(row.diferencia), 0)
     },
-    comparacion: comparisonRows,  // ← ESTA ES LA LÍNEA CLAVE
+    comparacion: comparisonRows,
     coinciden,
     diferencias,
     totales: {
@@ -480,19 +480,16 @@ async function compareInventarios(req, res, next) {
       value.zonaComparadaId ? Number(value.zonaComparadaId) : null
     );
 
-    // 🔥 NUEVO: Crear o actualizar la pareja de inventarios
     const pareja = await parejaService.crearOPareja(
       Number(value.inventarioBaseId),
       Number(value.inventarioComparadoId),
       value.zonaBaseId ? Number(value.zonaBaseId) : null
     );
 
-    // Si hay diferencias y la pareja estaba completada, volver a pendiente
     if (data.diferencias.length > 0 && pareja.estado === 'completada') {
       await parejaService.actualizarEstadoPareja(pareja.id, 'pendiente');
     }
 
-    // Agregar información de la pareja a la respuesta
     res.json({
       ok: true,
       data: {
@@ -515,29 +512,58 @@ async function compareInventarios(req, res, next) {
   }
 }
 
-
 async function exportarComparacionExcel(req, res, next) {
   try {
     console.log('📥 Exportando diferencias a Excel...');
+    console.log('📋 Método:', req.method);
+    console.log('📋 Query recibido:', req.query);
+    console.log('📋 Body recibido:', req.body);
 
     const { error, value } = compareSchema.validate(req.query);
 
     if (error) {
+      console.log('❌ Error de validación:', error.details[0].message);
       return res.status(400).json({
         ok: false,
         message: error.details[0].message
       });
     }
 
-    // Obtener cantidades aceptadas desde el frontend
+    console.log('✅ Validación exitosa. Value:', value);
+
+    // Obtener cantidades aceptadas (del body si es POST, o del query si es GET)
     let cantidadesAceptadas = {};
-    if (req.query.cantidadesAceptadas) {
-      try {
-        cantidadesAceptadas = JSON.parse(req.query.cantidadesAceptadas);
-        console.log(`📦 Cantidades aceptadas: ${Object.keys(cantidadesAceptadas).length} SKUs`);
-      } catch (e) {
-        console.error('Error parsing cantidadesAceptadas:', e.message);
+    
+    if (req.method === 'POST') {
+      // Para POST, obtener del body
+      cantidadesAceptadas = req.body.cantidadesAceptadas || {};
+      console.log('📦 Obteniendo cantidades del BODY (POST)');
+    } else {
+      // Para GET, obtener del query
+      const rawCantidades = req.query.cantidadesAceptadas;
+      if (rawCantidades) {
+        try {
+          cantidadesAceptadas = JSON.parse(rawCantidades);
+          console.log('📦 Obteniendo cantidades del QUERY (GET)');
+        } catch (e) {
+          console.error('Error parsing cantidadesAceptadas:', e.message);
+        }
       }
+    }
+
+    // Si cantidadesAceptadas viene como string, parsearlo
+    if (typeof cantidadesAceptadas === 'string') {
+      try {
+        cantidadesAceptadas = JSON.parse(cantidadesAceptadas);
+      } catch (e) {
+        console.error('Error parsing cantidadesAceptadas string:', e.message);
+        cantidadesAceptadas = {};
+      }
+    }
+
+    console.log(`📦 Cantidades aceptadas: ${Object.keys(cantidadesAceptadas).length} SKUs`);
+    if (Object.keys(cantidadesAceptadas).length > 0) {
+      console.log('📦 Ejemplo de cantidades:', Object.entries(cantidadesAceptadas).slice(0, 5));
     }
 
     // Obtener datos de comparación
@@ -549,22 +575,20 @@ async function exportarComparacionExcel(req, res, next) {
       value.zonaComparadaId ? Number(value.zonaComparadaId) : null
     );
 
-    // Obtener datos de productos desde NUESTRA BD (conteo_inicial_detalle)
+    // Obtener datos de productos desde la BD
     const { ConteoInicialDetalle } = require('../models');
-    
-    // Obtener todos los SKU de la comparación
+
     const skusUnicos = [...new Set(data.comparacion.map(p => p.sku))];
-    
-    // Buscar en nuestra BD los datos de cada SKU
+
     const productosInfo = await ConteoInicialDetalle.findAll({
       where: {
         inventarioId: value.inventarioBaseId,
         sku: { [Op.in]: skusUnicos }
       },
+      include: [{ model: Zona, as: 'zona', attributes: ['nombre', 'codigo'] }],
       attributes: ['sku', 'descripcionSnapshot', 'unidadMedida', 'grupoNombre', 'precioCoste']
     });
-    
-    // Crear mapa de datos por SKU
+
     const datosProductosMap = new Map();
     for (const prod of productosInfo) {
       if (!datosProductosMap.has(prod.sku)) {
@@ -576,14 +600,14 @@ async function exportarComparacionExcel(req, res, next) {
         });
       }
     }
-    
+
     console.log(`✅ Datos encontrados en BD: ${datosProductosMap.size} productos`);
 
     const workbook = new ExcelJS.Workbook();
-    
-    // ==================== HOJA 1: INVENTARIO (Formato Melissa) ====================
+
+    // ==================== HOJA 1: INVENTARIO ====================
     const inventarioSheet = workbook.addWorksheet('INVENTARIO');
-    
+
     inventarioSheet.columns = [
       { header: 'Empresa', key: 'empresa', width: 30 },
       { header: 'Tipo Documento', key: 'tipoDocumento', width: 15 },
@@ -608,7 +632,6 @@ async function exportarComparacionExcel(req, res, next) {
       { header: 'Color', key: 'color', width: 15 }
     ];
 
-    // Estilos encabezado
     inventarioSheet.getRow(1).font = { bold: true };
     inventarioSheet.getRow(1).fill = {
       type: 'pattern',
@@ -625,28 +648,30 @@ async function exportarComparacionExcel(req, res, next) {
     let totalUnidades = 0;
     let valorTotalInventario = 0;
 
-    // Recorremos TODOS los productos de la comparación (coincidencias y diferencias)
     const todosProductos = data.comparacion || [];
-    
+
+    console.log(`📊 Procesando ${todosProductos.length} productos con cantidades aceptadas`);
+
     for (const producto of todosProductos) {
-      // 🔥 USAR LA CANTIDAD ACEPTADA (si existe, si no usar la cantidad comparada)
-      const cantidadAceptada = cantidadesAceptadas[producto.sku] !== undefined 
-        ? cantidadesAceptadas[producto.sku] 
-        : producto.cantidadComparada;
+      let cantidadAceptada;
       
-      // Obtener datos desde nuestra BD
+      if (cantidadesAceptadas[producto.sku] !== undefined && cantidadesAceptadas[producto.sku] !== null) {
+        cantidadAceptada = Number(cantidadesAceptadas[producto.sku]);
+      } else {
+        cantidadAceptada = producto.cantidadComparada || 0;
+      }
+
       const datosBD = datosProductosMap.get(producto.sku) || {};
-      
+
       const descripcion = datosBD.descripcion || producto.descripcion || 'Sin descripción';
       const unidadMedida = datosBD.unidadMedida || 'Und.';
       const destino = datosBD.grupoNombre || 'SIN GRUPO';
       const precioCoste = datosBD.precioCoste || 0;
-      
+
       totalRegistros++;
       totalUnidades += cantidadAceptada;
       valorTotalInventario += cantidadAceptada * precioCoste;
-      
-      // Una sola fila por producto
+
       inventarioSheet.addRow({
         empresa: nombreEmpresa,
         tipoDocumento: 'AI',
@@ -739,12 +764,12 @@ async function exportarComparacionExcel(req, res, next) {
     diferenciasSheet.getRow(1).font = { color: { argb: 'FFFFFFFF' }, bold: true };
 
     for (const diff of data.diferencias) {
-      const cantidadAceptada = cantidadesAceptadas[diff.sku] !== undefined 
-        ? cantidadesAceptadas[diff.sku] 
+      const cantidadAceptada = cantidadesAceptadas[diff.sku] !== undefined
+        ? Number(cantidadesAceptadas[diff.sku])
         : diff.cantidadComparada;
       const datosBD = datosProductosMap.get(diff.sku) || {};
       const precioCoste = datosBD.precioCoste || 0;
-      
+
       diferenciasSheet.addRow({
         sku: diff.sku,
         descripcion: datosBD.descripcion || diff.descripcion,
@@ -785,9 +810,9 @@ async function exportarComparacionExcel(req, res, next) {
         productosUnicos: grupo.productosUnicos
       });
     }
-    
+
     gruposSheet.addRow({ grupo: '', inventario: '', zona: '', totalEscaneos: '', productosUnicos: '' });
-    
+
     for (const grupo of data.totales.comparado.grupos) {
       gruposSheet.addRow({
         grupo: grupo.nombre,
@@ -798,14 +823,12 @@ async function exportarComparacionExcel(req, res, next) {
       });
     }
 
-    // Aplicar estilos a todas las hojas
     workbook.eachSheet((sheet) => {
       sheet.views = [{ state: 'frozen', ySplit: 1 }];
     });
 
-    // Enviar archivo
     const filename = `inventario_diferencias_${value.inventarioBaseId}_vs_${value.inventarioComparadoId}_${fechaStr}.xlsx`;
-    
+
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
 
@@ -826,9 +849,8 @@ async function exportarComparacionExcel(req, res, next) {
   }
 }
 
-
 async function generarReconteoDesdeComparacion(req, res, next) {
-  console.log('🔥🔥🔥 FUCIÓN LLAMADA: generarReconteoDesdeComparacion 🔥🔥🔥');
+  console.log('🔥 FUNCIÓN LLAMADA: generarReconteoDesdeComparacion 🔥');
   console.log('Body recibido:', JSON.stringify(req.body, null, 2));
 
   try {
@@ -881,7 +903,7 @@ async function generarReconteoDesdeComparacion(req, res, next) {
         zonaId: zonaId || null
       },
       order: [['numeroRonda', 'DESC']],
-      attributes: ['numeroRonda']
+      attributes: ['numeroRonda', 'id']
     });
 
     const nextRondaNumero = (lastRonda?.numeroRonda || 0) + 1;
@@ -911,9 +933,6 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       console.log(`  ✓ Discrepancia para SKU: ${diferencia.sku}`);
     }
 
-    // 🔥 NUEVO: Actualizar o crear la pareja de inventarios
-    const { ParejaInventario } = require('../models');
-
     const [pareja, created] = await ParejaInventario.findOrCreate({
       where: {
         inventarioBaseId: inventarioBaseId,
@@ -930,13 +949,12 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       }
     });
 
-    // Si la pareja ya existía, actualizar su estado y contador
     if (!created) {
       await pareja.update({
         estado: 'en_reconteo',
         rondasReconteoGeneradas: (pareja.rondasReconteoGeneradas || 0) + 1,
         fechaComparacion: new Date(),
-        fechaCompletada: null // Reiniciar fecha completada si estaba completada
+        fechaCompletada: null
       });
     }
 
@@ -959,6 +977,7 @@ async function generarReconteoDesdeComparacion(req, res, next) {
     next(error);
   }
 }
+
 async function completarPareja(req, res, next) {
   try {
     const { parejaId } = req.params;
@@ -972,7 +991,6 @@ async function completarPareja(req, res, next) {
       });
     }
 
-    // Verificar que todas las discrepancias estén resueltas
     const discrepanciasPendientes = await DiscrepanciaConteo.count({
       where: {
         inventarioId: pareja.inventarioBaseId,
@@ -1004,14 +1022,13 @@ async function completarPareja(req, res, next) {
     next(error);
   }
 }
-// Función para obtener datos de productos desde SQL Server
+
 async function obtenerDatosProductosDesdeSQLServer(skusUnicos) {
   if (!skusUnicos || skusUnicos.length === 0) return new Map();
 
   try {
     const { getSqlServerPool } = require('../config/sqlserver');
 
-    // Verificar si SQL Server está habilitado
     if (process.env.SQLSERVER_ENABLED !== 'true') {
       console.log('⚠️ SQL Server deshabilitado, usando datos por defecto');
       return new Map();
@@ -1019,7 +1036,6 @@ async function obtenerDatosProductosDesdeSQLServer(skusUnicos) {
 
     const sqlPool = await getSqlServerPool();
 
-    // Escapar SKUs para SQL injection
     const skusList = skusUnicos.map(s => `'${s.replace(/'/g, "''")}'`).join(',');
 
     const query = `

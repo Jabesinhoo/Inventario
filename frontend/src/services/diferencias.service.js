@@ -16,19 +16,17 @@ export async function compareInventariosDiferencias(params) {
   return response.data.data;
 }
 
-export async function exportarDiferenciasExcel(params, cantidadesAceptadas = {}) {
-  const cleanParams = {
-    inventarioBaseId: params.inventarioBaseId,
-    inventarioComparadoId: params.inventarioComparadoId,
-    cantidadesAceptadas: JSON.stringify(cantidadesAceptadas)
-  };
-
-  if (params.zonaId) cleanParams.zonaId = params.zonaId;
-
-  const response = await api.get('/diferencias/exportar', {
-    params: cleanParams,
-    responseType: 'blob'
-  });
+export async function exportarDiferenciasExcel(params) {
+  const { cantidadesAceptadas, ...otrosParams } = params;
+  
+  // Usar POST para enviar cantidades en el body
+  const response = await api.post('/diferencias/exportar', 
+    { cantidadesAceptadas: cantidadesAceptadas || {} },
+    { 
+      params: otrosParams,
+      responseType: 'blob' 
+    }
+  );
 
   const blob = new Blob([response.data], {
     type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -37,14 +35,13 @@ export async function exportarDiferenciasExcel(params, cantidadesAceptadas = {})
   const url = window.URL.createObjectURL(blob);
   const link = document.createElement('a');
   link.href = url;
-  link.download = `inventario_diferencias_${cleanParams.inventarioBaseId}_vs_${cleanParams.inventarioComparadoId}.xlsx`;
+  link.download = `inventario_diferencias_${otrosParams.inventarioBaseId}_vs_${otrosParams.inventarioComparadoId}.xlsx`;
   document.body.appendChild(link);
   link.click();
   link.remove();
   window.URL.revokeObjectURL(url);
 }
 
-// NUEVA FUNCIÓN: Generar ronda de reconteo desde comparación
 export async function generarRondaReconteoDesdeComparacion(data) {
   const response = await api.post('/diferencias/reconteo', {
     inventarioBaseId: data.inventarioBaseId,
