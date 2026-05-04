@@ -10,5 +10,6 @@ router.post('/backup', authMiddleware, allowRoles('admin'), controller.ejecutarB
 router.get('/exportaciones', authMiddleware, allowRoles('admin'), controller.listarExportaciones);
 router.get('/exportaciones/:filename', authMiddleware, allowRoles('admin'), controller.descargarExportacion);
 router.get('/exportar-json', authMiddleware, allowRoles('admin'), controller.exportarJson);
-router.get('/descargar/:filename', authMiddleware, allowRoles('admin'), controller.descargarExportacionMelissa);
+router.post('/exportar-melissa', authMiddleware, allowRoles('admin'), controller.exportarExcelMelissa);
+
 module.exports = router;

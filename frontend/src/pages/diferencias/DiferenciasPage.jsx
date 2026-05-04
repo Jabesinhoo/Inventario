@@ -119,16 +119,16 @@ export default function DiferenciasPage() {
     : zonasBaseOptions;
 
   const getParejaDelInventario = (inventarioId) => {
-    const pareja = parejas.find(p => 
-      p.inventarioBaseId === inventarioId || 
+    const pareja = parejas.find(p =>
+      p.inventarioBaseId === inventarioId ||
       p.inventarioComparadoId === inventarioId
     );
-    
+
     if (!pareja) return null;
-    
+
     const esBase = pareja.inventarioBaseId === inventarioId;
     const inventarioPareja = esBase ? pareja.inventarioComparado : pareja.inventarioBase;
-    
+
     return {
       id: pareja.id,
       inventarioId: inventarioPareja?.id,
@@ -313,7 +313,10 @@ export default function DiferenciasPage() {
 
       const params = {
         inventarioBaseId,
-        inventarioComparadoId
+        inventarioComparadoId,
+        zonaBaseId: zonaBaseId || null,
+        zonaComparadaId: zonaComparadaId || null,
+        cantidadesAceptadas: cantidadesEditables
       };
 
       if (
@@ -362,6 +365,8 @@ export default function DiferenciasPage() {
       const params = {
         inventarioBaseId,
         inventarioComparadoId,
+        zonaBaseId: zonaBaseId || null,
+        zonaComparadaId: zonaComparadaId || null,
         cantidadesAceptadas: cantidadesEditables
       };
 
@@ -561,8 +566,8 @@ export default function DiferenciasPage() {
         ) : null}
 
         {zonaBaseSeleccionada &&
-        zonaComparadaSeleccionada &&
-        !zonesAreEquivalent(zonaBaseSeleccionada, zonaComparadaSeleccionada) ? (
+          zonaComparadaSeleccionada &&
+          !zonesAreEquivalent(zonaBaseSeleccionada, zonaComparadaSeleccionada) ? (
           <div className="alert-warning" style={{ marginTop: '12px' }}>
             <AlertTriangle size={16} />
             <span>No puedes comparar ni generar reconteo entre zonas distintas.</span>

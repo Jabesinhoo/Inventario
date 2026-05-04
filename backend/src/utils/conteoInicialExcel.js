@@ -1,3 +1,4 @@
+// backend/src/utils/conteoInicialExcel.js
 const ExcelJS = require('exceljs');
 
 function normalizeHeader(value) {
@@ -55,24 +56,16 @@ async function parseConteoInicialExcel(buffer) {
   });
 
   // Buscar columnas
-  const skuCol = resolveColumnIndex(headerMap, ['sku', 'codigo', 'código', 'producto']);
-  const descripcionCol = resolveColumnIndex(headerMap, ['descripcion', 'descripción', 'nombre']);
-  const cantidadBodegaCol = resolveColumnIndex(headerMap, ['cantidadbodega', 'cantidad bodega', 'bodega']);
-  const cantidadExhibicionCol = resolveColumnIndex(headerMap, ['cantidadexhibicion', 'cantidad exhibicion', 'exhibicion', 'exhibición']);
-
-  console.log('[PARSER] Columnas encontradas:', {
-    skuCol,
-    descripcionCol,
-    cantidadBodegaCol,
-    cantidadExhibicionCol
-  });
+  const skuCol = resolveColumnIndex(headerMap, ['sku', 'codigo', 'código', 'producto', 'product']);
+  const descripcionCol = resolveColumnIndex(headerMap, ['descripcion', 'descripción', 'nombre', 'description']);
+  const unidadMedidaCol = resolveColumnIndex(headerMap, ['unidadmedida', 'unidad medida', 'und', 'unitmeasure']);
+  const grupoCol = resolveColumnIndex(headerMap, ['grupo', 'destino', 'group']);
+  const cantidadBodegaCol = resolveColumnIndex(headerMap, ['cantidadbodega', 'cantidad bodega', 'bodega', 'warehouse']);
+  const cantidadExhibicionCol = resolveColumnIndex(headerMap, ['cantidadexhibicion', 'cantidad exhibicion', 'exhibicion', 'exhibición', 'showroom']);
+  const precioCosteCol = resolveColumnIndex(headerMap, ['preciocoste', 'precio coste', 'costopromedio', 'costo promedio', 'price']);
 
   if (!skuCol) {
-    throw new Error('El Excel debe tener una columna "sku" o "codigo"');
-  }
-
-  if (!cantidadBodegaCol && !cantidadExhibicionCol) {
-    throw new Error('El Excel debe tener al menos una columna de cantidad (Bodega o Exhibición)');
+    throw new Error('El Excel debe tener una columna "sku" o "codigo" o "producto"');
   }
 
   const rows = [];
@@ -81,8 +74,26 @@ async function parseConteoInicialExcel(buffer) {
   worksheet.eachRow((row, rowNumber) => {
     if (rowNumber === 1) return;
 
-    const sku = normalizeText(getCellValue(row.getCell(skuCol)));
+    const skuRaw = getCellValue(row.getCell(skuCol));
+    let sku = normalizeText(skuRaw);
+    
+    // 🔥 FILTRAR SKU INVÁLIDOS
+    if (!sku || sku === 'VACIO' || sku === 'VACÍO' || sku === 'EMPTY' || sku === '') {
+      console.log(`[PARSER] Fila ${rowNumber}: SKU inválido "${skuRaw}", omitiendo`);
+      errors.push({ row: rowNumber, message: `SKU inválido: "${skuRaw}"` });
+      return;
+    }
+    
+    // 🔥 FILTRAR SKU que sean solo números (válidos) o alfanuméricos
+    if (sku.length < 3 && !/^\d+$/.test(sku)) {
+      console.log(`[PARSER] Fila ${rowNumber}: SKU sospechoso "${sku}", omitiendo`);
+      errors.push({ row: rowNumber, message: `SKU sospechoso: "${skuRaw}"` });
+      return;
+    }
+
     const descripcion = descripcionCol ? normalizeText(getCellValue(row.getCell(descripcionCol))) : null;
+    const unidadMedida = unidadMedidaCol ? normalizeText(getCellValue(row.getCell(unidadMedidaCol))) : 'Und.';
+    const grupo = grupoCol ? normalizeText(getCellValue(row.getCell(grupoCol))) : null;
     
     let cantidadBodega = 0;
     if (cantidadBodegaCol) {
@@ -96,22 +107,26 @@ async function parseConteoInicialExcel(buffer) {
       cantidadExhibicion = Number(val) || 0;
     }
 
-    if (!sku) {
-      errors.push({ row: rowNumber, message: 'SKU vacío' });
-      return;
+    let precioCoste = 0;
+    if (precioCosteCol) {
+      const val = getCellValue(row.getCell(precioCosteCol));
+      precioCoste = Number(val) || 0;
     }
 
     if (cantidadBodega === 0 && cantidadExhibicion === 0) {
-      errors.push({ row: rowNumber, message: `SKU ${sku} sin cantidades` });
+      console.log(`[PARSER] Fila ${rowNumber}: SKU ${sku} sin stock, omitiendo`);
       return;
     }
 
     rows.push({
       sku,
       descripcion: descripcion || null,
+      unidadMedida,
+      grupo,
       cantidadBodega,
       cantidadExhibicion,
-      cantidadTotal: cantidadBodega + cantidadExhibicion
+      cantidadTotal: cantidadBodega + cantidadExhibicion,
+      precioCoste
     });
   });
 

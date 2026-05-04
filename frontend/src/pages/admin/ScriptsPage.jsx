@@ -8,13 +8,15 @@ import {
   Loader2,
   HardDrive,
   RefreshCw,
-  Table
+  Table,
+  Server
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
 import api from '../../services/api';
 
 export default function ScriptsPage() {
   const [exportando, setExportando] = useState(false);
+  const [exportandoMelissa, setExportandoMelissa] = useState(false);
   const [backup, setBackup] = useState(false);
   const [exportaciones, setExportaciones] = useState([]);
   const [productosData, setProductosData] = useState(null);
@@ -22,63 +24,106 @@ export default function ScriptsPage() {
   const [resultado, setResultado] = useState(null);
   const [error, setError] = useState(null);
 
-  // Función para exportar DIRECTAMENTE desde SQL Server vía API
-const exportarDirecto = async () => {
-  setExportando(true);
-  setError(null);
-  setResultado(null);
+  // Función para exportar DIRECTAMENTE desde SQL Server vía API (versión rápida)
+  const exportarDirecto = async () => {
+    setExportando(true);
+    setError(null);
+    setResultado(null);
 
-  try {
-    const response = await api.get('/scripts/exportar-json');
-    const data = response.data;
+    try {
+      const response = await api.get('/scripts/exportar-json');
+      const data = response.data;
 
-    if (!data.ok || !data.data || data.data.length === 0) {
-      throw new Error('No hay datos para exportar');
-    }
+      if (!data.ok || !data.data || data.data.length === 0) {
+        throw new Error('No hay datos para exportar');
+      }
 
-    const excelData = [];
+      const excelData = [];
 
-    for (const producto of data.data) {
-      excelData.push({
-        Zona: 'BODEGA',
-        SKU: producto.sku,
-        Descripción: producto.descripcion || 'Sin descripción',
-        Cantidad: producto.cantidadBodega || 0
+      for (const producto of data.data) {
+        excelData.push({
+          Zona: 'BODEGA',
+          SKU: producto.sku,
+          Descripción: producto.descripcion || 'Sin descripción',
+          Cantidad: producto.cantidadBodega || 0
+        });
+
+        excelData.push({
+          Zona: 'EXHIBICION',
+          SKU: producto.sku,
+          Descripción: producto.descripcion || 'Sin descripción',
+          Cantidad: producto.cantidadExhibicion || 0
+        });
+      }
+
+      const ws = XLSX.utils.json_to_sheet(excelData);
+      const wb = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(wb, ws, 'Inventario Base');
+
+      ws['!cols'] = [
+        { wch: 12 },
+        { wch: 15 },
+        { wch: 50 },
+        { wch: 12 }
+      ];
+
+      const filename = `inventario_base_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.xlsx`;
+      XLSX.writeFile(wb, filename);
+
+      setResultado({
+        type: 'success',
+        message: `Exportación completada. Archivo: ${filename} (${excelData.length} registros)`
       });
-
-      excelData.push({
-        Zona: 'EXHIBICION',
-        SKU: producto.sku,
-        Descripción: producto.descripcion || 'Sin descripción',
-        Cantidad: producto.cantidadExhibicion || 0
-      });
+    } catch (err) {
+      console.error('Error:', err);
+      setError(err.response?.data?.message || err.message || 'Error al exportar');
+    } finally {
+      setExportando(false);
     }
+  };
 
-    const ws = XLSX.utils.json_to_sheet(excelData);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, 'Inventario Base');
+  // 🔥 NUEVA FUNCIÓN: Exportar inventario Melissa (script completo)
+  const exportarMelissa = async () => {
+    setExportandoMelissa(true);
+    setError(null);
+    setResultado(null);
 
-    ws['!cols'] = [
-      { wch: 12 },
-      { wch: 15 },
-      { wch: 50 },
-      { wch: 12 }
-    ];
+    try {
+      const response = await api.post('/scripts/exportar-melissa', {}, {
+        responseType: 'blob'
+      });
+      
+      // Extraer nombre del archivo del header Content-Disposition
+      const contentDisposition = response.headers['content-disposition'];
+      let filename = 'inventario_melissa.xlsx';
+      if (contentDisposition) {
+        const match = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+        if (match && match[1]) {
+          filename = match[1].replace(/['"]/g, '');
+        }
+      }
+      
+      const url = window.URL.createObjectURL(new Blob([response.data]));
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', filename);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.URL.revokeObjectURL(url);
+      
+      setResultado({
+        type: 'success',
+        message: `Archivo ${filename} descargado correctamente. Puedes importarlo en Conteo Inicial.`
+      });
+    } catch (err) {
+      console.error('Error:', err);
+      setError(err.response?.data?.message || err.message || 'Error al exportar inventario Melissa');
+    } finally {
+      setExportandoMelissa(false);
+    }
+  };
 
-    const filename = `inventario_base_${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}.xlsx`;
-    XLSX.writeFile(wb, filename);
-
-    setResultado({
-      type: 'success',
-      message: `Exportación completada. Archivo: ${filename} (${excelData.length} registros)`
-    });
-  } catch (err) {
-    console.error('Error:', err);
-    setError(err.response?.data?.message || err.message || 'Error al exportar');
-  } finally {
-    setExportando(false);
-  }
-};
   const cargarExportaciones = async () => {
     setCargandoLista(true);
     try {
@@ -146,7 +191,7 @@ const exportarDirecto = async () => {
   return (
     <div className="dashboard-container">
       <div className="grid-2">
-        {/* Exportar DIRECTAMENTE a Excel */}
+        {/* Exportar DIRECTAMENTE a Excel (versión rápida) */}
         <div className="card">
           <h2 className="section-title">
             <FileSpreadsheet size={20} />
@@ -169,6 +214,32 @@ const exportarDirecto = async () => {
           </button>
         </div>
 
+        {/* Exportar inventario Melissa (script completo) */}
+        <div className="card">
+          <h2 className="section-title">
+            <Server size={20} />
+            <span>Exportar inventario Melissa</span>
+          </h2>
+          <p className="muted">
+            Exporta el inventario completo desde SQL Server (Melissa) con el formato
+            optimizado para importar en Conteo Inicial. Incluye SKU, descripción,
+            cantidades por bodega/exhibición, grupo y precio coste.
+          </p>
+          <button 
+            className="btn btn-primary" 
+            onClick={exportarMelissa}
+            disabled={exportandoMelissa}
+          >
+            {exportandoMelissa ? (
+              <><Loader2 size={16} className="spin" /> Exportando Melissa...</>
+            ) : (
+              <><Database size={16} /> Exportar inventario Melissa</>
+            )}
+          </button>
+        </div>
+      </div>
+
+      <div className="grid-2">
         {/* Backup de base de datos */}
         <div className="card">
           <h2 className="section-title">
@@ -189,6 +260,39 @@ const exportarDirecto = async () => {
               <><Database size={16} /> Crear respaldo</>
             )}
           </button>
+        </div>
+
+        {/* Lista de exportaciones */}
+        <div className="card">
+          <h2 className="section-title">
+            <Table size={20} />
+            <span>Exportaciones recientes</span>
+          </h2>
+          <p className="muted">
+            Archivos generados por el respaldo de base de datos.
+          </p>
+          {cargandoLista ? (
+            <div className="loading-spinner-small" />
+          ) : exportaciones.length === 0 ? (
+            <p className="muted">No hay exportaciones recientes.</p>
+          ) : (
+            <div className="exportaciones-list">
+              {exportaciones.map((exp, idx) => (
+                <div key={idx} className="exportacion-item">
+                  <span className="exportacion-nombre">{exp.nombre}</span>
+                  <span className="exportacion-fecha">
+                    {new Date(exp.fecha).toLocaleString()}
+                  </span>
+                  <button 
+                    className="btn btn-outline small" 
+                    onClick={() => descargarArchivo(exp.nombre)}
+                  >
+                    <Download size={14} /> Descargar
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 

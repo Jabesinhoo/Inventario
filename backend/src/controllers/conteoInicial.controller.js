@@ -76,25 +76,65 @@ async function importConteoInicialExcel(req, res, next) {
     console.log('[IMPORT] Filas procesadas:', rows.length);
     console.log('[IMPORT] Errores:', errors.length);
 
+    if (rows.length === 0) {
+      await transaction.rollback();
+      return res.status(400).json({
+        ok: false,
+        message: 'No hay datos válidos para importar. Verifica los errores en el archivo.',
+        errors
+      });
+    }
+
+    // 🔥 BUSCAR ZONAS EXISTENTES (NO CREARLAS)
+    let zonaBodega = await Zona.findOne({ 
+      where: { 
+        [Op.or]: [
+          { codigo: 'BOD' },
+          { nombre: 'Bodega Principal' }
+        ]
+      }, 
+      transaction 
+    });
+    
+    if (!zonaBodega) {
+      await transaction.rollback();
+      return res.status(400).json({
+        ok: false,
+        message: 'No se encuentra la zona BODEGA. Verifica que exista en la base de datos.'
+      });
+    }
+    
+    let zonaExhibicion = await Zona.findOne({ 
+      where: { 
+        [Op.or]: [
+          { codigo: 'EXH' },
+          { nombre: 'Exhibición' }
+        ]
+      }, 
+      transaction 
+    });
+    
+    if (!zonaExhibicion) {
+      await transaction.rollback();
+      return res.status(400).json({
+        ok: false,
+        message: 'No se encuentra la zona EXHIBICION. Verifica que exista en la base de datos.'
+      });
+    }
+
+    console.log(`[IMPORT] Zonas encontradas: Bodega ID=${zonaBodega.id}, Exhibición ID=${zonaExhibicion.id}`);
+
     let insertados = 0;
     let actualizados = 0;
     const noResueltos = [];
 
-    // En la función importConteoInicialExcel, reemplaza el bucle for:
-
-    // En la función importConteoInicialExcel, reemplaza el bucle:
-
     for (const item of rows) {
       try {
-        // Buscar o crear la zona BODEGA y EXHIBICION
-        let zonaBodega = await Zona.findOne({ where: { codigo: 'BOD' }, transaction });
-        if (!zonaBodega) {
-          zonaBodega = await Zona.create({ nombre: 'Bodega Principal', codigo: 'BOD', activa: true }, { transaction });
-        }
-
-        let zonaExhibicion = await Zona.findOne({ where: { codigo: 'EXH' }, transaction });
-        if (!zonaExhibicion) {
-          zonaExhibicion = await Zona.create({ nombre: 'Exhibición', codigo: 'EXH', activa: true }, { transaction });
+        // Verificar SKU válido
+        if (!item.sku || item.sku === 'VACIO' || item.sku === 'VACÍO' || item.sku.length < 2) {
+          console.log(`[IMPORT] SKU inválido omitido: ${item.sku}`);
+          noResueltos.push({ sku: item.sku, message: 'SKU inválido' });
+          continue;
         }
 
         let descripcionCorta = item.descripcion || 'Sin descripción';
@@ -110,12 +150,17 @@ async function importConteoInicialExcel(req, res, next) {
             inventarioId: value.inventarioId,
             zonaId: zonaBodega.id,
             sku,
+            codigoLeido: sku,
             descripcionSnapshot: descripcionCorta,
+            unidadMedida: item.unidadMedida || 'Und.',
+            grupoNombre: item.grupo || null,
+            precioCoste: item.precioCoste || 0,
             cantidadBodega: item.cantidadBodega,
             cantidadExhibicion: 0,
             cantidadTotal: item.cantidadBodega,
             origenArchivo: req.file.originalname
           }, { transaction });
+          insertados++;
         }
 
         // Guardar en EXHIBICION
@@ -124,20 +169,25 @@ async function importConteoInicialExcel(req, res, next) {
             inventarioId: value.inventarioId,
             zonaId: zonaExhibicion.id,
             sku,
+            codigoLeido: sku,
             descripcionSnapshot: descripcionCorta,
+            unidadMedida: item.unidadMedida || 'Und.',
+            grupoNombre: item.grupo || null,
+            precioCoste: item.precioCoste || 0,
             cantidadBodega: 0,
             cantidadExhibicion: item.cantidadExhibicion,
             cantidadTotal: item.cantidadExhibicion,
             origenArchivo: req.file.originalname
           }, { transaction });
+          insertados++;
         }
 
-        insertados++;
       } catch (err) {
         console.error(`[IMPORT] Error con SKU ${item.sku}:`, err.message);
         noResueltos.push({ sku: item.sku, message: err.message });
       }
     }
+
     await transaction.commit();
 
     res.json({
@@ -298,7 +348,6 @@ async function syncFromSqlServer(req, res, next) {
 
     async function executeWithRetry(query, maxRetries = 3) {
       let lastError = null;
-
       for (let i = 0; i < maxRetries; i++) {
         try {
           const pool = await getSqlServerPool();
@@ -312,7 +361,6 @@ async function syncFromSqlServer(req, res, next) {
           }
         }
       }
-
       throw lastError;
     }
 
@@ -324,9 +372,20 @@ async function syncFromSqlServer(req, res, next) {
         i.[CodigoBarras] as codigoBarra,
         i.[Descripción] as descripcion,
         i.[Nombre_Generico] as categoria,
+        i.UnidadDeMedida,
+        i.IdGrupoInventarioDos as grupoId,
+        g.Descripcion as grupoNombre,
         SUM(CASE WHEN c.IdBodegaInventario = 'BOD' THEN c.Cantidad ELSE 0 END) as cantidadBodega,
-        SUM(CASE WHEN c.IdBodegaInventario = 'EXH' THEN c.Cantidad ELSE 0 END) as cantidadExhibicion
+        SUM(CASE WHEN c.IdBodegaInventario = 'EXH' THEN c.Cantidad ELSE 0 END) as cantidadExhibicion,
+        ISNULL((
+          SELECT TOP 1 pc.CostoPromedio 
+          FROM CCA_M_Inventarios pc 
+          WHERE pc.IdInventario = i.IdInventario 
+            AND pc.CostoPromedio > 0
+          ORDER BY pc.IdAsientoContable DESC
+        ), 0) as precioCoste
       FROM [dbo].[Inventarios] i
+      LEFT JOIN [Inventarios - AgrupaciónDos] g ON g.IdGrupoInventarioDos = i.IdGrupoInventarioDos
       INNER JOIN [dbo].[CCA_M_Inventarios] c ON c.IdInventario = i.IdInventario
       WHERE i.[Activo] = -1
         AND c.Cantidad >= 0
@@ -335,35 +394,43 @@ async function syncFromSqlServer(req, res, next) {
         i.[CódigoInventario],
         i.[CodigoBarras],
         i.[Descripción],
-        i.[Nombre_Generico]
+        i.[Nombre_Generico],
+        i.UnidadDeMedida,
+        i.IdGrupoInventarioDos,
+        g.Descripcion
+      HAVING 
+        SUM(CASE WHEN c.IdBodegaInventario = 'BOD' THEN c.Cantidad ELSE 0 END) > 0
+        OR SUM(CASE WHEN c.IdBodegaInventario = 'EXH' THEN c.Cantidad ELSE 0 END) > 0
       ORDER BY i.[CódigoInventario]
     `);
 
     console.log('[SYNC] Productos encontrados:', productosResult.recordset.length);
 
-    const [zonaBodega] = await Zona.findOrCreate({
-      where: { codigo: 'BOD' },
-      defaults: {
-        nombre: 'Bodega Principal',
-        codigo: 'BOD',
-        activa: true
-      }
-    });
+    // 🔥 BUSCAR ZONAS EXISTENTES (NO CREARLAS)
+    let zonaBodega = await Zona.findOne({ where: { codigo: 'BOD' } });
+    if (!zonaBodega) {
+      zonaBodega = await Zona.findOne({ where: { nombre: 'Bodega Principal' } });
+    }
+    if (!zonaBodega) {
+      throw new Error('No se encuentra la zona BODEGA. Verifica que exista en la base de datos.');
+    }
 
-    const [zonaExhibicion] = await Zona.findOrCreate({
-      where: { codigo: 'EXH' },
-      defaults: {
-        nombre: 'Exhibición',
-        codigo: 'EXH',
-        activa: true
-      }
-    });
+    let zonaExhibicion = await Zona.findOne({ where: { codigo: 'EXH' } });
+    if (!zonaExhibicion) {
+      zonaExhibicion = await Zona.findOne({ where: { nombre: 'Exhibición' } });
+    }
+    if (!zonaExhibicion) {
+      throw new Error('No se encuentra la zona EXHIBICION. Verifica que exista en la base de datos.');
+    }
+
+    console.log(`[SYNC] Zonas encontradas: Bodega ID=${zonaBodega.id}, Exhibición ID=${zonaExhibicion.id}`);
 
     let procesados = 0;
     let errores = 0;
     let totalBodega = 0;
     let totalExhibicion = 0;
 
+    // Limpiar datos anteriores de estas zonas para este inventario
     await ConteoInicialDetalle.destroy({
       where: {
         inventarioId,
@@ -376,6 +443,9 @@ async function syncFromSqlServer(req, res, next) {
         const sku = String(row.sku || '').trim();
         const codigoLeido = String(row.codigoBarra || row.sku || '').trim();
         const descripcion = String(row.descripcion || 'Sin descripción').trim();
+        const unidadMedida = String(row.UnidadDeMedida || 'Und.').trim();
+        const grupoNombre = String(row.grupoNombre || 'SIN GRUPO').trim();
+        const precioCoste = Number(row.precioCoste) || 0;
 
         const cantidadBodega = Math.round(Number(row.cantidadBodega) || 0);
         const cantidadExhibicion = Math.round(Number(row.cantidadExhibicion) || 0);
@@ -391,6 +461,9 @@ async function syncFromSqlServer(req, res, next) {
             sku,
             codigoLeido,
             descripcionSnapshot: descripcion,
+            unidadMedida,
+            grupoNombre,
+            precioCoste,
             cantidadBodega,
             cantidadExhibicion: 0,
             cantidadTotal: cantidadBodega,
@@ -406,6 +479,9 @@ async function syncFromSqlServer(req, res, next) {
             sku,
             codigoLeido,
             descripcionSnapshot: descripcion,
+            unidadMedida,
+            grupoNombre,
+            precioCoste,
             cantidadBodega: 0,
             cantidadExhibicion,
             cantidadTotal: cantidadExhibicion,

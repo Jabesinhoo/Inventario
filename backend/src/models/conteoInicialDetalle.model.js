@@ -1,3 +1,4 @@
+// backend/src/models/conteoInicialDetalle.model.js
 module.exports = (sequelize, DataTypes) => {
   return sequelize.define(
     'ConteoInicialDetalle',
@@ -31,6 +32,20 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.STRING(255),
         allowNull: true
       },
+      unidadMedida: {
+        type: DataTypes.STRING(20),
+        allowNull: true,
+        defaultValue: 'Und.'
+      },
+      grupoNombre: {
+        type: DataTypes.STRING(100),
+        allowNull: true
+      },
+      precioCoste: {
+        type: DataTypes.DECIMAL(15, 2),
+        allowNull: true,
+        defaultValue: 0
+      },
       cantidadBodega: {
         type: DataTypes.INTEGER,
         allowNull: false,
@@ -57,7 +72,14 @@ module.exports = (sequelize, DataTypes) => {
       indexes: [
         {
           unique: true,
-          fields: ['inventarioId', 'zonaId', 'sku']
+          fields: ['inventarioId', 'zonaId', 'sku'],
+          name: 'unique_conteo_inventario_zona_sku'
+        },
+        {
+          fields: ['inventarioId']
+        },
+        {
+          fields: ['sku']
         }
       ]
     }

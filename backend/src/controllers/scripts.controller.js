@@ -1,4 +1,6 @@
 const { exec } = require('child_process');
+const { promisify } = require('util');
+const execPromise = promisify(exec);
 const path = require('path');
 const fs = require('fs');
 
@@ -18,7 +20,6 @@ async function findPgDump() {
     try {
       const cleanPath = pgPath.replace(/"/g, '');
       if (fs.existsSync(cleanPath) || cleanPath === 'pg_dump') {
-        // Probar si funciona
         await execPromise(`"${cleanPath}" --version`);
         return cleanPath;
       }
@@ -27,7 +28,6 @@ async function findPgDump() {
     }
   }
   
-  // Si no encuentra, asumir que está en el PATH
   return 'pg_dump';
 }
 
@@ -44,29 +44,21 @@ async function ejecutarExportarExcel(req, res, next) {
       });
     }
     
-    // Ejecutar el script y esperar a que termine
-    const { exec } = require('child_process');
-    const { promisify } = require('util');
-    const execPromise = promisify(exec);
-    
     try {
       const { stdout, stderr } = await execPromise(`node "${scriptPath}"`, {
-        timeout: 120000 // 2 minutos
+        timeout: 120000
       });
       
       console.log('[SCRIPT] stdout:', stdout);
       if (stderr) console.error('[SCRIPT] stderr:', stderr);
       
-      // Buscar el nombre del archivo generado en el stdout
       const match = stdout.match(/✅ Archivo guardado: (.+\.xlsx)/);
       const filename = match ? path.basename(match[1]) : null;
       
-      // Verificar que el archivo existe
       if (filename) {
         const filePath = path.join(__dirname, '../../exports', filename);
         if (fs.existsSync(filePath)) {
           const stats = fs.statSync(filePath);
-          console.log('[SCRIPT] Archivo generado:', filename, 'Tamaño:', stats.size, 'bytes');
           
           return res.json({
             ok: true,
@@ -83,10 +75,7 @@ async function ejecutarExportarExcel(req, res, next) {
       res.json({
         ok: true,
         message: 'Exportación completada',
-        data: {
-          filename: filename,
-          output: stdout
-        }
+        data: { filename, output: stdout }
       });
       
     } catch (execError) {
@@ -104,7 +93,6 @@ async function ejecutarExportarExcel(req, res, next) {
   }
 }
 
-// Ejecutar script de respaldo de base de datos
 async function ejecutarBackup(req, res, next) {
   try {
     console.log('[SCRIPT] Ejecutando respaldo de PostgreSQL...');
@@ -113,16 +101,13 @@ async function ejecutarBackup(req, res, next) {
     const backupDir = path.join(__dirname, '../../backups');
     const backupPath = path.join(backupDir, `backup_${timestamp}.sql`);
     
-    // Crear directorio de backups si no existe
     if (!fs.existsSync(backupDir)) {
       fs.mkdirSync(backupDir, { recursive: true });
     }
     
-    // Buscar pg_dump
     const pgDumpPath = await findPgDump();
     console.log('[SCRIPT] Usando pg_dump:', pgDumpPath);
     
-    // Usar variables de entorno o valores por defecto
     const dbUser = process.env.DB_USER || 'postgres';
     const dbName = process.env.DB_NAME || 'inventario';
     const dbHost = process.env.DB_HOST || 'localhost';
@@ -132,7 +117,6 @@ async function ejecutarBackup(req, res, next) {
     
     console.log('[SCRIPT] Ejecutando:', command);
     
-    // Usar exec con opciones de entorno
     const { stdout, stderr } = await execPromise(command, {
       env: { ...process.env, PGPASSWORD: process.env.DB_PASSWORD }
     });
@@ -146,7 +130,6 @@ async function ejecutarBackup(req, res, next) {
       });
     }
     
-    // Verificar que el archivo se creó
     if (!fs.existsSync(backupPath)) {
       throw new Error('No se pudo crear el archivo de respaldo');
     }
@@ -174,17 +157,12 @@ async function ejecutarBackup(req, res, next) {
   }
 }
 
-
-// Listar archivos de exportación disponibles
 async function listarExportaciones(req, res, next) {
   try {
     const exportDir = path.join(__dirname, '../../exports');
     
     if (!fs.existsSync(exportDir)) {
-      return res.json({
-        ok: true,
-        data: []
-      });
+      return res.json({ ok: true, data: [] });
     }
     
     const files = fs.readdirSync(exportDir).filter(f => f.endsWith('.xlsx'));
@@ -205,7 +183,6 @@ async function descargarExportacion(req, res, next) {
   try {
     const { filename } = req.params;
     
-    // Validar que el filename no tenga path traversal
     if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
       return res.status(400).json({
         ok: false,
@@ -222,22 +199,13 @@ async function descargarExportacion(req, res, next) {
       });
     }
     
-    // Leer el archivo como buffer
     const fileBuffer = fs.readFileSync(filePath);
     
-    // Verificar que es un Excel válido (primeros bytes)
-    const isExcel = fileBuffer[0] === 0x50 && fileBuffer[1] === 0x4B; // PK zip header
-    if (!isExcel) {
-      console.error('[SCRIPT] El archivo no parece ser un Excel válido:', filename);
-    }
-    
-    // Configurar headers para la descarga
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
     res.setHeader('Content-Length', fileBuffer.length);
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
     
-    // Enviar el buffer
     res.send(fileBuffer);
     
   } catch (error) {
@@ -245,24 +213,7 @@ async function descargarExportacion(req, res, next) {
     next(error);
   }
 }
-async function descargarExportacionMelissa(req, res, next) {
-  try {
-    const { filename } = req.params;
-    
-    const filePath = path.join(__dirname, '../../exports', filename);
-    
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({
-        ok: false,
-        message: 'Archivo no encontrado'
-      });
-    }
-    
-    res.download(filePath, filename);
-  } catch (error) {
-    next(error);
-  }
-}
+
 async function exportarJson(req, res, next) {
   try {
     const { getSqlServerPool } = require('../config/sqlserver');
@@ -301,12 +252,50 @@ async function exportarJson(req, res, next) {
   }
 }
 
+async function exportarExcelMelissa(req, res, next) {
+  try {
+    console.log('[SCRIPT] Ejecutando exportación de inventario Melissa...');
+    
+    const scriptPath = path.join(__dirname, '../../scripts/exportar-melissa.js');
+    const exportsDir = path.join(__dirname, '../../exports');
+    
+    // Ejecutar el script
+    const { stdout, stderr } = await execPromise(`node "${scriptPath}"`, {
+      timeout: 120000
+    });
+    
+    console.log('[SCRIPT] stdout:', stdout);
+    if (stderr) console.error('[SCRIPT] stderr:', stderr);
+    
+    // Buscar el archivo generado
+    const files = fs.readdirSync(exportsDir).filter(f => f.startsWith('inventario_melissa_') && f.endsWith('.xlsx'));
+    if (files.length === 0) {
+      return res.status(500).json({
+        ok: false,
+        message: 'No se pudo generar el archivo'
+      });
+    }
+    
+    // Tomar el archivo más reciente
+    const latestFile = files.sort().reverse()[0];
+    const filePath = path.join(exportsDir, latestFile);
+    
+    res.download(filePath, latestFile);
+    
+  } catch (error) {
+    console.error('[SCRIPT] Error:', error);
+    res.status(500).json({
+      ok: false,
+      message: 'Error al exportar inventario Melissa: ' + error.message
+    });
+  }
+}
 
 module.exports = {
   ejecutarExportarExcel,
   ejecutarBackup,
   listarExportaciones,
   descargarExportacion,
-  descargarExportacionMelissa,
-  exportarJson
+  exportarJson,
+  exportarExcelMelissa
 };
