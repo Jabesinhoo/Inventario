@@ -86,16 +86,16 @@ async function importConteoInicialExcel(req, res, next) {
     }
 
     // 🔥 BUSCAR ZONAS EXISTENTES (NO CREARLAS)
-    let zonaBodega = await Zona.findOne({ 
-      where: { 
+    let zonaBodega = await Zona.findOne({
+      where: {
         [Op.or]: [
           { codigo: 'BOD' },
           { nombre: 'Bodega Principal' }
         ]
-      }, 
-      transaction 
+      },
+      transaction
     });
-    
+
     if (!zonaBodega) {
       await transaction.rollback();
       return res.status(400).json({
@@ -103,17 +103,17 @@ async function importConteoInicialExcel(req, res, next) {
         message: 'No se encuentra la zona BODEGA. Verifica que exista en la base de datos.'
       });
     }
-    
-    let zonaExhibicion = await Zona.findOne({ 
-      where: { 
+
+    let zonaExhibicion = await Zona.findOne({
+      where: {
         [Op.or]: [
           { codigo: 'EXH' },
           { nombre: 'Exhibición' }
         ]
-      }, 
-      transaction 
+      },
+      transaction
     });
-    
+
     if (!zonaExhibicion) {
       await transaction.rollback();
       return res.status(400).json({
@@ -222,9 +222,9 @@ async function getConteoInicialResumen(req, res, next) {
     const data = await ConteoInicialDetalle.findAll({
       where: { inventarioId },
       include: [{ model: Zona, as: 'zona', attributes: ['id', 'nombre', 'codigo'] }],
+      attributes: ['id', 'inventarioId', 'zonaId', 'productoId', 'sku', 'codigoLeido', 'descripcionSnapshot', 'cantidadBodega', 'cantidadExhibicion', 'cantidadTotal', 'origenArchivo', 'createdAt', 'updatedAt'],
       order: [['zonaId', 'ASC'], ['sku', 'ASC']]
     });
-
     const productosMap = new Map();
 
     for (const item of data) {
