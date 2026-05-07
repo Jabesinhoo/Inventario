@@ -918,11 +918,19 @@ async function generarReconteoDesdeComparacion(req, res, next) {
   const transaction = await sequelize.transaction();
 
   try {
+    console.log('\n====== DEBUG generarReconteoDesdeComparacion BODY ======');
+console.log('Body recibido:', req.body);
+console.log('inventarioBaseId:', req.body.inventarioBaseId);
+console.log('inventarioComparadoId:', req.body.inventarioComparadoId);
+console.log('zonaBaseId:', req.body.zonaBaseId);
+console.log('zonaComparadaId:', req.body.zonaComparadaId);
+console.log('======================================================\n');
     const {
       inventarioBaseId,
       inventarioComparadoId,
       zonaBaseId,
       zonaComparadaId
+      
     } = req.body;
 
     const inventarioBaseIdNum = Number(inventarioBaseId);
