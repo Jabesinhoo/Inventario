@@ -211,75 +211,99 @@ export default function EscaneoPage() {
     }
   }, [setFlashMessage, rondaIdFromUrl]);
 
-  const loadRoundContext = useCallback(async (ronda) => {
-    if (!ronda?.id) {
-      setPendientes([]);
-      setResumen([]);
-      setHistory([]);
-      setStats(null);
-      return;
-    }
+    const loadRoundContext = useCallback(async (ronda) => {
+  if (!ronda?.id) {
+    setPendientes([]);
+    setResumen([]);
+    setHistory([]);
+    setStats(null);
+    return;
+  }
 
-    setSyncing(true);
+  setSyncing(true);
 
-    try {
-      const requests = [
-        getResumenLecturas({ rondaId: ronda.id }),
-        getHistorialLecturas({ rondaId: ronda.id, limit: 50 }),
-        ronda.tipoRonda === 'reconteo'
-          ? getPendientesRonda(ronda.id)
-          : Promise.resolve({ pendientes: [] }),
-        ronda.asignacion?.grupoId || ronda.asignacion?.grupo?.id
-          ? getEstadisticasGrupo({
+  try {
+    const requests = [
+      getResumenLecturas({ rondaId: ronda.id }),
+      getHistorialLecturas({ rondaId: ronda.id, limit: 50 }),
+      ronda.tipoRonda === 'reconteo'
+        ? getPendientesRonda(ronda.id)
+        : Promise.resolve({ pendientes: [] }),
+      ronda.asignacion?.grupoId || ronda.asignacion?.grupo?.id
+        ? getEstadisticasGrupo({
             rondaId: ronda.id,
             grupoId: ronda.asignacion?.grupoId || ronda.asignacion?.grupo?.id
           })
-          : Promise.resolve(null)
-      ];
+        : Promise.resolve(null)
+    ];
 
-      const [resumenRes, historyRes, pendientesRes, statsRes] =
-        await Promise.allSettled(requests);
+    const [resumenRes, historyRes, pendientesRes, statsRes] =
+      await Promise.allSettled(requests);
 
-      const resumenRows =
-        resumenRes.status === 'fulfilled'
-          ? extractArray(resumenRes.value, ['resumen', 'items'])
-          : [];
+    const resumenRows =
+      resumenRes.status === 'fulfilled'
+        ? extractArray(resumenRes.value, ['resumen', 'items'])
+        : [];
 
-      const historyRows =
-        historyRes.status === 'fulfilled'
-          ? onlyValidLecturas(extractArray(historyRes.value, ['historial', 'lecturas', 'history']))
-          : [];
+    const historyRows =
+      historyRes.status === 'fulfilled'
+        ? onlyValidLecturas(
+            extractArray(historyRes.value, ['historial', 'lecturas', 'history'])
+          )
+        : [];
 
-      const pendientesRows =
-        pendientesRes.status === 'fulfilled'
-          ? onlyPendingDiscrepancias(extractArray(pendientesRes.value, ['pendientes']))
-          : [];
+    let pendientesRows = [];
 
-      setResumen(resumenRows);
-      setHistory(historyRows);
-      setPendientes(pendientesRows);
-      setStats(statsRes.status === 'fulfilled' ? extractObject(statsRes.value) : null);
+    if (pendientesRes.status === 'fulfilled') {
+      const rawPendientesValue = pendientesRes.value;
 
-      if (pendientesRes.status === 'rejected' && ronda.tipoRonda === 'reconteo') {
-        setFlashMessage(
-          pendientesRes.reason?.response?.data?.message ||
-          'No se pudieron cargar los pendientes del reconteo',
-          'warning'
-        );
-      }
+      pendientesRows =
+        rawPendientesValue?.pendientes ||
+        rawPendientesValue?.data?.pendientes ||
+        rawPendientesValue?.data?.data?.pendientes ||
+        extractArray(rawPendientesValue, ['pendientes']) ||
+        [];
 
-      if (resumenRes.status === 'rejected' || historyRes.status === 'rejected') {
-        setFlashMessage(
-          'Se cargó la ronda, pero algunas secciones no pudieron sincronizarse',
-          'warning'
-        );
-      }
-    } catch (err) {
-      setFlashMessage('No se pudo sincronizar la información de la ronda', 'error');
-    } finally {
-      setSyncing(false);
+      // No aplicar onlyPendingDiscrepancias aquí.
+      // El backend getPendientesRonda ya debe devolver solo los pendientes válidos.
+      pendientesRows = Array.isArray(pendientesRows) ? pendientesRows : [];
+
+      console.log('🟡 DEBUG pendientes reconteo:', {
+        rondaId: ronda.id,
+        inventarioId: ronda.inventarioId,
+        zonaId: ronda.zonaId,
+        totalRecibidos: pendientesRows.length,
+        skus: pendientesRows.map((item) => item.sku),
+        raw: rawPendientesValue
+      });
     }
-  }, [setFlashMessage]);
+
+    setResumen(resumenRows);
+    setHistory(historyRows);
+    setPendientes(pendientesRows);
+    setStats(statsRes.status === 'fulfilled' ? extractObject(statsRes.value) : null);
+
+    if (pendientesRes.status === 'rejected' && ronda.tipoRonda === 'reconteo') {
+      setFlashMessage(
+        pendientesRes.reason?.response?.data?.message ||
+          'No se pudieron cargar los pendientes del reconteo',
+        'warning'
+      );
+    }
+
+    if (resumenRes.status === 'rejected' || historyRes.status === 'rejected') {
+      setFlashMessage(
+        'Se cargó la ronda, pero algunas secciones no pudieron sincronizarse',
+        'warning'
+      );
+    }
+  } catch (err) {
+    console.error('❌ Error en loadRoundContext:', err);
+    setFlashMessage('No se pudo sincronizar la información de la ronda', 'error');
+  } finally {
+    setSyncing(false);
+  }
+}, [setFlashMessage]);
 
   useEffect(() => {
     loadInventariosData();
