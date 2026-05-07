@@ -43,12 +43,16 @@ export async function exportarDiferenciasExcel(params) {
 }
 
 export async function generarRondaReconteoDesdeComparacion(data) {
-  const response = await api.post('/diferencias/reconteo', {
+  const payload = {
     inventarioBaseId: data.inventarioBaseId,
     inventarioComparadoId: data.inventarioComparadoId,
-    zonaBaseId: data.zonaBaseId || null,
-    zonaComparadaId: data.zonaComparadaId || null
-  });
+    zonaBaseId: data.zonaBaseId ?? data.zonaId ?? null,
+    zonaComparadaId: data.zonaComparadaId ?? data.zonaId ?? null
+  };
+
+  console.log('🚨 POST /diferencias/reconteo payload:', payload);
+
+  const response = await api.post('/diferencias/reconteo', payload);
 
   return response.data.data;
 }

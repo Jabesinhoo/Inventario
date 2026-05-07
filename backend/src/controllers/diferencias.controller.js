@@ -933,13 +933,18 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       inventarioBaseId,
       inventarioComparadoId,
       zonaBaseId,
-      zonaComparadaId
+      zonaComparadaId,
+      zonaId
     } = req.body;
 
     const inventarioBaseIdNum = Number(inventarioBaseId);
     const inventarioComparadoIdNum = Number(inventarioComparadoId);
-    const zonaBaseIdNum = zonaBaseId ? Number(zonaBaseId) : null;
-    const zonaComparadaIdNum = zonaComparadaId ? Number(zonaComparadaId) : null;
+
+    const zonaBaseRaw = zonaBaseId ?? zonaId ?? null;
+    const zonaComparadaRaw = zonaComparadaId ?? zonaId ?? null;
+
+    const zonaBaseIdNum = zonaBaseRaw ? Number(zonaBaseRaw) : null;
+    const zonaComparadaIdNum = zonaComparadaRaw ? Number(zonaComparadaRaw) : null;
 
     console.log('🔥 generarReconteoDesdeComparacion - Parámetros:', {
       inventarioBaseId: inventarioBaseIdNum,
