@@ -106,7 +106,7 @@ async function getRondaConAcceso(rondaId, req) {
       {
         model: AsignacionRonda,
         as: 'asignacion',
-        include: [{ model: Grupo, as: 'grupo', attributes: ['id', 'nombre'] }]
+        include: [{ model: Grupo, as: 'grupo', attributes: ['id', 'nombre', 'inventarioId'] }]
       }
     ]
   });
@@ -137,7 +137,7 @@ async function getRondaConAcceso(rondaId, req) {
     return 'FORBIDDEN';
   }
 
-  const acceso = await AsignacionRonda.findOne({
+  const accesoPorAsignacionRonda = await AsignacionRonda.findOne({
     where: {
       rondaId: ronda.id,
       grupoId: {
@@ -146,7 +146,32 @@ async function getRondaConAcceso(rondaId, req) {
     }
   });
 
-  return acceso ? ronda : 'FORBIDDEN';
+  if (accesoPorAsignacionRonda) {
+    return ronda;
+  }
+
+  /*
+    Para reconteos generados desde Diferencias:
+    aunque asignaciones_ronda solo permita un grupo principal,
+    cualquier grupo asignado al mismo inventario/zona puede ver la ronda.
+  */
+  if (ronda.tipoRonda === 'reconteo') {
+    const accesoPorZona = await AsignacionConteo.findOne({
+      where: {
+        inventarioId: ronda.inventarioId,
+        zonaId: ronda.zonaId,
+        grupoId: {
+          [Op.in]: grupoIds
+        }
+      }
+    });
+
+    if (accesoPorZona) {
+      return ronda;
+    }
+  }
+
+  return 'FORBIDDEN';
 }
 
 // ==================== CRUD BÁSICO ====================
@@ -1398,7 +1423,7 @@ async function getMisRondasParaEscaneo(req, res, next) {
 
     const rondas = await sequelize.query(
       `
-      SELECT
+      SELECT DISTINCT ON (r.id)
         r.id,
         r."inventarioId",
         r."zonaId",
@@ -1415,19 +1440,31 @@ async function getMisRondasParaEscaneo(req, res, next) {
         g.id as "asignacion.grupo.id",
         g.nombre as "asignacion.grupo.nombre",
         g."inventarioId" as "asignacion.grupo.inventarioId"
-      FROM usuario_grupo ug
-      JOIN asignaciones_ronda ar
-        ON ar."grupoId" = ug."grupoId"
-      JOIN rondas_conteo r
-        ON r.id = ar."rondaId"
-      JOIN grupos g
-        ON g.id = ar."grupoId"
+      FROM rondas_conteo r
       JOIN zonas z
         ON z.id = r."zonaId"
-      WHERE ug."usuarioId" = :usuarioId
-        AND r."inventarioId" = :inventarioId
+      JOIN usuario_grupo ug
+        ON ug."usuarioId" = :usuarioId
+      JOIN grupos g
+        ON g.id = ug."grupoId"
+      LEFT JOIN asignaciones_ronda ar
+        ON ar."rondaId" = r.id
+       AND ar."grupoId" = ug."grupoId"
+      LEFT JOIN asignaciones_conteo ac
+        ON ac."inventarioId" = r."inventarioId"
+       AND ac."zonaId" = r."zonaId"
+       AND ac."grupoId" = ug."grupoId"
+      WHERE r."inventarioId" = :inventarioId
         AND r.estado IN ('borrador', 'activa', 'pausada')
+        AND (
+          ar.id IS NOT NULL
+          OR (
+            r."tipoRonda" = 'reconteo'
+            AND ac.id IS NOT NULL
+          )
+        )
       ORDER BY
+        r.id,
         CASE r.estado
           WHEN 'activa' THEN 1
           WHEN 'pausada' THEN 2

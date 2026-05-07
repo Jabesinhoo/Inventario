@@ -1100,89 +1100,85 @@ async function generarReconteoDesdeComparacion(req, res, next) {
     console.log(
       `✅ Ronda de reconteo creada: ID ${nuevaRonda.id}, Número ${nuevoNumeroRonda}, Inventario ${inventarioObjetivoId}, Zona ${zonaObjetivoId}`
     );
-
-    /*
-      Asignar la ronda a los grupos del inventario comparado.
-
-      EscaneoPage/getMisRondasParaEscaneo filtra por usuario_grupo + asignaciones_ronda.
-      Si el usuario no pertenece a un grupo asignado aquí, no verá la ronda.
-    */
     const {
       Grupo,
       AsignacionRonda,
       AsignacionConteo
     } = require('../models');
 
-    let gruposAsignadosRonda = await Grupo.findAll({
+    const asignacionConteoPrincipal = await AsignacionConteo.findOne({
       where: {
-        inventarioId: inventarioObjetivoId
+        inventarioId: inventarioObjetivoId,
+        zonaId: zonaObjetivoId
+      },
+      order: [
+        ['conteoTipo', 'ASC'],
+        ['id', 'ASC']
+      ],
+      transaction
+    });
+
+    let grupoPrincipalAsignado = null;
+
+    if (asignacionConteoPrincipal?.grupoId) {
+      grupoPrincipalAsignado = await Grupo.findByPk(asignacionConteoPrincipal.grupoId, {
+        transaction
+      });
+    }
+
+    if (!grupoPrincipalAsignado) {
+      grupoPrincipalAsignado = await Grupo.findOne({
+        where: {
+          inventarioId: inventarioObjetivoId
+        },
+        order: [['id', 'ASC']],
+        transaction
+      });
+    }
+
+    if (!grupoPrincipalAsignado) {
+      await transaction.rollback();
+      return res.status(400).json({
+        ok: false,
+        message: `No se encontró grupo para asignar la ronda en el inventario comparado ${inventarioObjetivoId}.`
+      });
+    }
+
+    /*
+      OJO:
+      asignaciones_ronda tiene unique por rondaId.
+      Por eso SOLO se crea una asignación principal.
+      Los otros grupos verán la ronda mediante getMisRondasParaEscaneo usando asignaciones_conteo.
+    */
+    const asignacionExistente = await AsignacionRonda.findOne({
+      where: {
+        rondaId: nuevaRonda.id
       },
       transaction
     });
 
-    if (!gruposAsignadosRonda.length) {
-      const asignacionesConteoObjetivo = await AsignacionConteo.findAll({
-        where: {
-          inventarioId: inventarioObjetivoId,
-          zonaId: zonaObjetivoId
-        },
-        order: [
-          ['conteoTipo', 'ASC'],
-          ['id', 'ASC']
-        ],
-        transaction
-      });
-
-      const grupoIdsParaAsignar = [
-        ...new Set(
-          asignacionesConteoObjetivo
-            .map((item) => Number(item.grupoId))
-            .filter(Boolean)
-        )
-      ];
-
-      if (grupoIdsParaAsignar.length > 0) {
-        gruposAsignadosRonda = await Grupo.findAll({
-          where: {
-            id: {
-              [Op.in]: grupoIdsParaAsignar
-            }
-          },
-          transaction
-        });
-      }
-    }
-
-    if (!gruposAsignadosRonda.length) {
-      await transaction.rollback();
-      return res.status(400).json({
-        ok: false,
-        message: `No se encontraron grupos para asignar la ronda en el inventario comparado ${inventarioObjetivoId}.`
-      });
-    }
-
-    for (const grupoAsignado of gruposAsignadosRonda) {
-      await AsignacionRonda.findOrCreate({
-        where: {
-          rondaId: nuevaRonda.id,
-          grupoId: grupoAsignado.id
-        },
-        defaults: {
-          rondaId: nuevaRonda.id,
-          grupoId: grupoAsignado.id,
+    if (asignacionExistente) {
+      await asignacionExistente.update(
+        {
+          grupoId: grupoPrincipalAsignado.id,
           estado: 'asignada'
         },
-        transaction
-      });
-
-      console.log(
-        `✅ Ronda ${nuevaRonda.id} asignada al grupo ${grupoAsignado.id} - ${grupoAsignado.nombre}`
+        { transaction }
+      );
+    } else {
+      await AsignacionRonda.create(
+        {
+          rondaId: nuevaRonda.id,
+          grupoId: grupoPrincipalAsignado.id,
+          estado: 'asignada'
+        },
+        { transaction }
       );
     }
 
-    const grupoPrincipalAsignado = gruposAsignadosRonda[0];
-
-    let creadas = 0;
+    console.log(
+      `✅ Ronda ${nuevaRonda.id} asignada como principal al grupo ${grupoPrincipalAsignado.id} - ${grupoPrincipalAsignado.nombre}`
+    );
     let actualizadas = 0;
 
     for (const diferencia of diferencias) {
@@ -1296,10 +1292,10 @@ async function generarReconteoDesdeComparacion(req, res, next) {
         discrepanciasActualizadas: actualizadas,
         pareja: pareja
           ? {
-              id: pareja.id,
-              estado: pareja.estado,
-              rondasGeneradas: pareja.rondasReconteoGeneradas
-            }
+            id: pareja.id,
+            estado: pareja.estado,
+            rondasGeneradas: pareja.rondasReconteoGeneradas
+          }
           : null
       }
     });
