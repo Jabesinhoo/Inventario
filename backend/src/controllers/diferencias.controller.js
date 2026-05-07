@@ -925,7 +925,10 @@ async function generarReconteoDesdeComparacion(req, res, next) {
     console.log('zonaBaseId:', req.body.zonaBaseId);
     console.log('zonaComparadaId:', req.body.zonaComparadaId);
     console.log('======================================================\n');
+    console.log('🚨🚨🚨 ENDPOINT /diferencias/reconteo - FUNCIÓN COMPARADO ACTIVA 🚨🚨🚨');
 
+    console.log('\n====== DEBUG generarReconteoDesdeComparacion BODY ======');
+    console.log('Body recibido:', req.body);
     const {
       inventarioBaseId,
       inventarioComparadoId,
@@ -1226,11 +1229,7 @@ async function generarReconteoDesdeComparacion(req, res, next) {
 
     console.log(`📊 Resumen: ${creadas} creadas, ${actualizadas} actualizadas`);
 
-    const pareja = await parejaService.crearOPareja(
-      inventarioReferenciaId,
-      inventarioObjetivoId,
-      zonaReferenciaId
-    );
+ 
 
     if (pareja) {
       await pareja.update(
@@ -1270,10 +1269,10 @@ async function generarReconteoDesdeComparacion(req, res, next) {
         discrepanciasActualizadas: actualizadas,
         pareja: pareja
           ? {
-              id: pareja.id,
-              estado: pareja.estado,
-              rondasGeneradas: pareja.rondasReconteoGeneradas
-            }
+            id: pareja.id,
+            estado: pareja.estado,
+            rondasGeneradas: pareja.rondasReconteoGeneradas
+          }
           : null
       }
     });
