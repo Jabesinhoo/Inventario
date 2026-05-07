@@ -1096,34 +1096,22 @@ async function generarReconteoDesdeComparacion(req, res, next) {
 
     console.log(`📊 Resumen: ${creadas} creadas, ${actualizadas} actualizadas`);
 
-    const [pareja, created] = await ParejaInventario.findOrCreate({
-      where: {
-        inventarioBaseId: inventarioBaseIdNum,
-        inventarioComparadoId: inventarioComparadoIdNum,
-        zonaId: zonaFinal
-      },
-      defaults: {
-        inventarioBaseId: inventarioBaseIdNum,
-        inventarioComparadoId: inventarioComparadoIdNum,
-        zonaId: zonaFinal,
-        estado: 'en_reconteo',
-        fechaComparacion: new Date(),
-        rondasReconteoGeneradas: 1
-      },
-      transaction
-    });
+    const pareja = await parejaService.crearOPareja(
+      inventarioBaseIdNum,
+      inventarioComparadoIdNum,
+      zonaFinal,
+      { transaction }
+    );
 
-    if (!created) {
-      await pareja.update(
-        {
-          estado: 'en_reconteo',
-          rondasReconteoGeneradas: Number(pareja.rondasReconteoGeneradas || 0) + 1,
-          fechaComparacion: new Date(),
-          fechaCompletada: null
-        },
-        { transaction }
-      );
-    }
+    await pareja.update(
+      {
+        estado: 'en_reconteo',
+        rondasReconteoGeneradas: Number(pareja.rondasReconteoGeneradas || 0) + 1,
+        fechaComparacion: new Date(),
+        fechaCompletada: null
+      },
+      { transaction }
+    );
 
     await transaction.commit();
 
