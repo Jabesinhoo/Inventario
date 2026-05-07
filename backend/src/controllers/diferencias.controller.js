@@ -999,7 +999,8 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       });
     }
 
-    // Inventario base = referencia. Inventario comparado = donde se hace el reconteo.
+    // Inventario base = referencia.
+    // Inventario comparado = inventario donde se hará el reconteo.
     const inventarioReferenciaId = inventarioBaseIdNum;
     const zonaReferenciaId = zonaBaseIdNum;
 
@@ -1100,12 +1101,19 @@ async function generarReconteoDesdeComparacion(req, res, next) {
     console.log(
       `✅ Ronda de reconteo creada: ID ${nuevaRonda.id}, Número ${nuevoNumeroRonda}, Inventario ${inventarioObjetivoId}, Zona ${zonaObjetivoId}`
     );
+
     const {
       Grupo,
       AsignacionRonda,
       AsignacionConteo
     } = require('../models');
 
+    /*
+      asignaciones_ronda tiene unique por rondaId.
+      Por eso SOLO se crea una asignación principal.
+      Si quieres que otros grupos vean esta ronda, getMisRondasParaEscaneo debe permitir
+      acceso por asignaciones_conteo para rondas tipo reconteo.
+    */
     const asignacionConteoPrincipal = await AsignacionConteo.findOne({
       where: {
         inventarioId: inventarioObjetivoId,
@@ -1144,12 +1152,6 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       });
     }
 
-    /*
-      OJO:
-      asignaciones_ronda tiene unique por rondaId.
-      Por eso SOLO se crea una asignación principal.
-      Los otros grupos verán la ronda mediante getMisRondasParaEscaneo usando asignaciones_conteo.
-    */
     const asignacionExistente = await AsignacionRonda.findOne({
       where: {
         rondaId: nuevaRonda.id
@@ -1179,6 +1181,8 @@ async function generarReconteoDesdeComparacion(req, res, next) {
     console.log(
       `✅ Ronda ${nuevaRonda.id} asignada como principal al grupo ${grupoPrincipalAsignado.id} - ${grupoPrincipalAsignado.nombre}`
     );
+
+    let creadas = 0;
     let actualizadas = 0;
 
     for (const diferencia of diferencias) {
@@ -1286,16 +1290,16 @@ async function generarReconteoDesdeComparacion(req, res, next) {
         zonaBaseId: zonaReferenciaId,
         zonaComparadaId: zonaObjetivoId,
         grupoId: grupoPrincipalAsignado.id,
-        grupoIds: gruposAsignadosRonda.map((grupo) => grupo.id),
+        grupoIds: [grupoPrincipalAsignado.id],
         totalDiferencias: diferencias.length,
         discrepanciasCreadas: creadas,
         discrepanciasActualizadas: actualizadas,
         pareja: pareja
           ? {
-            id: pareja.id,
-            estado: pareja.estado,
-            rondasGeneradas: pareja.rondasReconteoGeneradas
-          }
+              id: pareja.id,
+              estado: pareja.estado,
+              rondasGeneradas: pareja.rondasReconteoGeneradas
+            }
           : null
       }
     });
