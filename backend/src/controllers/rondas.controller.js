@@ -99,13 +99,19 @@ async function getTotalEscaneosRonda(rondaId, transaction = null) {
   return Number(total || 0);
 }
 
-async function getRondaConAcceso(rondaId, req) {
+async function getRondaConAcceso(rondaId, req, extraOptions = {}) {
   const ronda = await RondaConteo.findByPk(rondaId, {
+    ...extraOptions,
     include: [
-      { model: Zona, as: 'zona', attributes: ['id', 'nombre', 'codigo'] },
+      {
+        model: Zona,
+        as: 'zona',
+        attributes: ['id', 'nombre', 'codigo']
+      },
       {
         model: AsignacionRonda,
         as: 'asignacion',
+        required: false,
         include: [
           {
             model: Grupo,
@@ -117,9 +123,7 @@ async function getRondaConAcceso(rondaId, req) {
     ]
   });
 
-  if (!ronda) {
-    return null;
-  }
+  if (!ronda) return null;
 
   if (req.canViewAllGroups) {
     return ronda;
@@ -127,14 +131,12 @@ async function getRondaConAcceso(rondaId, req) {
 
   const gruposUsuario = await sequelize.query(
     `
-    SELECT ug."grupoId"
+    SELECT DISTINCT ug."grupoId"
     FROM usuario_grupo ug
     WHERE ug."usuarioId" = :usuarioId
     `,
     {
-      replacements: {
-        usuarioId: req.user.id
-      },
+      replacements: { usuarioId: req.user.id },
       type: QueryTypes.SELECT
     }
   );
@@ -174,11 +176,36 @@ async function getRondaConAcceso(rondaId, req) {
     if (accesoPorAsignacionConteo) {
       return ronda;
     }
+
+    const accesoPorDiscrepancias = await DiscrepanciaConteo.findOne({
+      where: {
+        inventarioId: ronda.inventarioId,
+        zonaId: ronda.zonaId,
+        rondaReconteoId: ronda.id,
+        estado: {
+          [Op.in]: ['pendiente_reconteo', 'reconteo_en_proceso', 'pendiente']
+        }
+      }
+    });
+
+    if (accesoPorDiscrepancias) {
+      const grupoMismoInventario = await Grupo.findOne({
+        where: {
+          id: {
+            [Op.in]: grupoIds
+          },
+          inventarioId: ronda.inventarioId
+        }
+      });
+
+      if (grupoMismoInventario) {
+        return ronda;
+      }
+    }
   }
 
   return 'FORBIDDEN';
 }
-
 // ==================== CRUD BÁSICO ====================
 
 async function createRonda(req, res, next) {
@@ -1426,8 +1453,19 @@ async function getMisRondasParaEscaneo(req, res, next) {
       });
     }
 
+    console.log('🟣 getMisRondasParaEscaneo', {
+      usuarioId: req.user.id,
+      inventarioId,
+      canViewAllGroups: Boolean(req.canViewAllGroups)
+    });
+
     const rondas = await sequelize.query(
       `
+      WITH mis_grupos AS (
+        SELECT DISTINCT ug."grupoId"
+        FROM usuario_grupo ug
+        WHERE ug."usuarioId" = :usuarioId
+      )
       SELECT DISTINCT ON (r.id)
         r.id,
         r."inventarioId",
@@ -1444,38 +1482,62 @@ async function getMisRondasParaEscaneo(req, res, next) {
         z.nombre AS "zona.nombre",
         z.codigo AS "zona.codigo",
 
-        COALESCE(ar."grupoId", ug."grupoId") AS "asignacion.grupoId",
-        g.id AS "asignacion.grupo.id",
-        g.nombre AS "asignacion.grupo.nombre",
-        g."inventarioId" AS "asignacion.grupo.inventarioId"
+        COALESCE(g_mio.id, g_principal.id) AS "asignacion.grupo.id",
+        COALESCE(g_mio.nombre, g_principal.nombre) AS "asignacion.grupo.nombre",
+        COALESCE(g_mio."inventarioId", g_principal."inventarioId") AS "asignacion.grupo.inventarioId"
 
       FROM rondas_conteo r
 
       INNER JOIN zonas z
         ON z.id = r."zonaId"
 
-      INNER JOIN usuario_grupo ug
-        ON ug."usuarioId" = :usuarioId
+      LEFT JOIN asignaciones_ronda ar_principal
+        ON ar_principal."rondaId" = r.id
 
-      INNER JOIN grupos g
-        ON g.id = ug."grupoId"
+      LEFT JOIN grupos g_principal
+        ON g_principal.id = ar_principal."grupoId"
 
-      LEFT JOIN asignaciones_ronda ar
-        ON ar."rondaId" = r.id
-       AND ar."grupoId" = ug."grupoId"
+      LEFT JOIN asignaciones_ronda ar_mia
+        ON ar_mia."rondaId" = r.id
+       AND ar_mia."grupoId" IN (SELECT "grupoId" FROM mis_grupos)
 
-      LEFT JOIN asignaciones_conteo ac
-        ON ac."inventarioId" = r."inventarioId"
-       AND ac."zonaId" = r."zonaId"
-       AND ac."grupoId" = ug."grupoId"
+      LEFT JOIN asignaciones_conteo ac_mia
+        ON ac_mia."inventarioId" = r."inventarioId"
+       AND ac_mia."zonaId" = r."zonaId"
+       AND ac_mia."grupoId" IN (SELECT "grupoId" FROM mis_grupos)
+
+      LEFT JOIN grupos g_mio
+        ON g_mio.id = COALESCE(ar_mia."grupoId", ac_mia."grupoId")
 
       WHERE r."inventarioId" = :inventarioId
         AND r.estado IN ('borrador', 'activa', 'pausada')
         AND (
-          ar.id IS NOT NULL
+          :canViewAllGroups = true
+
+          OR ar_mia.id IS NOT NULL
+
           OR (
             r."tipoRonda" = 'reconteo'
-            AND ac.id IS NOT NULL
+            AND ac_mia.id IS NOT NULL
+          )
+
+          OR (
+            r."tipoRonda" = 'reconteo'
+            AND EXISTS (
+              SELECT 1
+              FROM discrepancias_conteo d
+              WHERE d."rondaReconteoId" = r.id
+                AND d."inventarioId" = r."inventarioId"
+                AND d."zonaId" = r."zonaId"
+                AND d.estado IN ('pendiente_reconteo', 'reconteo_en_proceso', 'pendiente')
+            )
+            AND EXISTS (
+              SELECT 1
+              FROM grupos g2
+              INNER JOIN mis_grupos mg2
+                ON mg2."grupoId" = g2.id
+              WHERE g2."inventarioId" = r."inventarioId"
+            )
           )
         )
 
@@ -1492,11 +1554,22 @@ async function getMisRondasParaEscaneo(req, res, next) {
       {
         replacements: {
           usuarioId: req.user.id,
-          inventarioId
+          inventarioId,
+          canViewAllGroups: Boolean(req.canViewAllGroups)
         },
         type: QueryTypes.SELECT
       }
     );
+
+    console.log('🟣 Rondas visibles para escaneo:', rondas.map((r) => ({
+      id: r.id,
+      inventarioId: r.inventarioId,
+      zonaId: r.zonaId,
+      tipoRonda: r.tipoRonda,
+      estado: r.estado,
+      grupoId: r['asignacion.grupo.id'],
+      grupo: r['asignacion.grupo.nombre']
+    })));
 
     const data = rondas.map((row) => ({
       id: row.id,
@@ -1515,7 +1588,7 @@ async function getMisRondasParaEscaneo(req, res, next) {
         codigo: row['zona.codigo']
       },
       asignacion: {
-        grupoId: row['asignacion.grupoId'],
+        grupoId: row['asignacion.grupo.id'],
         grupo: {
           id: row['asignacion.grupo.id'],
           nombre: row['asignacion.grupo.nombre'],
