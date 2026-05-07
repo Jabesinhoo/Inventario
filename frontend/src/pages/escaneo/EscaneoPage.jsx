@@ -118,6 +118,47 @@ export default function EscaneoPage() {
     return new Date(value).toLocaleTimeString();
   };
 
+  const unwrapData = (value) => {
+    if (value?.data?.data !== undefined) return value.data.data;
+    if (value?.data !== undefined) return value.data;
+    return value;
+  };
+
+  const extractArray = (value, keys = []) => {
+    const unwrapped = unwrapData(value);
+
+    if (Array.isArray(unwrapped)) return unwrapped;
+
+    for (const key of keys) {
+      if (Array.isArray(unwrapped?.[key])) return unwrapped[key];
+    }
+
+    return [];
+  };
+
+  const extractObject = (value) => {
+    const unwrapped = unwrapData(value);
+    return unwrapped && typeof unwrapped === 'object' ? unwrapped : null;
+  };
+
+  const onlyValidLecturas = (rows) => {
+    return (rows || []).filter((item) => item?.estado !== 'anulada');
+  };
+
+  const onlyPendingDiscrepancias = (rows) => {
+    return (rows || []).filter((item) => {
+      const estado = String(item?.estado || '').toLowerCase();
+      const diferencia = Number(item?.diferencia ?? item?.diferenciaOriginal ?? 0);
+
+      return (
+        diferencia !== 0 &&
+        estado !== 'resuelta' &&
+        estado !== 'cerrada' &&
+        estado !== 'anulada'
+      );
+    });
+  };
+
   async function loadInventariosData() {
     try {
       const data = await getInventarios();
@@ -143,12 +184,16 @@ export default function EscaneoPage() {
         return;
       }
 
-      const data = await getMisRondasParaEscaneo(inventarioId);
-      setRondas(data || []);
+      const raw = await getMisRondasParaEscaneo(inventarioId);
+      const data = extractArray(raw);
+      setRondas(data);
 
       const preferred =
         data.find((item) => Number(item.id) === Number(rondaIdFromUrl)) ||
         data.find((item) => Number(item.id) === Number(currentSelectedId)) ||
+        data.find((item) => item.tipoRonda === 'reconteo' && item.estado === 'activa') ||
+        data.find((item) => item.tipoRonda === 'reconteo' && item.estado === 'pausada') ||
+        data.find((item) => item.tipoRonda === 'reconteo' && item.estado === 'borrador') ||
         data.find((item) => item.estado === 'activa') ||
         data.find((item) => item.estado === 'pausada') ||
         data.find((item) => item.estado === 'borrador') ||
@@ -195,23 +240,25 @@ export default function EscaneoPage() {
       const [resumenRes, historyRes, pendientesRes, statsRes] =
         await Promise.allSettled(requests);
 
-      setResumen(
-        resumenRes.status === 'fulfilled' ? resumenRes.value || [] : []
-      );
+      const resumenRows =
+        resumenRes.status === 'fulfilled'
+          ? extractArray(resumenRes.value, ['resumen', 'items'])
+          : [];
 
-      setHistory(
-        historyRes.status === 'fulfilled' ? historyRes.value || [] : []
-      );
+      const historyRows =
+        historyRes.status === 'fulfilled'
+          ? onlyValidLecturas(extractArray(historyRes.value, ['historial', 'lecturas', 'history']))
+          : [];
 
-      setPendientes(
+      const pendientesRows =
         pendientesRes.status === 'fulfilled'
-          ? pendientesRes.value?.pendientes || []
-          : []
-      );
+          ? onlyPendingDiscrepancias(extractArray(pendientesRes.value, ['pendientes']))
+          : [];
 
-      setStats(
-        statsRes.status === 'fulfilled' ? statsRes.value || null : null
-      );
+      setResumen(resumenRows);
+      setHistory(historyRows);
+      setPendientes(pendientesRows);
+      setStats(statsRes.status === 'fulfilled' ? extractObject(statsRes.value) : null);
 
       if (pendientesRes.status === 'rejected' && ronda.tipoRonda === 'reconteo') {
         setFlashMessage(
@@ -246,16 +293,9 @@ export default function EscaneoPage() {
 
   useEffect(() => {
     if (selectedInventario) {
-      loadRondasData(selectedInventario, selectedRondaId);
-    }
-  }, [selectedInventario, selectedRondaId, loadRondasData]);
-
-  useEffect(() => {
-    if (!isContador) return;
-    if (selectedInventario) {
       loadRondasData(selectedInventario, rondaIdFromUrl || null);
     }
-  }, [isContador, selectedInventario, loadRondasData, rondaIdFromUrl]);
+  }, [selectedInventario, rondaIdFromUrl, loadRondasData]);
 
   useEffect(() => {
     if (selectedRonda) {
@@ -501,6 +541,7 @@ export default function EscaneoPage() {
 
     try {
       await anularLectura(lecturaId);
+      setHistory((prev) => prev.filter((lectura) => Number(lectura.id) !== Number(lecturaId)));
       setFlashMessage('Lectura anulada correctamente', 'success');
       await loadRoundContext(selectedRonda);
     } catch (err) {
@@ -609,7 +650,7 @@ export default function EscaneoPage() {
                 <label>Ronda de trabajo</label>
                 <select
                   value={selectedRondaId || ''}
-                  onChange={(e) => setSelectedRondaId(Number(e.target.value))}
+                  onChange={(e) => setSelectedRondaId(e.target.value ? Number(e.target.value) : '')}
                   disabled={rondas.length === 0}
                 >
                   <option value="">Selecciona una ronda</option>
@@ -868,7 +909,11 @@ export default function EscaneoPage() {
                   </div>
 
                   {pendientes.length === 0 ? (
-                    <div className="escaneo-empty">No hay pendientes para esta ronda.</div>
+                    <div className="escaneo-empty">
+                      No hay pendientes para esta ronda.
+                      <br />
+                      <small>Ronda #{selectedRonda.id} · Zona {selectedRonda.zonaId || zonaRonda?.id || '—'}</small>
+                    </div>
                   ) : (
                     <div className="pending-list">
                       {pendientes.slice(0, 12).map((item) => (
