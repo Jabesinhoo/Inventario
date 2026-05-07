@@ -918,17 +918,11 @@ async function generarReconteoDesdeComparacion(req, res, next) {
   const transaction = await sequelize.transaction();
 
   try {
-    console.log('\n====== DEBUG generarReconteoDesdeComparacion BODY ======');
-    console.log('Body recibido:', req.body);
-    console.log('inventarioBaseId:', req.body.inventarioBaseId);
-    console.log('inventarioComparadoId:', req.body.inventarioComparadoId);
-    console.log('zonaBaseId:', req.body.zonaBaseId);
-    console.log('zonaComparadaId:', req.body.zonaComparadaId);
-    console.log('======================================================\n');
     console.log('🚨🚨🚨 ENDPOINT /diferencias/reconteo - FUNCIÓN COMPARADO ACTIVA 🚨🚨🚨');
-
     console.log('\n====== DEBUG generarReconteoDesdeComparacion BODY ======');
     console.log('Body recibido:', req.body);
+    console.log('======================================================\n');
+
     const {
       inventarioBaseId,
       inventarioComparadoId,
@@ -940,6 +934,7 @@ async function generarReconteoDesdeComparacion(req, res, next) {
     const inventarioBaseIdNum = Number(inventarioBaseId);
     const inventarioComparadoIdNum = Number(inventarioComparadoId);
 
+    // Compatibilidad: si el frontend viejo manda solo zonaId, úsala para ambas zonas.
     const zonaBaseRaw = zonaBaseId ?? zonaId ?? null;
     const zonaComparadaRaw = zonaComparadaId ?? zonaId ?? null;
 
@@ -1004,13 +999,7 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       });
     }
 
-    /*
-      IMPORTANTE:
-      - Inventario base = referencia.
-      - Inventario comparado = inventario donde se debe hacer el reconteo.
-      Por eso la ronda nueva y las discrepancias se crean en:
-      inventarioComparadoId + zonaComparadaId.
-    */
+    // Inventario base = referencia. Inventario comparado = donde se hace el reconteo.
     const inventarioReferenciaId = inventarioBaseIdNum;
     const zonaReferenciaId = zonaBaseIdNum;
 
@@ -1046,7 +1035,6 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       });
     }
 
-    // Última ronda completa del inventario BASE, usada como referencia.
     const ultimaRondaReferenciaCompleta = await RondaConteo.findOne({
       where: {
         inventarioId: inventarioReferenciaId,
@@ -1066,7 +1054,6 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       });
     }
 
-    // Última ronda completa del inventario COMPARADO, desde donde nace el reconteo.
     const ultimaRondaObjetivoCompleta = await RondaConteo.findOne({
       where: {
         inventarioId: inventarioObjetivoId,
@@ -1115,26 +1102,25 @@ async function generarReconteoDesdeComparacion(req, res, next) {
     );
 
     /*
-   Asignar la ronda de reconteo a todos los grupos del inventario comparado.
- 
-   Esto evita que la ronda quede visible solo para un grupo equivocado.
-   El endpoint getMisRondasParaEscaneo filtra por usuario_grupo + asignaciones_ronda,
-   así que si el usuario no pertenece al grupo asignado aquí, no verá la ronda.
- */
+      Asignar la ronda a los grupos del inventario comparado.
+
+      EscaneoPage/getMisRondasParaEscaneo filtra por usuario_grupo + asignaciones_ronda.
+      Si el usuario no pertenece a un grupo asignado aquí, no verá la ronda.
+    */
     const {
       Grupo,
       AsignacionRonda,
       AsignacionConteo
     } = require('../models');
 
-    let gruposObjetivo = await Grupo.findAll({
+    let gruposAsignadosRonda = await Grupo.findAll({
       where: {
         inventarioId: inventarioObjetivoId
       },
       transaction
     });
 
-    if (!gruposObjetivo.length) {
+    if (!gruposAsignadosRonda.length) {
       const asignacionesConteoObjetivo = await AsignacionConteo.findAll({
         where: {
           inventarioId: inventarioObjetivoId,
@@ -1147,7 +1133,7 @@ async function generarReconteoDesdeComparacion(req, res, next) {
         transaction
       });
 
-      const grupoIdsObjetivo = [
+      const grupoIdsParaAsignar = [
         ...new Set(
           asignacionesConteoObjetivo
             .map((item) => Number(item.grupoId))
@@ -1155,11 +1141,11 @@ async function generarReconteoDesdeComparacion(req, res, next) {
         )
       ];
 
-      if (grupoIdsObjetivo.length > 0) {
-        gruposObjetivo = await Grupo.findAll({
+      if (grupoIdsParaAsignar.length > 0) {
+        gruposAsignadosRonda = await Grupo.findAll({
           where: {
             id: {
-              [Op.in]: grupoIdsObjetivo
+              [Op.in]: grupoIdsParaAsignar
             }
           },
           transaction
@@ -1167,7 +1153,7 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       }
     }
 
-    if (!gruposObjetivo.length) {
+    if (!gruposAsignadosRonda.length) {
       await transaction.rollback();
       return res.status(400).json({
         ok: false,
@@ -1175,51 +1161,27 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       });
     }
 
-    for (const grupo of gruposObjetivo) {
+    for (const grupoAsignado of gruposAsignadosRonda) {
       await AsignacionRonda.findOrCreate({
         where: {
           rondaId: nuevaRonda.id,
-          grupoId: grupo.id
+          grupoId: grupoAsignado.id
         },
         defaults: {
           rondaId: nuevaRonda.id,
-          grupoId: grupo.id,
+          grupoId: grupoAsignado.id,
           estado: 'asignada'
         },
         transaction
       });
 
-      console.log(`✅ Ronda ${nuevaRonda.id} asignada al grupo ${grupo.id} - ${grupo.nombre}`);
+      console.log(
+        `✅ Ronda ${nuevaRonda.id} asignada al grupo ${grupoAsignado.id} - ${grupoAsignado.nombre}`
+      );
     }
 
-    const grupoObjetivo = gruposObjetivo[0];
+    const grupoPrincipalAsignado = gruposAsignadosRonda[0];
 
-    if (gruposObjetivo.length === 0) {
-      await transaction.rollback();
-      return res.status(400).json({
-        ok: false,
-        message: `Las asignaciones de conteo apuntan a grupos inexistentes: ${grupoIdsObjetivo.join(', ')}.`
-      });
-    }
-
-    for (const grupo of gruposObjetivo) {
-      await AsignacionRonda.findOrCreate({
-        where: {
-          rondaId: nuevaRonda.id,
-          grupoId: grupo.id
-        },
-        defaults: {
-          rondaId: nuevaRonda.id,
-          grupoId: grupo.id,
-          estado: 'asignada'
-        },
-        transaction
-      });
-
-      console.log(`✅ Ronda ${nuevaRonda.id} asignada al grupo ${grupo.id} - ${grupo.nombre}`);
-    }
-
-    const grupoObjetivo = gruposObjetivo[0];
     let creadas = 0;
     let actualizadas = 0;
 
@@ -1238,14 +1200,10 @@ async function generarReconteoDesdeComparacion(req, res, next) {
         diferencia: Number(diferencia.diferencia || 0),
 
         estado: 'pendiente_reconteo',
-
-        // Ronda base/referencia y última ronda del inventario objetivo.
         rondaBaseId: ultimaRondaReferenciaCompleta.id,
         ultimaRondaId: ultimaRondaObjetivoCompleta.id,
-
         rondaReconteoId: nuevaRonda.id,
         proximaRondaNumero: nuevoNumeroRonda,
-
         cantidadFinal: null,
         criterioCierre: null,
         cerradoEn: null,
@@ -1305,7 +1263,10 @@ async function generarReconteoDesdeComparacion(req, res, next) {
         );
       }
     } catch (parejaError) {
-      console.error('⚠️ No se pudo actualizar la pareja, pero el reconteo continuará:', parejaError.message);
+      console.error(
+        '⚠️ No se pudo actualizar la pareja, pero el reconteo continuará:',
+        parejaError.message
+      );
     }
 
     await transaction.commit();
@@ -1328,50 +1289,17 @@ async function generarReconteoDesdeComparacion(req, res, next) {
         inventarioComparadoId: inventarioObjetivoId,
         zonaBaseId: zonaReferenciaId,
         zonaComparadaId: zonaObjetivoId,
-        grupoId: grupoObjetivo.id,
-        grupoIds: gruposObjetivo.map((grupo) => grupo.id),
+        grupoId: grupoPrincipalAsignado.id,
+        grupoIds: gruposAsignadosRonda.map((grupo) => grupo.id),
         totalDiferencias: diferencias.length,
         discrepanciasCreadas: creadas,
         discrepanciasActualizadas: actualizadas,
         pareja: pareja
           ? {
-            id: pareja.id,
-            estado: pareja.estado,
-            rondasGeneradas: pareja.rondasReconteoGeneradas
-          }
-          : null
-      }
-    });
-
-    return res.json({
-      ok: true,
-      message: `Ronda de reconteo generada exitosamente en el inventario comparado con ${diferencias.length} SKUs pendientes`,
-      data: {
-        ronda: {
-          id: nuevaRonda.id,
-          numeroRonda: nuevaRonda.numeroRonda,
-          tipoRonda: nuevaRonda.tipoRonda,
-          estado: nuevaRonda.estado,
-          inventarioId: nuevaRonda.inventarioId,
-          zonaId: nuevaRonda.zonaId
-        },
-        inventarioObjetivoId,
-        zonaObjetivoId,
-        inventarioBaseId: inventarioReferenciaId,
-        inventarioComparadoId: inventarioObjetivoId,
-        zonaBaseId: zonaReferenciaId,
-        zonaComparadaId: zonaObjetivoId,
-        grupoId: grupoObjetivo.id,
-        grupoIds: gruposObjetivo.map((grupo) => grupo.id),
-        totalDiferencias: diferencias.length,
-        discrepanciasCreadas: creadas,
-        discrepanciasActualizadas: actualizadas,
-        pareja: pareja
-          ? {
-            id: pareja.id,
-            estado: pareja.estado,
-            rondasGeneradas: pareja.rondasReconteoGeneradas
-          }
+              id: pareja.id,
+              estado: pareja.estado,
+              rondasGeneradas: pareja.rondasReconteoGeneradas
+            }
           : null
       }
     });
@@ -1391,6 +1319,7 @@ async function generarReconteoDesdeComparacion(req, res, next) {
     next(error);
   }
 }
+
 
 async function completarPareja(req, res, next) {
   try {
