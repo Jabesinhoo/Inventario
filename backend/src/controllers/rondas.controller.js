@@ -569,36 +569,51 @@ async function getPendientesRonda(req, res, next) {
     console.log('Ronda ID:', ronda.id);
     console.log('Inventario:', ronda.inventarioId);
     console.log('Zona:', ronda.zonaId);
-    console.log('Numero ronda:', ronda.numeroRonda);
+    console.log('Tipo ronda:', ronda.tipoRonda);
     console.log('Estado:', ronda.estado);
 
-    // 🔥 CORREGIDO: Buscar SOLO los SKU que aún tienen diferencia > 0
-    const discrepancias = await DiscrepanciaConteo.findAll({
-      where: {
-        inventarioId: ronda.inventarioId,
-        zonaId: ronda.zonaId,
-        rondaReconteoId: ronda.id,
-        estado: {
-          [Op.in]: ['pendiente_reconteo', 'reconteo_en_proceso', 'pendiente']
+    // Para rondas de reconteo, buscar discrepancias pendientes
+    let discrepancias = [];
+    
+    if (ronda.tipoRonda === 'reconteo') {
+      // Buscar discrepancias que aún no han sido resueltas
+      discrepancias = await DiscrepanciaConteo.findAll({
+        where: {
+          inventarioId: ronda.inventarioId,
+          zonaId: ronda.zonaId,
+          rondaReconteoId: ronda.id,
+          estado: {
+            [Op.in]: ['pendiente_reconteo', 'reconteo_en_proceso']
+          }
         },
-        diferencia: { [Op.ne]: 0 }  // ← Solo los que aún tienen diferencia
-      },
-      order: [['diferencia', 'DESC'], ['sku', 'ASC']]
-    });
+        order: [['diferencia', 'DESC'], ['sku', 'ASC']]
+      });
+      
+      console.log('Discrepancias encontradas:', discrepancias.length);
+      
+      // Si no hay discrepancias, buscar también las que tienen diferencia pendiente
+      if (discrepancias.length === 0) {
+        discrepancias = await DiscrepanciaConteo.findAll({
+          where: {
+            inventarioId: ronda.inventarioId,
+            zonaId: ronda.zonaId,
+            diferencia: { [Op.ne]: 0 },
+            estado: { [Op.ne]: 'resuelta' }
+          },
+          order: [['diferencia', 'DESC'], ['sku', 'ASC']]
+        });
+        console.log('Discrepancias por diferencia encontradas:', discrepancias.length);
+      }
+    }
 
     console.log('Pendientes encontrados:', discrepancias.length);
-    console.log(
-      'Detalle pendientes:',
-      discrepancias.map((x) => ({
-        id: x.id,
-        inventarioId: x.inventarioId,
-        zonaId: x.zonaId,
-        sku: x.sku,
-        diferencia: x.diferencia,
-        estado: x.estado,
-        proximaRondaNumero: x.proximaRondaNumero
-      }))
-    );
+    console.log('Detalle pendientes:', discrepancias.map((x) => ({
+      sku: x.sku,
+      diferencia: x.diferencia,
+      estado: x.estado,
+      cantidadBase: x.cantidadBase,
+      cantidadUltima: x.cantidadUltima
+    })));
     console.log('=====================================\n');
 
     const skus = [...new Set(discrepancias.map((item) => item.sku).filter(Boolean))];
@@ -609,7 +624,6 @@ async function getPendientesRonda(req, res, next) {
       const detalles = await ConteoInicialDetalle.findAll({
         where: {
           inventarioId: ronda.inventarioId,
-          zonaId: ronda.zonaId,
           sku: {
             [Op.in]: skus
           }
@@ -636,10 +650,7 @@ async function getPendientesRonda(req, res, next) {
         zonaId: item.zonaId,
         productoId: item.productoId,
         sku: item.sku,
-        descripcionSnapshot:
-          item.descripcionSnapshot ||
-          detalle?.descripcionSnapshot ||
-          'Sin descripción',
+        descripcionSnapshot: detalle?.descripcionSnapshot || item.descripcionSnapshot || 'Sin descripción',
         codigoLeido: detalle?.codigoLeido || null,
         rondaBaseId: item.rondaBaseId,
         ultimaRondaId: item.ultimaRondaId,
@@ -670,6 +681,7 @@ async function getPendientesRonda(req, res, next) {
       }
     });
   } catch (error) {
+    console.error('Error en getPendientesRonda:', error);
     next(error);
   }
 }

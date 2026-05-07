@@ -39,9 +39,9 @@ export async function exportarResultadosGrupo(params = {}) {
 export async function agregarLecturaManual(params) {
   const response = await api.post('/lecturas/manual', {
     rondaId: params.rondaId,
-    grupoId: params.grupoId,
     sku: params.sku,
-    cantidad: params.cantidad
+    cantidad: params.cantidad,
+    grupoId: params.grupoId
   });
   return response.data;
 }
