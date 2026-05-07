@@ -89,93 +89,136 @@ async function getSkuComparisonRows(
   zonaBaseId,
   zonaComparadaId
 ) {
-  const filterBase = buildLecturasFilterSql({
-    groupIds: allowedGroupIds,
-    zonaId: zonaBaseId,
-    alias: 'l',
-    groupParam: 'allowedGroupIds',
-    zonaParam: 'zonaBaseId'
-  });
+  async function getSkuRowsEfectivos({
+    inventarioId,
+    zonaId,
+    zonaParam
+  }) {
+    const filter = buildLecturasFilterSql({
+      groupIds: allowedGroupIds,
+      zonaId,
+      alias: 'l',
+      groupParam: 'allowedGroupIds',
+      zonaParam
+    });
 
-  const filterComparado = buildLecturasFilterSql({
-    groupIds: allowedGroupIds,
-    zonaId: zonaComparadaId,
-    alias: 'l',
-    groupParam: 'allowedGroupIds',
-    zonaParam: 'zonaComparadaId'
-  });
+    return sequelize.query(
+      `
+      WITH ultima_completa AS (
+        SELECT id
+        FROM rondas_conteo
+        WHERE "inventarioId" = :inventarioId
+          AND "tipoRonda" = 'completa'
+          AND estado = 'cerrada'
+          ${zonaId ? `AND "zonaId" = :${zonaParam}` : ''}
+        ORDER BY "numeroRonda" DESC, id DESC
+        LIMIT 1
+      ),
 
-  // 🔥 CORREGIDO: usar la misma lógica para ambos inventarios
-  const baseRows = await sequelize.query(
-    `
-    WITH ultima_ronda_base AS (
-      SELECT id
-      FROM rondas_conteo
-      WHERE "inventarioId" = :inventarioBaseId
-        AND "tipoRonda" = 'completa'
-        AND estado = 'cerrada'
-        ${zonaBaseId ? 'AND "zonaId" = :zonaBaseId' : ''}
-      ORDER BY "numeroRonda" DESC
-      LIMIT 1
-    )
-    SELECT 
-      l.sku,
-      MAX(l."descripcionSnapshot") AS descripcion,
-      COALESCE(SUM(l.cantidad), 0)::int AS cantidad
-    FROM lecturas l
-    WHERE l."inventarioId" = :inventarioBaseId
-      AND l.estado = 'valida'
-      AND l.sku IS NOT NULL
-      AND l."rondaId" IN (SELECT id FROM ultima_ronda_base)
-      ${filterBase}
-    GROUP BY l.sku
-    ORDER BY l.sku ASC
-    `,
-    {
-      replacements: {
-        inventarioBaseId,
-        allowedGroupIds,
-        zonaBaseId: zonaBaseId || null
-      },
-      type: QueryTypes.SELECT
-    }
-  );
+      completa AS (
+        SELECT
+          l.sku,
+          MAX(l."descripcionSnapshot") AS descripcion,
+          COALESCE(SUM(l.cantidad), 0)::int AS cantidad,
+          MAX(l."rondaId") AS "rondaId"
+        FROM lecturas l
+        WHERE l."inventarioId" = :inventarioId
+          AND l.estado = 'valida'
+          AND l.sku IS NOT NULL
+          AND l."rondaId" IN (SELECT id FROM ultima_completa)
+          ${filter}
+        GROUP BY l.sku
+      ),
 
-  // 🔥 CORREGIDO: misma lógica para el inventario comparado
-  const comparadoRows = await sequelize.query(
-    `
-    WITH ultima_ronda_comparado AS (
-      SELECT id
-      FROM rondas_conteo
-      WHERE "inventarioId" = :inventarioComparadoId
-        AND "tipoRonda" = 'completa'
-        AND estado = 'cerrada'
-        ${zonaComparadaId ? 'AND "zonaId" = :zonaComparadaId' : ''}
-      ORDER BY "numeroRonda" DESC
-      LIMIT 1
-    )
-    SELECT 
-      l.sku,
-      MAX(l."descripcionSnapshot") AS descripcion,
-      COALESCE(SUM(l.cantidad), 0)::int AS cantidad
-    FROM lecturas l
-    WHERE l."inventarioId" = :inventarioComparadoId
-      AND l.estado = 'valida'
-      AND l.sku IS NOT NULL
-      AND l."rondaId" IN (SELECT id FROM ultima_ronda_comparado)
-      ${filterComparado}
-    GROUP BY l.sku
-    ORDER BY l.sku ASC
-    `,
-    {
-      replacements: {
-        inventarioComparadoId,
-        allowedGroupIds,
-        zonaComparadaId: zonaComparadaId || null
-      },
-      type: QueryTypes.SELECT
-    }
-  );
+      rondas_reconteo AS (
+        SELECT
+          r.id,
+          r."numeroRonda",
+          r."updatedAt"
+        FROM rondas_conteo r
+        WHERE r."inventarioId" = :inventarioId
+          AND r."tipoRonda" = 'reconteo'
+          AND r.estado IN ('activa', 'pausada', 'cerrada')
+          ${zonaId ? `AND r."zonaId" = :${zonaParam}` : ''}
+      ),
+
+      reconteo_por_ronda_sku AS (
+        SELECT
+          l.sku,
+          MAX(l."descripcionSnapshot") AS descripcion,
+          COALESCE(SUM(l.cantidad), 0)::int AS cantidad,
+          l."rondaId",
+          MAX(rr."numeroRonda") AS "numeroRonda",
+          MAX(rr."updatedAt") AS "updatedAt"
+        FROM lecturas l
+        INNER JOIN rondas_reconteo rr
+          ON rr.id = l."rondaId"
+        WHERE l."inventarioId" = :inventarioId
+          AND l.estado = 'valida'
+          AND l.sku IS NOT NULL
+          ${filter}
+        GROUP BY l.sku, l."rondaId"
+      ),
+
+      ultimo_reconteo_sku AS (
+        SELECT DISTINCT ON (sku)
+          sku,
+          descripcion,
+          cantidad,
+          "rondaId",
+          "numeroRonda",
+          "updatedAt"
+        FROM reconteo_por_ronda_sku
+        ORDER BY sku, "numeroRonda" DESC, "updatedAt" DESC, "rondaId" DESC
+      ),
+
+      efectivo AS (
+        SELECT
+          COALESCE(r.sku, c.sku) AS sku,
+          COALESCE(r.descripcion, c.descripcion, 'Sin descripción') AS descripcion,
+          COALESCE(r.cantidad, c.cantidad, 0)::int AS cantidad,
+          CASE
+            WHEN r.sku IS NOT NULL THEN 'reconteo'
+            ELSE 'completa'
+          END AS fuente,
+          COALESCE(r."rondaId", c."rondaId") AS "rondaId"
+        FROM completa c
+        FULL OUTER JOIN ultimo_reconteo_sku r
+          ON r.sku = c.sku
+      )
+
+      SELECT
+        sku,
+        descripcion,
+        cantidad,
+        fuente,
+        "rondaId"
+      FROM efectivo
+      ORDER BY sku ASC
+      `,
+      {
+        replacements: {
+          inventarioId,
+          allowedGroupIds,
+          [zonaParam]: zonaId || null
+        },
+        type: QueryTypes.SELECT
+      }
+    );
+  }
+
+  const [baseRows, comparadoRows] = await Promise.all([
+    getSkuRowsEfectivos({
+      inventarioId: inventarioBaseId,
+      zonaId: zonaBaseId,
+      zonaParam: 'zonaBaseId'
+    }),
+    getSkuRowsEfectivos({
+      inventarioId: inventarioComparadoId,
+      zonaId: zonaComparadaId,
+      zonaParam: 'zonaComparadaId'
+    })
+  ]);
 
   const baseMap = new Map();
   const comparadoMap = new Map();
@@ -184,7 +227,9 @@ async function getSkuComparisonRows(
     baseMap.set(row.sku, {
       sku: row.sku,
       descripcion: row.descripcion || 'Sin descripción',
-      cantidad: Number(row.cantidad || 0)
+      cantidad: Number(row.cantidad || 0),
+      fuente: row.fuente || 'completa',
+      rondaId: row.rondaId || null
     });
   }
 
@@ -192,11 +237,15 @@ async function getSkuComparisonRows(
     comparadoMap.set(row.sku, {
       sku: row.sku,
       descripcion: row.descripcion || 'Sin descripción',
-      cantidad: Number(row.cantidad || 0)
+      cantidad: Number(row.cantidad || 0),
+      fuente: row.fuente || 'completa',
+      rondaId: row.rondaId || null
     });
   }
 
-  const allSkus = Array.from(new Set([...baseMap.keys(), ...comparadoMap.keys()])).sort();
+  const allSkus = Array.from(
+    new Set([...baseMap.keys(), ...comparadoMap.keys()])
+  ).sort();
 
   return allSkus.map((sku) => {
     const base = baseMap.get(sku);
@@ -212,7 +261,13 @@ async function getSkuComparisonRows(
       cantidadBase,
       cantidadComparada,
       diferencia,
-      estado: diferencia === 0 ? 'coincide' : 'difiere'
+      estado: diferencia === 0 ? 'coincide' : 'difiere',
+
+      // Debug útil para saber de dónde salió cada cantidad.
+      fuenteBase: base?.fuente || null,
+      fuenteComparada: comparado?.fuente || null,
+      rondaBaseId: base?.rondaId || null,
+      rondaComparadaId: comparado?.rondaId || null
     };
   });
 }
