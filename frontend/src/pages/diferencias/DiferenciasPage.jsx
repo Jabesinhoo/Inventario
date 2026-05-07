@@ -449,33 +449,52 @@ export default function DiferenciasPage() {
       const zonaBaseFinalId = Number(data?.filtros?.zonaBase?.id || zonaBaseId || 0);
       const zonaComparadaFinalId = Number(data?.filtros?.zonaComparada?.id || zonaComparadaId || 0);
 
-      const response = await generarRondaReconteoDesdeComparacion({
+      const payload = {
         inventarioBaseId: Number(inventarioBaseId),
         inventarioComparadoId: Number(inventarioComparadoId),
         zonaBaseId: zonaBaseFinalId || null,
         zonaComparadaId: zonaComparadaFinalId || null,
         reconteoDestino
-      });
+      };
+
+      console.log('🚨 Generando reconteo con payload:', payload);
+
+      const response = await generarRondaReconteoDesdeComparacion(payload);
+
+      console.log('✅ Respuesta generar reconteo:', response);
 
       const rondaId = response?.ronda?.id;
       const rondaNumero = response?.ronda?.numeroRonda;
       const inventarioObjetivoId =
         response?.inventarioObjetivoId ||
+        response?.ronda?.inventarioId ||
         (reconteoDestino === 'base'
           ? Number(inventarioBaseId)
           : Number(inventarioComparadoId));
 
+      const zonaObjetivoId =
+        response?.zonaObjetivoId ||
+        response?.ronda?.zonaId ||
+        (reconteoDestino === 'base'
+          ? Number(zonaBaseFinalId)
+          : Number(zonaComparadaFinalId));
+
       const totalDiferencias = response?.totalDiferencias ?? 0;
 
-      if (rondaId) {
-        setMessage(
-          `✅ Ronda de reconteo generada correctamente · Ronda ${rondaNumero} · ${totalDiferencias} SKUs pendientes`
-        );
-        navigate(`/escaneo?inventarioId=${inventarioObjetivoId}&rondaId=${rondaId}`);
-      } else {
-        setError('La ronda se generó pero no se pudo obtener el ID');
+      if (!rondaId) {
+        setError('El backend respondió, pero no devolvió ID de ronda.');
+        return;
       }
+
+      setMessage(
+        `✅ Ronda creada correctamente · ID ${rondaId} · Ronda ${rondaNumero} · Inventario ${inventarioObjetivoId} · Zona ${zonaObjetivoId} · ${totalDiferencias} SKUs pendientes`
+      );
+
+      // Ya no redirige automáticamente.
+      // Redirige manualmente después de verificar el mensaje:
+      // navigate(`/escaneo?inventarioId=${inventarioObjetivoId}&rondaId=${rondaId}`);
     } catch (err) {
+      console.error('❌ Error generando reconteo:', err);
       setError(
         err.response?.data?.message || 'No se pudo generar la ronda de reconteo'
       );
@@ -630,8 +649,8 @@ export default function DiferenciasPage() {
         ) : null}
 
         {zonaBaseSeleccionada &&
-        zonaComparadaSeleccionada &&
-        !zonesAreEquivalent(zonaBaseSeleccionada, zonaComparadaSeleccionada) ? (
+          zonaComparadaSeleccionada &&
+          !zonesAreEquivalent(zonaBaseSeleccionada, zonaComparadaSeleccionada) ? (
           <div className="alert-warning" style={{ marginTop: '12px' }}>
             <AlertTriangle size={16} />
             <span>No puedes comparar ni generar reconteo entre zonas distintas.</span>
@@ -717,13 +736,12 @@ export default function DiferenciasPage() {
                     <td className="text-center cantidad-comparada">{row.cantidadComparada}</td>
                     {tab === 'diferencias' && (
                       <td
-                        className={`text-center diferencia ${
-                          row.diferencia > 0
+                        className={`text-center diferencia ${row.diferencia > 0
                             ? 'text-danger'
                             : row.diferencia < 0
                               ? 'text-success'
                               : ''
-                        }`}
+                          }`}
                       >
                         {row.diferencia > 0 ? `+${row.diferencia}` : `${row.diferencia}`}
                       </td>
