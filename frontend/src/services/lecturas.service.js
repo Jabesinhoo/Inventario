@@ -34,3 +34,14 @@ export async function exportarResultadosGrupo(params = {}) {
   const response = await api.get('/lecturas/exportar-grupo', { params });
   return response.data;
 }
+
+
+export async function agregarLecturaManual(params) {
+  const response = await api.post('/lecturas/manual', {
+    rondaId: params.rondaId,
+    grupoId: params.grupoId,
+    sku: params.sku,
+    cantidad: params.cantidad
+  });
+  return response.data;
+}

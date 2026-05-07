@@ -11,5 +11,5 @@ router.get('/resumen', authMiddleware, injectGrupoId, lecturasController.getResu
 router.get('/historial', authMiddleware, injectGrupoId, lecturasController.getHistorialLecturas);
 router.get('/estadisticas-grupo', authMiddleware, injectGrupoId, lecturasController.getEstadisticasGrupo);
 router.get('/exportar-grupo', authMiddleware, injectGrupoId, lecturasController.exportarResultadosGrupo);
-
+router.post('/manual', authMiddleware, lecturasController.agregarProductoManual);
 module.exports = router;

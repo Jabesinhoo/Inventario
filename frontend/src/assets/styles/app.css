@@ -2729,6 +2729,63 @@ input, select, textarea {
   border-color: var(--border);
 }
 
+/* Agrega estos estilos */
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.manual-sku-input {
+  font-family: monospace;
+  font-size: 18px;
+  letter-spacing: 1px;
+}
+
+.manual-summary {
+  background: #f8f9fa;
+  padding: 12px;
+  border-radius: 8px;
+  margin-top: 16px;
+  border-left: 4px solid var(--primary);
+}
+
+.manual-summary p {
+  margin: 6px 0;
+  font-size: 14px;
+}
+
+.total-unidades {
+  color: var(--primary);
+  font-weight: 600;
+  margin-top: 8px !important;
+  padding-top: 8px;
+  border-top: 1px solid #e9ecef;
+}
+
+/* Para inputs numéricos */
+input[type="number"] {
+  -moz-appearance: textfield;
+}
+
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  opacity: 0.5;
+}
+
+/* Responsive */
+@media (max-width: 640px) {
+  .form-row {
+    grid-template-columns: 1fr;
+    gap: 12px;
+  }
+  
+  .modal {
+    min-width: 90%;
+    margin: 16px;
+  }
+}
 /* Responsive para rondas */
 @media (max-width: 768px) {
   .zonas-grid {

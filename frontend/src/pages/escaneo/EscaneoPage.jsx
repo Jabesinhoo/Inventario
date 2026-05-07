@@ -14,7 +14,10 @@ import {
   Zap,
   Clock,
   Boxes,
-  Layers3
+  Layers3,
+  Edit3,
+  X,
+  Plus
 } from 'lucide-react';
 import {
   scanLecturaRonda,
@@ -22,7 +25,8 @@ import {
   getResumenLecturas,
   getHistorialLecturas,
   getEstadisticasGrupo,
-  exportarResultadosGrupo
+  exportarResultadosGrupo,
+  agregarLecturaManual
 } from '../../services/lecturas.service';
 import {
   getMisRondasParaEscaneo,
@@ -61,6 +65,13 @@ export default function EscaneoPage() {
   const [syncing, setSyncing] = useState(false);
   const [exporting, setExporting] = useState(false);
 
+  // Estado para el modal de entrada manual
+  const [showManualModal, setShowManualModal] = useState(false);
+  const [manualSku, setManualSku] = useState('');
+  const [manualCantidad, setManualCantidad] = useState(1);
+  const [manualRepeticiones, setManualRepeticiones] = useState(1); // ← Cambiado de manualVeces
+  const [loadingManual, setLoadingManual] = useState(false);
+
   const auth = useAuth();
   const rol = String(auth?.user?.rol || auth?.user?.rol?.nombre || '').toLowerCase();
   const isContador = rol === 'contador';
@@ -81,7 +92,7 @@ export default function EscaneoPage() {
   const playBeep = () => {
     if (!audioRef.current) return;
     audioRef.current.currentTime = 0;
-    audioRef.current.play().catch(() => {});
+    audioRef.current.play().catch(() => { });
   };
 
   const selectedRonda = useMemo(() => {
@@ -175,9 +186,9 @@ export default function EscaneoPage() {
           : Promise.resolve({ pendientes: [] }),
         ronda.asignacion?.grupoId || ronda.asignacion?.grupo?.id
           ? getEstadisticasGrupo({
-              rondaId: ronda.id,
-              grupoId: ronda.asignacion?.grupoId || ronda.asignacion?.grupo?.id
-            })
+            rondaId: ronda.id,
+            grupoId: ronda.asignacion?.grupoId || ronda.asignacion?.grupo?.id
+          })
           : Promise.resolve(null)
       ];
 
@@ -205,7 +216,7 @@ export default function EscaneoPage() {
       if (pendientesRes.status === 'rejected' && ronda.tipoRonda === 'reconteo') {
         setFlashMessage(
           pendientesRes.reason?.response?.data?.message ||
-            'No se pudieron cargar los pendientes del reconteo',
+          'No se pudieron cargar los pendientes del reconteo',
           'warning'
         );
       }
@@ -386,6 +397,101 @@ export default function EscaneoPage() {
       setTimeout(() => inputRef.current?.focus(), 50);
     } finally {
       setLoadingScan(false);
+    }
+  };
+
+  // NUEVA FUNCIÓN: Agregar producto manualmente con cantidad y veces
+  const handleAgregarManual = async () => {
+    if (!manualSku.trim()) {
+      setFlashMessage('Debes ingresar un SKU', 'error');
+      return;
+    }
+
+    if (!/^\d{5,7}$/.test(manualSku.trim())) {
+      setFlashMessage('SKU inválido. Debe tener entre 5 y 7 dígitos numéricos.', 'warning');
+      return;
+    }
+
+    if (manualCantidad <= 0) {
+      setFlashMessage('La cantidad debe ser mayor a 0', 'error');
+      return;
+    }
+
+    if (manualRepeticiones <= 0 || manualRepeticiones > 100) {
+      setFlashMessage('Las repeticiones deben ser entre 1 y 100', 'error');
+      return;
+    }
+
+    if (!selectedRonda?.id) {
+      setFlashMessage('Debes seleccionar una ronda', 'error');
+      return;
+    }
+
+    if (selectedRonda.estado !== 'activa') {
+      setFlashMessage('La ronda debe estar activa para agregar productos', 'warning');
+      return;
+    }
+
+    if (!grupoAsignado?.id) {
+      setFlashMessage('Esta ronda no tiene un grupo asignado', 'error');
+      return;
+    }
+
+    setLoadingManual(true);
+
+    try {
+      let totalAgregados = 0;
+      let errores = [];
+
+      // Agregar la cantidad de repeticiones seleccionada
+      for (let i = 0; i < manualRepeticiones; i++) {
+        try {
+          await agregarLecturaManual({
+            rondaId: selectedRonda.id,
+            grupoId: grupoAsignado.id,
+            sku: manualSku.trim(),
+            cantidad: manualCantidad
+          });
+
+          totalAgregados++;
+          playBeep();
+        } catch (err) {
+          errores.push(`Intento ${i + 1}: ${err.response?.data?.message || err.message}`);
+        }
+
+        // Pequeña pausa entre agregados
+        if (i < manualRepeticiones - 1) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+        }
+      }
+
+      if (totalAgregados > 0) {
+        const unidadesTotales = manualRepeticiones * manualCantidad;
+        const mensaje = `✅ Se agregaron ${totalAgregados} registros de ${manualSku.trim()} (${unidadesTotales} unidades totales)`;
+        setFlashMessage(mensaje, errores.length > 0 ? 'warning' : 'success');
+
+        // Cerrar modal y limpiar
+        setShowManualModal(false);
+        setManualSku('');
+        setManualCantidad(1);
+        setManualRepeticiones(1);
+
+        // Recargar datos
+        await loadRoundContext(selectedRonda);
+      }
+
+      if (errores.length > 0) {
+        console.error('Errores en agregados manuales:', errores);
+        setFlashMessage(`⚠️ ${errores.length} errores. Último: ${errores[0]}`, 'warning');
+      }
+
+    } catch (err) {
+      setFlashMessage(
+        err.response?.data?.message || 'Error al agregar producto manualmente',
+        'error'
+      );
+    } finally {
+      setLoadingManual(false);
     }
   };
 
@@ -578,13 +684,12 @@ export default function EscaneoPage() {
 
       {flash.text ? (
         <div
-          className={`alert-${
-            flash.type === 'error'
-              ? 'error'
-              : flash.type === 'warning'
-                ? 'warning'
-                : 'success'
-          }`}
+          className={`alert-${flash.type === 'error'
+            ? 'error'
+            : flash.type === 'warning'
+              ? 'warning'
+              : 'success'
+            }`}
         >
           {flash.text}
         </div>
@@ -633,6 +738,15 @@ export default function EscaneoPage() {
                 </h2>
 
                 <div className="scanner-actions">
+                  <button
+                    className="btn btn-outline"
+                    onClick={() => setShowManualModal(true)}
+                    disabled={!canScan}
+                  >
+                    <Edit3 size={16} />
+                    <span>Agregar Manual</span>
+                  </button>
+
                   {selectedRonda.estado === 'borrador' ? (
                     <button className="btn btn-primary" onClick={() => handleRondaAction('iniciar')}>
                       <Play size={16} />
@@ -683,7 +797,7 @@ export default function EscaneoPage() {
               </form>
 
               <p className="scan-helper">
-                Solo se aceptan códigos numéricos de 5 a 7 dígitos. Si el código no cumple, se notifica y el flujo sigue.
+                Solo se aceptan códigos numéricos de 5 a 7 dígitos. También puedes agregar productos manualmente con el botón "Agregar Manual".
               </p>
 
               {lastScan ? (
@@ -763,6 +877,11 @@ export default function EscaneoPage() {
                             <strong>{item.sku}</strong>
                             <p className="pending-sku-desc">{item.descripcionSnapshot || 'Sin descripción'}</p>
                           </div>
+                          <div className="pending-diff">
+                            <span className={`diff-badge ${item.diferencia > 0 ? 'positive' : 'negative'}`}>
+                              {item.diferencia > 0 ? `+${item.diferencia}` : item.diferencia}
+                            </span>
+                          </div>
                         </div>
                       ))}
                     </div>
@@ -829,6 +948,9 @@ export default function EscaneoPage() {
                       <div className="history-main">
                         <strong>{lectura.codigoLeido}</strong>
                         <p>{lectura.sku || 'No reconocido'}</p>
+                        {lectura.esManual && (
+                          <span className="manual-badge">✏️ Manual</span>
+                        )}
                       </div>
 
                       <div className="history-meta">
@@ -856,6 +978,97 @@ export default function EscaneoPage() {
       ) : (
         <div className="card">
           <p className="muted">Selecciona un inventario que tenga rondas disponibles.</p>
+        </div>
+      )}
+
+      {/* Modal para entrada manual */}
+      {showManualModal && (
+        <div className="modal-overlay" onClick={() => setShowManualModal(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>
+                <Plus size={18} />
+                Agregar Producto Manualmente
+              </h3>
+              <button className="icon-btn" onClick={() => setShowManualModal(false)}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="modal-body">
+              <div className="form-group">
+                <label>Código SKU *</label>
+                <input
+                  type="text"
+                  value={manualSku}
+                  onChange={(e) => setManualSku(e.target.value.toUpperCase())}
+                  placeholder="Ej: 123456"
+                  autoFocus
+                  className="manual-sku-input"
+                />
+                <small>Ingresa el código numérico de 5 a 7 dígitos</small>
+              </div>
+
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Cantidad por registro *</label>
+                  <input
+                    type="number"
+                    value={manualCantidad}
+                    onChange={(e) => setManualCantidad(parseInt(e.target.value) || 1)}
+                    min="1"
+                    max="999999"
+                    step="1"
+                  />
+                  <small>Unidades por cada registro</small>
+                </div>
+
+                <div className="form-group">
+                  <label>Número de repeticiones *</label>
+                  <input
+                    type="number"
+                    value={manualRepeticiones}
+                    onChange={(e) => setManualRepeticiones(parseInt(e.target.value) || 1)}
+                    min="1"
+                    max="100"
+                    step="1"
+                  />
+                  <small>¿Cuántas veces quieres agregar este producto? (1-100)</small>
+                </div>
+              </div>
+
+              <div className="manual-summary">
+                <p>
+                  <strong>Resumen:</strong>
+                </p>
+                <p>
+                  • {manualRepeticiones} registro(s) de {manualSku || 'SKU'}
+                </p>
+                <p>
+                  • {manualCantidad} unidad(es) por registro
+                </p>
+                <p className="total-unidades">
+                  📦 Total de unidades: <strong>{manualRepeticiones * manualCantidad}</strong>
+                </p>
+              </div>
+            </div>
+
+            <div className="modal-actions">
+              <button
+                className="btn btn-outline"
+                onClick={() => setShowManualModal(false)}
+              >
+                Cancelar
+              </button>
+              <button
+                className="btn btn-primary"
+                onClick={handleAgregarManual}
+                disabled={loadingManual || !manualSku.trim()}
+              >
+                {loadingManual ? 'Agregando...' : `Agregar (${manualRepeticiones} × ${manualCantidad})`}
+              </button>
+            </div>
+          </div>
         </div>
       )}
     </div>
