@@ -496,9 +496,6 @@ export default function DiferenciasPage() {
         `✅ Ronda creada correctamente · ID ${rondaId} · Ronda ${rondaNumero} · Inventario ${inventarioObjetivoId} · Zona ${zonaObjetivoId} · ${totalDiferencias} SKUs pendientes`
       );
 
-      navigate(`/escaneo?inventarioId=${inventarioObjetivoId}&rondaId=${rondaId}`, {
-        replace: true
-      });
     } catch (err) {
       console.error('❌ Error generando reconteo:', err);
 

@@ -106,7 +106,13 @@ async function getRondaConAcceso(rondaId, req) {
       {
         model: AsignacionRonda,
         as: 'asignacion',
-        include: [{ model: Grupo, as: 'grupo', attributes: ['id', 'nombre', 'inventarioId'] }]
+        include: [
+          {
+            model: Grupo,
+            as: 'grupo',
+            attributes: ['id', 'nombre', 'inventarioId']
+          }
+        ]
       }
     ]
   });
@@ -126,12 +132,16 @@ async function getRondaConAcceso(rondaId, req) {
     WHERE ug."usuarioId" = :usuarioId
     `,
     {
-      replacements: { usuarioId: req.user.id },
+      replacements: {
+        usuarioId: req.user.id
+      },
       type: QueryTypes.SELECT
     }
   );
 
-  const grupoIds = gruposUsuario.map((row) => Number(row.grupoId));
+  const grupoIds = gruposUsuario
+    .map((row) => Number(row.grupoId))
+    .filter(Boolean);
 
   if (!grupoIds.length) {
     return 'FORBIDDEN';
@@ -150,13 +160,8 @@ async function getRondaConAcceso(rondaId, req) {
     return ronda;
   }
 
-  /*
-    Para reconteos generados desde Diferencias:
-    aunque asignaciones_ronda solo permita un grupo principal,
-    cualquier grupo asignado al mismo inventario/zona puede ver la ronda.
-  */
   if (ronda.tipoRonda === 'reconteo') {
-    const accesoPorZona = await AsignacionConteo.findOne({
+    const accesoPorAsignacionConteo = await AsignacionConteo.findOne({
       where: {
         inventarioId: ronda.inventarioId,
         zonaId: ronda.zonaId,
@@ -166,7 +171,7 @@ async function getRondaConAcceso(rondaId, req) {
       }
     });
 
-    if (accesoPorZona) {
+    if (accesoPorAsignacionConteo) {
       return ronda;
     }
   }
@@ -1434,26 +1439,36 @@ async function getMisRondasParaEscaneo(req, res, next) {
         r."tiempoFin",
         r."totalEscaneos",
         r."updatedAt",
-        z.id as "zona.id",
-        z.nombre as "zona.nombre",
-        z.codigo as "zona.codigo",
-        g.id as "asignacion.grupo.id",
-        g.nombre as "asignacion.grupo.nombre",
-        g."inventarioId" as "asignacion.grupo.inventarioId"
+
+        z.id AS "zona.id",
+        z.nombre AS "zona.nombre",
+        z.codigo AS "zona.codigo",
+
+        COALESCE(ar."grupoId", ug."grupoId") AS "asignacion.grupoId",
+        g.id AS "asignacion.grupo.id",
+        g.nombre AS "asignacion.grupo.nombre",
+        g."inventarioId" AS "asignacion.grupo.inventarioId"
+
       FROM rondas_conteo r
-      JOIN zonas z
+
+      INNER JOIN zonas z
         ON z.id = r."zonaId"
-      JOIN usuario_grupo ug
+
+      INNER JOIN usuario_grupo ug
         ON ug."usuarioId" = :usuarioId
-      JOIN grupos g
+
+      INNER JOIN grupos g
         ON g.id = ug."grupoId"
+
       LEFT JOIN asignaciones_ronda ar
         ON ar."rondaId" = r.id
        AND ar."grupoId" = ug."grupoId"
+
       LEFT JOIN asignaciones_conteo ac
         ON ac."inventarioId" = r."inventarioId"
        AND ac."zonaId" = r."zonaId"
        AND ac."grupoId" = ug."grupoId"
+
       WHERE r."inventarioId" = :inventarioId
         AND r.estado IN ('borrador', 'activa', 'pausada')
         AND (
@@ -1463,6 +1478,7 @@ async function getMisRondasParaEscaneo(req, res, next) {
             AND ac.id IS NOT NULL
           )
         )
+
       ORDER BY
         r.id,
         CASE r.estado
@@ -1499,7 +1515,7 @@ async function getMisRondasParaEscaneo(req, res, next) {
         codigo: row['zona.codigo']
       },
       asignacion: {
-        grupoId: row['asignacion.grupo.id'],
+        grupoId: row['asignacion.grupoId'],
         grupo: {
           id: row['asignacion.grupo.id'],
           nombre: row['asignacion.grupo.nombre'],
@@ -1508,7 +1524,7 @@ async function getMisRondasParaEscaneo(req, res, next) {
       }
     }));
 
-    res.json({
+    return res.json({
       ok: true,
       data
     });

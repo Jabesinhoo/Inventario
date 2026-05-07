@@ -947,9 +947,6 @@ export default function EscaneoPage() {
                             <p className="pending-sku-desc">{item.descripcionSnapshot || 'Sin descripción'}</p>
                           </div>
                           <div className="pending-diff">
-                            <span className={`diff-badge ${item.diferencia > 0 ? 'positive' : 'negative'}`}>
-                              {item.diferencia > 0 ? `+${item.diferencia}` : item.diferencia}
-                            </span>
                           </div>
                         </div>
                       ))}
