@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+"""import { useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   GitCompareArrows,
@@ -10,8 +10,7 @@ import {
   Users,
   MapPin,
   User,
-  Repeat,
-  Link2
+  Repeat
 } from 'lucide-react';
 import { getInventarios } from '../../services/inventarios.service';
 import { getGrupos } from '../../services/grupos.service';
@@ -21,6 +20,7 @@ import {
   generarRondaReconteoDesdeComparacion
 } from '../../services/diferencias.service';
 import api from '../../services/api';
+
 function normalizeZoneText(value) {
   return String(value || '')
     .trim()
@@ -75,6 +75,27 @@ function getZonaLabel(zona) {
   return `${zona.nombre}${zona.codigo ? ` (${zona.codigo})` : ''}${grupos}`;
 }
 
+function getParejaDelInventarioFromList(parejas, inventarioId) {
+  const pareja = (parejas || []).find(
+    (p) =>
+      Number(p.inventarioBaseId) === Number(inventarioId) ||
+      Number(p.inventarioComparadoId) === Number(inventarioId)
+  );
+
+  if (!pareja) return null;
+
+  const esBase = Number(pareja.inventarioBaseId) === Number(inventarioId);
+  const inventarioPareja = esBase ? pareja.inventarioComparado : pareja.inventarioBase;
+
+  return {
+    id: pareja.id,
+    inventarioId: inventarioPareja?.id,
+    nombre: inventarioPareja?.nombre,
+    fecha: inventarioPareja?.fecha,
+    estado: pareja.estado
+  };
+}
+
 export default function DiferenciasPage() {
   const navigate = useNavigate();
 
@@ -89,6 +110,10 @@ export default function DiferenciasPage() {
   const [zonaBaseId, setZonaBaseId] = useState('');
   const [zonaComparadaId, setZonaComparadaId] = useState('');
 
+  // Nuevo: permite decidir dónde se crea la ronda de reconteo.
+  // Valores permitidos por el backend: "base" o "comparado".
+  const [reconteoDestino, setReconteoDestino] = useState('comparado');
+
   const [data, setData] = useState(null);
   const [tab, setTab] = useState('diferencias');
   const [loading, setLoading] = useState(true);
@@ -98,11 +123,20 @@ export default function DiferenciasPage() {
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
 
-  // Estado para cantidades editables
   const [cantidadesEditables, setCantidadesEditables] = useState({});
 
   const zonasBaseOptions = useMemo(() => buildZoneOptions(gruposBase), [gruposBase]);
   const zonasComparadoOptions = useMemo(() => buildZoneOptions(gruposComparado), [gruposComparado]);
+
+  const inventarioBaseSeleccionado = useMemo(
+    () => inventarios.find((item) => Number(item.id) === Number(inventarioBaseId)) || null,
+    [inventarios, inventarioBaseId]
+  );
+
+  const inventarioComparadoSeleccionado = useMemo(
+    () => inventarios.find((item) => Number(item.id) === Number(inventarioComparadoId)) || null,
+    [inventarios, inventarioComparadoId]
+  );
 
   const zonaBaseSeleccionada =
     zonasBaseOptions.find((z) => Number(z.id) === Number(zonaBaseId)) || null;
@@ -119,28 +153,14 @@ export default function DiferenciasPage() {
     : zonasBaseOptions;
 
   const getParejaDelInventario = (inventarioId) => {
-    const pareja = parejas.find(p =>
-      p.inventarioBaseId === inventarioId ||
-      p.inventarioComparadoId === inventarioId
-    );
-
-    if (!pareja) return null;
-
-    const esBase = pareja.inventarioBaseId === inventarioId;
-    const inventarioPareja = esBase ? pareja.inventarioComparado : pareja.inventarioBase;
-
-    return {
-      id: pareja.id,
-      inventarioId: inventarioPareja?.id,
-      nombre: inventarioPareja?.nombre,
-      fecha: inventarioPareja?.fecha,
-      estado: pareja.estado
-    };
+    return getParejaDelInventarioFromList(parejas, inventarioId);
   };
 
   const handleInventarioBaseChange = (id) => {
     setInventarioBaseId(id);
+
     const pareja = getParejaDelInventario(Number(id));
+
     if (pareja && pareja.inventarioId) {
       setInventarioComparadoId(pareja.inventarioId);
       setMessage(`Pareja automática: ${pareja.nombre}`);
@@ -152,11 +172,10 @@ export default function DiferenciasPage() {
     }
   };
 
-  // Inicializar cantidades editables cuando cambian los datos
   useEffect(() => {
     if (data?.diferencias) {
       const inicial = {};
-      data.diferencias.forEach(row => {
+      data.diferencias.forEach((row) => {
         inicial[row.sku] = row.cantidadComparada;
       });
       setCantidadesEditables(inicial);
@@ -164,8 +183,8 @@ export default function DiferenciasPage() {
   }, [data]);
 
   const handleCantidadChange = (sku, value) => {
-    const nuevaCantidad = parseInt(value) || 0;
-    setCantidadesEditables(prev => ({
+    const nuevaCantidad = parseInt(value, 10) || 0;
+    setCantidadesEditables((prev) => ({
       ...prev,
       [sku]: nuevaCantidad
     }));
@@ -214,19 +233,27 @@ export default function DiferenciasPage() {
         getInventarios(),
         api.get('/diferencias/parejas')
       ]);
-      setInventarios(rows || []);
-      setParejas(parejasResponse.data.data || []);
 
-      if (rows?.length >= 2) {
-        setInventarioBaseId(rows[0].id);
-        const pareja = getParejaDelInventario(rows[0].id);
+      const inventariosData = rows || [];
+      const parejasData = parejasResponse.data.data || [];
+
+      setInventarios(inventariosData);
+      setParejas(parejasData);
+
+      if (inventariosData.length >= 2) {
+        const primerInventario = inventariosData[0];
+
+        setInventarioBaseId(primerInventario.id);
+
+        const pareja = getParejaDelInventarioFromList(parejasData, primerInventario.id);
+
         if (pareja && pareja.inventarioId) {
           setInventarioComparadoId(pareja.inventarioId);
         } else {
-          setInventarioComparadoId(rows[1].id);
+          setInventarioComparadoId(inventariosData[1].id);
         }
-      } else if (rows?.length === 1) {
-        setInventarioBaseId(rows[0].id);
+      } else if (inventariosData.length === 1) {
+        setInventarioBaseId(inventariosData[0].id);
       }
     } catch (err) {
       setError('No se pudieron cargar los inventarios');
@@ -419,16 +446,25 @@ export default function DiferenciasPage() {
         return;
       }
 
+      const zonaBaseFinalId = Number(data?.filtros?.zonaBase?.id || zonaBaseId || 0);
+      const zonaComparadaFinalId = Number(data?.filtros?.zonaComparada?.id || zonaComparadaId || 0);
+
       const response = await generarRondaReconteoDesdeComparacion({
         inventarioBaseId: Number(inventarioBaseId),
         inventarioComparadoId: Number(inventarioComparadoId),
-        zonaBaseId: zonaBaseId ? Number(zonaBaseId) : null,      // ← más claro
-        zonaComparadaId: zonaComparadaId ? Number(zonaComparadaId) : null
+        zonaBaseId: zonaBaseFinalId || null,
+        zonaComparadaId: zonaComparadaFinalId || null,
+        reconteoDestino
       });
 
       const rondaId = response?.ronda?.id;
       const rondaNumero = response?.ronda?.numeroRonda;
-      const inventarioObjetivoId = response?.inventarioObjetivoId ?? Number(inventarioBaseId);
+      const inventarioObjetivoId =
+        response?.inventarioObjetivoId ||
+        (reconteoDestino === 'base'
+          ? Number(inventarioBaseId)
+          : Number(inventarioComparadoId));
+
       const totalDiferencias = response?.totalDiferencias ?? 0;
 
       if (rondaId) {
@@ -490,7 +526,7 @@ export default function DiferenciasPage() {
             >
               <option value="">Selecciona</option>
               {inventarios
-                .filter(item => item.id !== Number(inventarioBaseId))
+                .filter((item) => Number(item.id) !== Number(inventarioBaseId))
                 .map((item) => (
                   <option key={item.id} value={item.id}>
                     {item.nombre} - {item.fecha}
@@ -532,6 +568,32 @@ export default function DiferenciasPage() {
           </div>
         </div>
 
+        <div className="grid-2">
+          <div className="form-group">
+            <label>Crear reconteo en</label>
+            <select
+              value={reconteoDestino}
+              onChange={(e) => setReconteoDestino(e.target.value)}
+            >
+              <option value="comparado">
+                Inventario comparado
+                {inventarioComparadoSeleccionado?.nombre
+                  ? ` · ${inventarioComparadoSeleccionado.nombre}`
+                  : ''}
+              </option>
+              <option value="base">
+                Inventario base
+                {inventarioBaseSeleccionado?.nombre
+                  ? ` · ${inventarioBaseSeleccionado.nombre}`
+                  : ''}
+              </option>
+            </select>
+            <small className="muted">
+              La ronda de reconteo se creará en el inventario seleccionado aquí.
+            </small>
+          </div>
+        </div>
+
         {error ? <div className="alert-error">{error}</div> : null}
         {message ? <div className="alert-success">{message}</div> : null}
 
@@ -568,8 +630,8 @@ export default function DiferenciasPage() {
         ) : null}
 
         {zonaBaseSeleccionada &&
-          zonaComparadaSeleccionada &&
-          !zonesAreEquivalent(zonaBaseSeleccionada, zonaComparadaSeleccionada) ? (
+        zonaComparadaSeleccionada &&
+        !zonesAreEquivalent(zonaBaseSeleccionada, zonaComparadaSeleccionada) ? (
           <div className="alert-warning" style={{ marginTop: '12px' }}>
             <AlertTriangle size={16} />
             <span>No puedes comparar ni generar reconteo entre zonas distintas.</span>
@@ -654,7 +716,15 @@ export default function DiferenciasPage() {
                     <td className="text-center cantidad-base">{row.cantidadBase}</td>
                     <td className="text-center cantidad-comparada">{row.cantidadComparada}</td>
                     {tab === 'diferencias' && (
-                      <td className={`text-center diferencia ${row.diferencia > 0 ? 'text-danger' : row.diferencia < 0 ? 'text-success' : ''}`}>
+                      <td
+                        className={`text-center diferencia ${
+                          row.diferencia > 0
+                            ? 'text-danger'
+                            : row.diferencia < 0
+                              ? 'text-success'
+                              : ''
+                        }`}
+                      >
                         {row.diferencia > 0 ? `+${row.diferencia}` : `${row.diferencia}`}
                       </td>
                     )}
@@ -662,7 +732,7 @@ export default function DiferenciasPage() {
                       <input
                         type="number"
                         min="0"
-                        value={cantidadesEditables[row.sku] || row.cantidadComparada}
+                        value={cantidadesEditables[row.sku] ?? row.cantidadComparada}
                         onChange={(e) => handleCantidadChange(row.sku, e.target.value)}
                         className="cantidad-aceptada-input"
                       />

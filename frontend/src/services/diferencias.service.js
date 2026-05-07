@@ -47,12 +47,12 @@ export async function generarRondaReconteoDesdeComparacion(data) {
     inventarioBaseId: data.inventarioBaseId,
     inventarioComparadoId: data.inventarioComparadoId,
     zonaBaseId: data.zonaBaseId ?? data.zonaId ?? null,
-    zonaComparadaId: data.zonaComparadaId ?? data.zonaId ?? null
+    zonaComparadaId: data.zonaComparadaId ?? data.zonaId ?? null,
+    reconteoDestino: data.reconteoDestino || 'comparado'
   };
 
   console.log('🚨 POST /diferencias/reconteo payload:', payload);
 
   const response = await api.post('/diferencias/reconteo', payload);
-
   return response.data.data;
 }

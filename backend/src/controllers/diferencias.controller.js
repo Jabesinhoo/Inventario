@@ -918,7 +918,7 @@ async function generarReconteoDesdeComparacion(req, res, next) {
   const transaction = await sequelize.transaction();
 
   try {
-    console.log('🚨🚨🚨 ENDPOINT /diferencias/reconteo - FUNCIÓN COMPARADO ACTIVA 🚨🚨🚨');
+    console.log('🚨 ENDPOINT /diferencias/reconteo - FUNCIÓN CON DESTINO SELECCIONABLE');
     console.log('\n====== DEBUG generarReconteoDesdeComparacion BODY ======');
     console.log('Body recibido:', req.body);
     console.log('======================================================\n');
@@ -928,24 +928,28 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       inventarioComparadoId,
       zonaBaseId,
       zonaComparadaId,
-      zonaId
+      zonaId,
+      reconteoDestino = 'comparado'
     } = req.body;
 
     const inventarioBaseIdNum = Number(inventarioBaseId);
     const inventarioComparadoIdNum = Number(inventarioComparadoId);
 
-    // Compatibilidad: si el frontend viejo manda solo zonaId, úsala para ambas zonas.
+    // Compatibilidad: si llega frontend viejo con solo zonaId, se usa para ambas zonas.
     const zonaBaseRaw = zonaBaseId ?? zonaId ?? null;
     const zonaComparadaRaw = zonaComparadaId ?? zonaId ?? null;
 
     const zonaBaseIdNum = zonaBaseRaw ? Number(zonaBaseRaw) : null;
     const zonaComparadaIdNum = zonaComparadaRaw ? Number(zonaComparadaRaw) : null;
 
+    const destinoNormalizado = String(reconteoDestino || 'comparado').toLowerCase();
+
     console.log('🔥 generarReconteoDesdeComparacion - Parámetros:', {
       inventarioBaseId: inventarioBaseIdNum,
       inventarioComparadoId: inventarioComparadoIdNum,
       zonaBaseId: zonaBaseIdNum,
-      zonaComparadaId: zonaComparadaIdNum
+      zonaComparadaId: zonaComparadaIdNum,
+      reconteoDestino: destinoNormalizado
     });
 
     if (!inventarioBaseIdNum || !inventarioComparadoIdNum) {
@@ -969,6 +973,14 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       return res.status(400).json({
         ok: false,
         message: 'Para generar reconteo debes enviar zonaBaseId y zonaComparadaId.'
+      });
+    }
+
+    if (!['base', 'comparado'].includes(destinoNormalizado)) {
+      await transaction.rollback();
+      return res.status(400).json({
+        ok: false,
+        message: 'reconteoDestino debe ser "base" o "comparado".'
       });
     }
 
@@ -999,22 +1011,43 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       });
     }
 
-    // Inventario base = referencia.
-    // Inventario comparado = inventario donde se hará el reconteo.
-    const inventarioReferenciaId = inventarioBaseIdNum;
-    const zonaReferenciaId = zonaBaseIdNum;
+    /*
+      La comparación siempre se calcula así:
+      base vs comparado.
 
-    const inventarioObjetivoId = inventarioComparadoIdNum;
-    const zonaObjetivoId = zonaComparadaIdNum;
+      Pero el reconteo puede crearse en:
+      - base
+      - comparado
+    */
+    const reconteoEnBase = destinoNormalizado === 'base';
+
+    const inventarioObjetivoId = reconteoEnBase
+      ? inventarioBaseIdNum
+      : inventarioComparadoIdNum;
+
+    const zonaObjetivoId = reconteoEnBase
+      ? zonaBaseIdNum
+      : zonaComparadaIdNum;
+
+    const inventarioReferenciaId = reconteoEnBase
+      ? inventarioComparadoIdNum
+      : inventarioBaseIdNum;
+
+    const zonaReferenciaId = reconteoEnBase
+      ? zonaComparadaIdNum
+      : zonaBaseIdNum;
+
+    const zonaObjetivo = reconteoEnBase ? zonaBase : zonaComparada;
+    const zonaReferencia = reconteoEnBase ? zonaComparada : zonaBase;
 
     const allowedGroupIds = await getAllowedGroupIds(req);
 
     const comparisonRows = await getSkuComparisonRows(
-      inventarioReferenciaId,
-      inventarioObjetivoId,
+      inventarioBaseIdNum,
+      inventarioComparadoIdNum,
       allowedGroupIds,
-      zonaReferenciaId,
-      zonaObjetivoId
+      zonaBaseIdNum,
+      zonaComparadaIdNum
     );
 
     const diferencias = comparisonRows.filter((row) => Number(row.diferencia || 0) !== 0);
@@ -1027,10 +1060,11 @@ async function generarReconteoDesdeComparacion(req, res, next) {
         ok: false,
         message: 'No se generó reconteo porque la comparación no encontró diferencias para las zonas enviadas.',
         debug: {
-          inventarioBaseId: inventarioReferenciaId,
-          inventarioComparadoId: inventarioObjetivoId,
-          zonaBaseId: zonaReferenciaId,
-          zonaComparadaId: zonaObjetivoId,
+          inventarioBaseId: inventarioBaseIdNum,
+          inventarioComparadoId: inventarioComparadoIdNum,
+          zonaBaseId: zonaBaseIdNum,
+          zonaComparadaId: zonaComparadaIdNum,
+          reconteoDestino: destinoNormalizado,
           totalComparados: comparisonRows.length
         }
       });
@@ -1051,7 +1085,7 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       await transaction.rollback();
       return res.status(400).json({
         ok: false,
-        message: `No existe una ronda completa cerrada para el inventario base en la zona ${zonaBase.nombre}.`
+        message: `No existe una ronda completa cerrada para el inventario de referencia en la zona ${zonaReferencia.nombre}.`
       });
     }
 
@@ -1070,7 +1104,7 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       await transaction.rollback();
       return res.status(400).json({
         ok: false,
-        message: `No existe una ronda completa cerrada para el inventario comparado en la zona ${zonaComparada.nombre}.`
+        message: `No existe una ronda completa cerrada para el inventario donde se hará el reconteo en la zona ${zonaObjetivo.nombre}.`
       });
     }
 
@@ -1093,13 +1127,13 @@ async function generarReconteoDesdeComparacion(req, res, next) {
         tipoRonda: 'reconteo',
         estado: 'activa',
         generadaDesdeRondaId: ultimaRondaObjetivoCompleta.id,
-        observaciones: `Generada automáticamente desde comparación ${inventarioReferenciaId} vs ${inventarioObjetivoId}`
+        observaciones: `Generada automáticamente desde comparación ${inventarioBaseIdNum} vs ${inventarioComparadoIdNum}. Destino: ${destinoNormalizado}`
       },
       { transaction }
     );
 
     console.log(
-      `✅ Ronda de reconteo creada: ID ${nuevaRonda.id}, Número ${nuevoNumeroRonda}, Inventario ${inventarioObjetivoId}, Zona ${zonaObjetivoId}`
+      `✅ Ronda de reconteo creada: ID ${nuevaRonda.id}, Número ${nuevoNumeroRonda}, Inventario ${inventarioObjetivoId}, Zona ${zonaObjetivoId}, Destino ${destinoNormalizado}`
     );
 
     const {
@@ -1110,9 +1144,9 @@ async function generarReconteoDesdeComparacion(req, res, next) {
 
     /*
       asignaciones_ronda tiene unique por rondaId.
-      Por eso SOLO se crea una asignación principal.
-      Si quieres que otros grupos vean esta ronda, getMisRondasParaEscaneo debe permitir
-      acceso por asignaciones_conteo para rondas tipo reconteo.
+      Por eso se crea SOLO una asignación principal.
+      La visibilidad para otros grupos debe manejarse desde getMisRondasParaEscaneo
+      usando asignaciones_conteo para rondas tipo reconteo.
     */
     const asignacionConteoPrincipal = await AsignacionConteo.findOne({
       where: {
@@ -1148,7 +1182,7 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       await transaction.rollback();
       return res.status(400).json({
         ok: false,
-        message: `No se encontró grupo para asignar la ronda en el inventario comparado ${inventarioObjetivoId}.`
+        message: `No se encontró grupo para asignar la ronda en el inventario ${inventarioObjetivoId}.`
       });
     }
 
@@ -1186,19 +1220,36 @@ async function generarReconteoDesdeComparacion(req, res, next) {
     let actualizadas = 0;
 
     for (const diferencia of diferencias) {
+      /*
+        En getSkuComparisonRows:
+        - cantidadBase = inventario base
+        - cantidadComparada = inventario comparado
+        - diferencia = comparado - base
+
+        Si el reconteo se hace en comparado:
+        - referencia = base
+        - objetivo anterior = comparado
+
+        Si el reconteo se hace en base:
+        - referencia = comparado
+        - objetivo anterior = base
+      */
+      const cantidadReferencia = reconteoEnBase
+        ? Number(diferencia.cantidadComparada || 0)
+        : Number(diferencia.cantidadBase || 0);
+
+      const cantidadObjetivoAnterior = reconteoEnBase
+        ? Number(diferencia.cantidadBase || 0)
+        : Number(diferencia.cantidadComparada || 0);
+
+      const diferenciaObjetivo = cantidadObjetivoAnterior - cantidadReferencia;
+
       const payloadDiscrepancia = {
         productoId: diferencia.productoId || null,
         descripcionSnapshot: diferencia.descripcion || 'Sin descripción',
-
-        // Referencia esperada desde inventario base.
-        cantidadBase: Number(diferencia.cantidadBase || 0),
-
-        // Cantidad previa en el inventario comparado.
-        cantidadUltima: Number(diferencia.cantidadComparada || 0),
-
-        // Diferencia original: comparado - base.
-        diferencia: Number(diferencia.diferencia || 0),
-
+        cantidadBase: cantidadReferencia,
+        cantidadUltima: cantidadObjetivoAnterior,
+        diferencia: diferenciaObjetivo,
         estado: 'pendiente_reconteo',
         rondaBaseId: ultimaRondaReferenciaCompleta.id,
         ultimaRondaId: ultimaRondaObjetivoCompleta.id,
@@ -1246,9 +1297,9 @@ async function generarReconteoDesdeComparacion(req, res, next) {
 
     try {
       pareja = await parejaService.crearOPareja(
-        inventarioReferenciaId,
-        inventarioObjetivoId,
-        zonaReferenciaId
+        inventarioBaseIdNum,
+        inventarioComparadoIdNum,
+        zonaBaseIdNum
       );
 
       if (pareja) {
@@ -1273,7 +1324,7 @@ async function generarReconteoDesdeComparacion(req, res, next) {
 
     return res.json({
       ok: true,
-      message: `Ronda de reconteo generada exitosamente en el inventario comparado con ${diferencias.length} SKUs pendientes`,
+      message: `Ronda de reconteo generada exitosamente en inventario ${inventarioObjetivoId} con ${diferencias.length} SKUs pendientes`,
       data: {
         ronda: {
           id: nuevaRonda.id,
@@ -1283,12 +1334,15 @@ async function generarReconteoDesdeComparacion(req, res, next) {
           inventarioId: nuevaRonda.inventarioId,
           zonaId: nuevaRonda.zonaId
         },
+        reconteoDestino: destinoNormalizado,
         inventarioObjetivoId,
         zonaObjetivoId,
-        inventarioBaseId: inventarioReferenciaId,
-        inventarioComparadoId: inventarioObjetivoId,
-        zonaBaseId: zonaReferenciaId,
-        zonaComparadaId: zonaObjetivoId,
+        inventarioReferenciaId,
+        zonaReferenciaId,
+        inventarioBaseId: inventarioBaseIdNum,
+        inventarioComparadoId: inventarioComparadoIdNum,
+        zonaBaseId: zonaBaseIdNum,
+        zonaComparadaId: zonaComparadaIdNum,
         grupoId: grupoPrincipalAsignado.id,
         grupoIds: [grupoPrincipalAsignado.id],
         totalDiferencias: diferencias.length,
