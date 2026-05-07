@@ -575,36 +575,57 @@ async function getPendientesRonda(req, res, next) {
     let discrepancias = [];
     
     if (ronda.tipoRonda === 'reconteo') {
-      // 🔥 CORREGIDO: Buscar discrepancias asociadas a esta ronda O las que tienen diferencia pendiente
-      discrepancias = await DiscrepanciaConteo.findAll({
-        where: {
-          inventarioId: ronda.inventarioId,
-          zonaId: ronda.zonaId || null,
-          [Op.or]: [
-            { rondaReconteoId: ronda.id },  // Discrepancias de esta ronda
-            { 
-              diferencia: { [Op.ne]: 0 },
-              estado: { [Op.in]: ['pendiente_reconteo', 'reconteo_en_proceso', 'pendiente'] },
-              rondaReconteoId: { [Op.is]: null }  // Discrepancias sin asignar
+      // 🔥 CORREGIDO: Buscar discrepancias de DOS maneras:
+      // 1. Las que tienen rondaReconteoId = esta ronda
+      // 2. Las que tienen diferencia != 0 y no tienen rondaReconteoId asignada
+      
+      const [discrepanciasAsignadas, discrepanciasPendientes] = await Promise.all([
+        // Discrepancias ya asignadas a esta ronda
+        DiscrepanciaConteo.findAll({
+          where: {
+            inventarioId: ronda.inventarioId,
+            zonaId: ronda.zonaId || null,
+            rondaReconteoId: ronda.id,
+            estado: {
+              [Op.in]: ['pendiente_reconteo', 'reconteo_en_proceso', 'pendiente']
             }
-          ]
-        },
-        order: [['diferencia', 'DESC'], ['sku', 'ASC']]
-      });
+          }
+        }),
+        // Discrepancias sin asignar que tienen diferencia
+        DiscrepanciaConteo.findAll({
+          where: {
+            inventarioId: ronda.inventarioId,
+            zonaId: ronda.zonaId || null,
+            rondaReconteoId: { [Op.is]: null },
+            diferencia: { [Op.ne]: 0 },
+            estado: {
+              [Op.in]: ['pendiente_reconteo', 'reconteo_en_proceso', 'pendiente', null]
+            }
+          }
+        })
+      ]);
       
-      console.log('Discrepancias encontradas:', discrepancias.length);
+      // Unir ambas listas
+      discrepancias = [...discrepanciasAsignadas, ...discrepanciasPendientes];
       
-      // Si hay discrepancias sin rondaReconteoId, asignarlas a esta ronda
-      for (const disc of discrepancias) {
-        if (!disc.rondaReconteoId) {
-          await disc.update({ rondaReconteoId: ronda.id });
-          console.log(`✅ Asignada discrepancia de ${disc.sku} a ronda ${ronda.id}`);
-        }
+      console.log(`Discrepancias asignadas a esta ronda: ${discrepanciasAsignadas.length}`);
+      console.log(`Discrepancias pendientes sin asignar: ${discrepanciasPendientes.length}`);
+      
+      // Asignar las discrepancias pendientes a esta ronda
+      for (const disc of discrepanciasPendientes) {
+        await disc.update({ rondaReconteoId: ronda.id });
+        console.log(`✅ Asignada discrepancia de SKU ${disc.sku} a ronda ${ronda.id}`);
       }
     }
 
-    console.log('Pendientes encontrados:', discrepancias.length);
-    console.log('Detalle:', discrepancias.map(x => ({ sku: x.sku, diferencia: x.diferencia, estado: x.estado })));
+    console.log('Total discrepancias encontradas:', discrepancias.length);
+    console.log('Detalle:', discrepancias.map(x => ({ 
+      sku: x.sku, 
+      diferencia: x.diferencia, 
+      estado: x.estado,
+      cantidadBase: x.cantidadBase,
+      cantidadRecontada: x.cantidadRecontada
+    })));
     console.log('=====================================\n');
 
     const skus = [...new Set(discrepancias.map((item) => item.sku).filter(Boolean))];
@@ -632,8 +653,6 @@ async function getPendientesRonda(req, res, next) {
 
     const pendientes = discrepancias.map((item) => {
       const detalle = mapaDetalle.get(item.sku);
-      
-      // Calcular cantidad recontada actual
       const cantidadRecontada = item.cantidadRecontada || 0;
       const diferenciaRestante = item.cantidadBase - cantidadRecontada;
 

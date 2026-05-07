@@ -471,102 +471,126 @@ async function scanLecturaRonda(req, res, next) {
       console.log('Inventario:', ronda.inventarioId);
       console.log('Zona:', ronda.zonaId);
       console.log('Numero ronda:', ronda.numeroRonda);
-      console.log('Estado ronda:', ronda.estado);
-      console.log('Grupo:', grupo.id);
-      console.log('Codigo leido:', codigoLimpio);
-      console.log('SKU final:', skuFinal);
+      console.log('SKU escaneado:', skuFinal);
 
+      // 🔥 CORREGIDO: Buscar discrepancia de forma más amplia
+      // 1. Primero buscar por rondaReconteoId
       pendiente = await DiscrepanciaConteo.findOne({
         where: {
           inventarioId: ronda.inventarioId,
           zonaId: ronda.zonaId,
           sku: skuFinal,
-          rondaReconteoId: ronda.id,
-          estado: {
-            [Op.in]: ['pendiente_reconteo', 'pendiente', 'reconteo_en_proceso']
-          }
+          rondaReconteoId: ronda.id
         },
         transaction
       });
 
-      console.log('Pendiente encontrado con rondaReconteoId:', pendiente ? pendiente.toJSON() : null);
-
+      // 2. Si no, buscar cualquier discrepancia pendiente para este SKU
       if (!pendiente) {
         pendiente = await DiscrepanciaConteo.findOne({
           where: {
             inventarioId: ronda.inventarioId,
             zonaId: ronda.zonaId,
             sku: skuFinal,
-            estado: {
-              [Op.in]: ['pendiente_reconteo', 'pendiente', 'reconteo_en_proceso']
-            }
+            diferencia: { [Op.ne]: 0 },
+            estado: { [Op.in]: ['pendiente_reconteo', 'pendiente', 'reconteo_en_proceso', null] }
           },
           transaction
         });
 
-        console.log('Pendiente encontrado sin rondaReconteoId (fallback):', pendiente ? pendiente.toJSON() : null);
+        if (pendiente) {
+          console.log(`✅ Discrepancia encontrada para ${skuFinal}, asignando a ronda ${ronda.id}`);
+          await pendiente.update({ rondaReconteoId: ronda.id }, { transaction });
+        }
+      }
 
-        if (pendiente && !pendiente.rondaReconteoId) {
+      // 3. Si aún no hay, buscar por cantidadBase vs cantidadUltima
+      if (!pendiente) {
+        // Buscar si hay diferencia entre la base y lo que hay en la ronda actual
+        const cantidadActualEnRonda = await Lectura.sum('cantidad', {
+          where: {
+            rondaId: ronda.id,
+            sku: skuFinal,
+            estado: 'valida'
+          },
+          transaction
+        });
+
+        // Obtener la cantidad base de la ronda 1
+        const rondaBase = await RondaConteo.findOne({
+          where: {
+            inventarioId: ronda.inventarioId,
+            zonaId: ronda.zonaId,
+            numeroRonda: 1,
+            tipoRonda: 'completa'
+          },
+          transaction
+        });
+
+        if (rondaBase) {
+          const cantidadBase = await Lectura.sum('cantidad', {
+            where: {
+              rondaId: rondaBase.id,
+              sku: skuFinal,
+              estado: 'valida'
+            },
+            transaction
+          });
+
+          if (cantidadActualEnRonda !== cantidadBase) {
+            // Crear una nueva discrepancia
+            pendiente = await DiscrepanciaConteo.create({
+              inventarioId: ronda.inventarioId,
+              zonaId: ronda.zonaId,
+              sku: skuFinal,
+              cantidadBase: cantidadBase || 0,
+              cantidadUltima: cantidadActualEnRonda || 0,
+              cantidadRecontada: cantidadActualEnRonda || 0,
+              diferencia: Math.abs((cantidadBase || 0) - (cantidadActualEnRonda || 0)),
+              estado: 'reconteo_en_proceso',
+              rondaReconteoId: ronda.id,
+              rondaBaseId: rondaBase.id,
+              reconteoCount: 1,
+              descripcionSnapshot: descripcionFinal
+            }, { transaction });
+            
+            console.log(`🆕 Creada nueva discrepancia para ${skuFinal} durante el escaneo`);
+          }
+        }
+      }
+
+      console.log('Pendiente encontrado:', pendiente ? {
+        id: pendiente.id,
+        sku: pendiente.sku,
+        diferencia: pendiente.diferencia,
+        cantidadBase: pendiente.cantidadBase,
+        cantidadRecontada: pendiente.cantidadRecontada,
+        estado: pendiente.estado
+      } : 'NO ENCONTRADO - Se permitirá el escaneo de todas formas');
+
+      // 🔥 NUEVO: Ya no bloqueamos si no hay pendiente, solo registramos
+      if (!pendiente) {
+        console.log(`⚠️ SKU ${skuFinal} no está en lista de pendientes, pero se permite el escaneo`);
+        // No retornamos error, solo continuamos sin pendiente
+      } else {
+        // Actualizar estado del pendiente
+        if (pendiente.estado === 'pendiente_reconteo' || pendiente.estado === 'pendiente') {
           await pendiente.update(
             {
-              rondaReconteoId: ronda.id
+              estado: 'reconteo_en_proceso',
+              reconteoCount: (pendiente.reconteoCount || 0) + 1,
+              proximaRondaNumero: pendiente.proximaRondaNumero || ronda.numeroRonda
             },
             { transaction }
           );
-          console.log('✅ rondaReconteoId actualizado en el pendiente existente');
+          console.log('✅ Pendiente actualizado a reconteo_en_proceso');
         }
       }
 
-      if (!pendiente) {
-        const pendienteEnOtraRonda = await DiscrepanciaConteo.findOne({
-          where: {
-            sku: skuFinal,
-            inventarioId: ronda.inventarioId,
-            zonaId: ronda.zonaId,
-            estado: {
-              [Op.in]: ['pendiente_reconteo', 'reconteo_en_proceso', 'pendiente']
-            }
-          },
-          order: [['updatedAt', 'DESC']],
-          transaction
-        });
-
-        await transaction.rollback();
-
-        if (pendienteEnOtraRonda) {
-          return res.status(403).json({
-            ok: false,
-            message: `Ese SKU ya está pendiente en otra ronda de reconteo`
-          });
-        }
-
-        return res.status(403).json({
-          ok: false,
-          message: 'Ese SKU no está pendiente para esta ronda de reconteo'
-        });
-      }
-
-      if (
-        !pendiente.estado ||
-        pendiente.estado === 'pendiente' ||
-        pendiente.estado === 'pendiente_reconteo'
-      ) {
-        await pendiente.update(
-          {
-            estado: 'reconteo_en_proceso',
-            reconteoCount: Number(pendiente.reconteoCount || 0) + 1,
-            proximaRondaNumero: pendiente.proximaRondaNumero || ronda.numeroRonda
-          },
-          { transaction }
-        );
-
-        console.log('✅ Pendiente actualizado a reconteo_en_proceso');
-      }
-
-      console.log('✅ RESULTADO: SKU válido para reconteo');
       console.log('====================================\n');
     }
 
+    // Crear la lectura (siempre se crea, haya o no pendiente)
     const lectura = await Lectura.create(
       {
         inventarioId: ronda.inventarioId,
@@ -585,8 +609,17 @@ async function scanLecturaRonda(req, res, next) {
       { transaction }
     );
 
-    const cantidadTotalReconteo = await calcularTotalReconteo(ronda.id, skuFinal, transaction);
+    // Calcular total acumulado
+    const cantidadTotalReconteo = await Lectura.sum('cantidad', {
+      where: {
+        rondaId: ronda.id,
+        sku: skuFinal,
+        estado: 'valida'
+      },
+      transaction
+    });
 
+    // Actualizar discrepancia si existe
     if (esReconteo && pendiente) {
       const nuevaDiferencia = Math.abs(
         Number(pendiente.cantidadBase || 0) - Number(cantidadTotalReconteo || 0)
@@ -595,27 +628,29 @@ async function scanLecturaRonda(req, res, next) {
       await pendiente.update(
         {
           cantidadUltima: cantidadTotalReconteo,
+          cantidadRecontada: cantidadTotalReconteo,
           diferencia: nuevaDiferencia,
           ultimaRondaId: ronda.id
         },
         { transaction }
       );
 
-      // 🔥 NUEVO: Si la diferencia es 0, marcar como conciliado
-      if (nuevaDiferencia === 0) {
+      // Si la diferencia es 0, marcar como conciliado
+      if (nuevaDiferencia === 0 && pendiente.cantidadBase > 0) {
         await pendiente.update(
           {
-            estado: 'conciliado',
+            estado: 'resuelta',
             cantidadFinal: cantidadTotalReconteo,
             criterioCierre: `reconteo_completado_ronda_${ronda.numeroRonda}`,
             cerradoEn: new Date()
           },
           { transaction }
         );
-        console.log(`✅ SKU ${skuFinal} conciliado (diferencia 0)`);
+        console.log(`✅ SKU ${skuFinal} CONCILIADO - Diferencia 0`);
       }
     }
 
+    // Actualizar total de escaneos de la ronda
     const totalEscaneosRonda = await Lectura.sum('cantidad', {
       where: {
         rondaId: ronda.id,
@@ -654,12 +689,14 @@ async function scanLecturaRonda(req, res, next) {
 
     if (esReconteo && pendiente) {
       responseData.discrepancia = {
+        id: pendiente.id,
         cantidadBase: Number(pendiente.cantidadBase || 0),
         cantidadReconteo: cantidadTotalReconteo,
         diferencia: Math.abs(
           Number(pendiente.cantidadBase || 0) - Number(cantidadTotalReconteo || 0)
         ),
-        reconteoCount: Number(pendiente.reconteoCount || 0)
+        reconteoCount: Number(pendiente.reconteoCount || 0),
+        estado: pendiente.estado
       };
     }
 
@@ -672,10 +709,10 @@ async function scanLecturaRonda(req, res, next) {
     });
   } catch (error) {
     await transaction.rollback();
+    console.error('❌ Error en scanLecturaRonda:', error);
     next(error);
   }
 }
-// Agregar esta función al controlador de escaneo
 
 // ==================== ANULAR LECTURA ====================
 
