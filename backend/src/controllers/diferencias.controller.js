@@ -1115,51 +1115,84 @@ async function generarReconteoDesdeComparacion(req, res, next) {
     );
 
     /*
-  Asignar la ronda de reconteo a todos los grupos del inventario comparado
-  que estén asignados a la zona objetivo.
-*/
+   Asignar la ronda de reconteo a todos los grupos del inventario comparado.
+ 
+   Esto evita que la ronda quede visible solo para un grupo equivocado.
+   El endpoint getMisRondasParaEscaneo filtra por usuario_grupo + asignaciones_ronda,
+   así que si el usuario no pertenece al grupo asignado aquí, no verá la ronda.
+ */
     const {
       Grupo,
       AsignacionRonda,
       AsignacionConteo
     } = require('../models');
 
-    const asignacionesConteoObjetivo = await AsignacionConteo.findAll({
+    let gruposObjetivo = await Grupo.findAll({
       where: {
-        inventarioId: inventarioObjetivoId,
-        zonaId: zonaObjetivoId
+        inventarioId: inventarioObjetivoId
       },
-      order: [
-        ['conteoTipo', 'ASC'],
-        ['id', 'ASC']
-      ],
       transaction
     });
 
-    const grupoIdsObjetivo = [
-      ...new Set(
-        asignacionesConteoObjetivo
-          .map((item) => Number(item.grupoId))
-          .filter(Boolean)
-      )
-    ];
+    if (!gruposObjetivo.length) {
+      const asignacionesConteoObjetivo = await AsignacionConteo.findAll({
+        where: {
+          inventarioId: inventarioObjetivoId,
+          zonaId: zonaObjetivoId
+        },
+        order: [
+          ['conteoTipo', 'ASC'],
+          ['id', 'ASC']
+        ],
+        transaction
+      });
 
-    if (grupoIdsObjetivo.length === 0) {
+      const grupoIdsObjetivo = [
+        ...new Set(
+          asignacionesConteoObjetivo
+            .map((item) => Number(item.grupoId))
+            .filter(Boolean)
+        )
+      ];
+
+      if (grupoIdsObjetivo.length > 0) {
+        gruposObjetivo = await Grupo.findAll({
+          where: {
+            id: {
+              [Op.in]: grupoIdsObjetivo
+            }
+          },
+          transaction
+        });
+      }
+    }
+
+    if (!gruposObjetivo.length) {
       await transaction.rollback();
       return res.status(400).json({
         ok: false,
-        message: `No se encontraron grupos asignados para el inventario comparado ${inventarioObjetivoId} en la zona ${zonaComparada.nombre}.`
+        message: `No se encontraron grupos para asignar la ronda en el inventario comparado ${inventarioObjetivoId}.`
       });
     }
 
-    const gruposObjetivo = await Grupo.findAll({
-      where: {
-        id: {
-          [Op.in]: grupoIdsObjetivo
-        }
-      },
-      transaction
-    });
+    for (const grupo of gruposObjetivo) {
+      await AsignacionRonda.findOrCreate({
+        where: {
+          rondaId: nuevaRonda.id,
+          grupoId: grupo.id
+        },
+        defaults: {
+          rondaId: nuevaRonda.id,
+          grupoId: grupo.id,
+          estado: 'asignada'
+        },
+        transaction
+      });
+
+      console.log(`✅ Ronda ${nuevaRonda.id} asignada al grupo ${grupo.id} - ${grupo.nombre}`);
+    }
+
+    const grupoObjetivo = gruposObjetivo[0];
 
     if (gruposObjetivo.length === 0) {
       await transaction.rollback();
