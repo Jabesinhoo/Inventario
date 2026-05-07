@@ -105,33 +105,30 @@ async function getSkuComparisonRows(
     zonaParam: 'zonaComparadaId'
   });
 
+  // 🔥 CORREGIDO: usar la misma lógica para ambos inventarios
   const baseRows = await sequelize.query(
     `
-  WITH ultima_ronda_completa AS (
-    SELECT id
-    FROM rondas_conteo
-    WHERE "inventarioId" = :inventarioBaseId
-      AND "tipoRonda" = 'completa'
-      AND estado = 'cerrada'
-    ORDER BY "numeroRonda" DESC
-    LIMIT 1
-  ),
-  lecturas_base AS (
-    SELECT l.sku, l."rondaId", l.cantidad, l."descripcionSnapshot"
+    WITH ultima_ronda_base AS (
+      SELECT id
+      FROM rondas_conteo
+      WHERE "inventarioId" = :inventarioBaseId
+        AND "tipoRonda" = 'completa'
+        AND estado = 'cerrada'
+      ORDER BY "numeroRonda" DESC
+      LIMIT 1
+    )
+    SELECT 
+      l.sku,
+      MAX(l."descripcionSnapshot") AS descripcion,
+      COALESCE(SUM(l.cantidad), 0)::int AS cantidad
     FROM lecturas l
     WHERE l."inventarioId" = :inventarioBaseId
       AND l.estado = 'valida'
       AND l.sku IS NOT NULL
-      AND l."rondaId" IN (SELECT id FROM ultima_ronda_completa)
+      AND l."rondaId" IN (SELECT id FROM ultima_ronda_base)
       ${filterBase}
-  )
-  SELECT
-    l.sku,
-    MAX(l."descripcionSnapshot") AS descripcion,
-    COALESCE(SUM(l.cantidad), 0)::int AS cantidad
-  FROM lecturas_base l
-  GROUP BY l.sku
-  ORDER BY l.sku ASC
+    GROUP BY l.sku
+    ORDER BY l.sku ASC
     `,
     {
       replacements: {
@@ -143,35 +140,31 @@ async function getSkuComparisonRows(
     }
   );
 
-  // Reemplaza la segunda consulta (comparadoRows) por esta versión corregida:
+  // 🔥 CORREGIDO: misma lógica para el inventario comparado
   const comparadoRows = await sequelize.query(
     `
-  WITH ultima_ronda_completa AS (
-    SELECT id
-    FROM rondas_conteo
-    WHERE "inventarioId" = :inventarioComparadoId
-      AND "tipoRonda" = 'completa'
-      AND estado = 'cerrada'
-    ORDER BY "numeroRonda" DESC
-    LIMIT 1
-  ),
-  lecturas_comparado AS (
-    SELECT l.sku, l."rondaId", l.cantidad, l."descripcionSnapshot"
+    WITH ultima_ronda_comparado AS (
+      SELECT id
+      FROM rondas_conteo
+      WHERE "inventarioId" = :inventarioComparadoId
+        AND "tipoRonda" = 'completa'
+        AND estado = 'cerrada'
+      ORDER BY "numeroRonda" DESC
+      LIMIT 1
+    )
+    SELECT 
+      l.sku,
+      MAX(l."descripcionSnapshot") AS descripcion,
+      COALESCE(SUM(l.cantidad), 0)::int AS cantidad
     FROM lecturas l
     WHERE l."inventarioId" = :inventarioComparadoId
       AND l.estado = 'valida'
       AND l.sku IS NOT NULL
-      AND l."rondaId" IN (SELECT id FROM ultima_ronda_completa)
+      AND l."rondaId" IN (SELECT id FROM ultima_ronda_comparado)
       ${filterComparado}
-  )
-  SELECT
-    l.sku,
-    MAX(l."descripcionSnapshot") AS descripcion,
-    COALESCE(SUM(l.cantidad), 0)::int AS cantidad
-  FROM lecturas_comparado l
-  GROUP BY l.sku
-  ORDER BY l.sku ASC
-  `,
+    GROUP BY l.sku
+    ORDER BY l.sku ASC
+    `,
     {
       replacements: {
         inventarioComparadoId,
@@ -936,6 +929,14 @@ async function generarReconteoDesdeComparacion(req, res, next) {
     const inventarioComparadoIdNum = Number(inventarioComparadoId);
     const zonaBaseIdNum = zonaBaseId ? Number(zonaBaseId) : null;
     const zonaComparadaIdNum = zonaComparadaId ? Number(zonaComparadaId) : null;
+
+    const comparisonRows = await getSkuComparisonRows(
+      inventarioBaseIdNum,
+      inventarioComparadoIdNum,
+      allowedGroupIds,
+      zonaBaseIdNum,
+      zonaComparadaIdNum
+    );
 
     console.log('🔥 generarReconteoDesdeComparacion - Parámetros:', {
       inventarioBaseId: inventarioBaseIdNum,
