@@ -1229,13 +1229,28 @@ async function getRondaActivaDelGrupo(req, res, next) {
     next(error);
   }
 }
+
 async function deleteRonda(req, res, next) {
   const transaction = await sequelize.transaction();
 
   try {
-    const { id } = req.params;
+    const rondaId = Number(req.params.id);
 
-    const ronda = await RondaConteo.findByPk(id, { transaction });
+    const rolUsuario = String(req.user?.rol || '').toLowerCase();
+
+    const puedeEliminar =
+      Boolean(req.canViewAllGroups) ||
+      ['admin', 'supervisor'].includes(rolUsuario);
+
+    if (!puedeEliminar) {
+      await transaction.rollback();
+      return res.status(403).json({
+        ok: false,
+        message: 'No tienes permiso para eliminar rondas'
+      });
+    }
+
+    const ronda = await RondaConteo.findByPk(rondaId, { transaction });
 
     if (!ronda) {
       await transaction.rollback();
@@ -1245,23 +1260,39 @@ async function deleteRonda(req, res, next) {
       });
     }
 
-    const totalLecturas = await Lectura.count({
-      where: { rondaId: ronda.id },
+    const lecturasEliminadas = await Lectura.destroy({
+      where: {
+        rondaId
+      },
       transaction
     });
-
-    if (totalLecturas > 0) {
-      await transaction.rollback();
-      return res.status(409).json({
-        ok: false,
-        message: 'No se puede eliminar la ronda porque ya tiene lecturas registradas'
-      });
-    }
 
     await AsignacionRonda.destroy({
-      where: { rondaId: ronda.id },
+      where: {
+        rondaId
+      },
       transaction
     });
+
+    if (ronda.tipoRonda === 'reconteo') {
+      await DiscrepanciaConteo.update(
+        {
+          rondaReconteoId: null,
+          estado: 'pendiente_reconteo',
+          cantidadRecontada: 0,
+          cantidadUltima: 0,
+          cantidadFinal: null,
+          criterioCierre: null,
+          cerradoEn: null
+        },
+        {
+          where: {
+            rondaReconteoId: rondaId
+          },
+          transaction
+        }
+      );
+    }
 
     await ronda.destroy({ transaction });
 
@@ -1269,13 +1300,25 @@ async function deleteRonda(req, res, next) {
 
     return res.json({
       ok: true,
-      message: 'Ronda eliminada correctamente'
+      message: `Ronda eliminada correctamente. Lecturas eliminadas: ${lecturasEliminadas}`,
+      data: {
+        rondaId,
+        lecturasEliminadas
+      }
     });
   } catch (error) {
-    await transaction.rollback();
+    try {
+      if (!transaction.finished) {
+        await transaction.rollback();
+      }
+    } catch (rollbackError) {
+      console.error('Error haciendo rollback al eliminar ronda:', rollbackError);
+    }
+
     next(error);
   }
 }
+
 
 async function abrirTodasRondasInventario(req, res, next) {
   const transaction = await sequelize.transaction();

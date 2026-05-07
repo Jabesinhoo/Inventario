@@ -730,14 +730,6 @@ async function anularLectura(req, res, next) {
       });
     }
 
-    if (!req.canViewAllGroups && Number(lectura.grupoId) !== Number(req.grupoId)) {
-      await transaction.rollback();
-      return res.status(403).json({
-        ok: false,
-        message: 'No puedes anular una lectura de otro grupo'
-      });
-    }
-
     if (lectura.estado === 'anulada') {
       await transaction.rollback();
       return res.status(400).json({
@@ -746,67 +738,173 @@ async function anularLectura(req, res, next) {
       });
     }
 
-    await lectura.update({ estado: 'anulada' }, { transaction });
+    const rolUsuario = String(req.user?.rol || '').toLowerCase();
 
-    if (lectura.rondaId) {
-      const ronda = await RondaConteo.findByPk(lectura.rondaId, { transaction });
+    const puedeGestionarTodo =
+      Boolean(req.canViewAllGroups) ||
+      ['admin', 'supervisor'].includes(rolUsuario);
 
-      if (ronda && ronda.tipoRonda === 'reconteo' && lectura.sku) {
-        const nuevaCantidad = await calcularTotalReconteo(
-          ronda.id,
-          lectura.sku,
+    let puedeAnular = puedeGestionarTodo;
+
+    // El usuario siempre puede anular su propia lectura.
+    if (!puedeAnular && Number(lectura.usuarioId) === Number(req.user.id)) {
+      puedeAnular = true;
+    }
+
+    // Si no es admin/supervisor, validar acceso por grupo o por reconteo/zona.
+    if (!puedeAnular) {
+      const gruposUsuario = await sequelize.query(
+        `
+        SELECT DISTINCT ug."grupoId"
+        FROM usuario_grupo ug
+        WHERE ug."usuarioId" = :usuarioId
+        `,
+        {
+          replacements: { usuarioId: req.user.id },
+          type: QueryTypes.SELECT,
           transaction
+        }
+      );
+
+      const grupoIds = gruposUsuario
+        .map((row) => Number(row.grupoId))
+        .filter(Boolean);
+
+      if (grupoIds.includes(Number(lectura.grupoId))) {
+        puedeAnular = true;
+      }
+
+      if (!puedeAnular && lectura.rondaId) {
+        const rondaLectura = await RondaConteo.findByPk(lectura.rondaId, {
+          transaction
+        });
+
+        /*
+          Para reconteos:
+          permitir anular si el usuario pertenece a un grupo asignado
+          al mismo inventario + zona mediante asignaciones_conteo.
+        */
+        if (rondaLectura?.tipoRonda === 'reconteo') {
+          const accesoPorZona = await AsignacionConteo.findOne({
+            where: {
+              inventarioId: rondaLectura.inventarioId,
+              zonaId: rondaLectura.zonaId,
+              grupoId: {
+                [Op.in]: grupoIds
+              }
+            },
+            transaction
+          });
+
+          if (accesoPorZona) {
+            puedeAnular = true;
+          }
+        }
+      }
+    }
+
+    if (!puedeAnular) {
+      await transaction.rollback();
+      return res.status(403).json({
+        ok: false,
+        message: 'No puedes anular esta lectura'
+      });
+    }
+
+    const ronda = lectura.rondaId
+      ? await RondaConteo.findByPk(lectura.rondaId, { transaction })
+      : null;
+
+    await lectura.update(
+      {
+        estado: 'anulada'
+      },
+      { transaction }
+    );
+
+    if (ronda && ronda.tipoRonda === 'reconteo' && lectura.sku) {
+      const nuevaCantidad = await calcularTotalReconteo(
+        ronda.id,
+        lectura.sku,
+        transaction
+      );
+
+      const discrepancia = await DiscrepanciaConteo.findOne({
+        where: {
+          inventarioId: ronda.inventarioId,
+          zonaId: ronda.zonaId,
+          sku: lectura.sku,
+          rondaReconteoId: ronda.id
+        },
+        transaction
+      });
+
+      if (discrepancia) {
+        const nuevaDiferencia = Math.abs(
+          Number(discrepancia.cantidadBase || 0) - Number(nuevaCantidad || 0)
         );
 
-        const discrepancia = await DiscrepanciaConteo.findOne({
-          where: {
-            inventarioId: ronda.inventarioId,
-            zonaId: ronda.zonaId,
-            sku: lectura.sku
-          },
-          transaction
-        });
+        let nuevoEstado = 'pendiente_reconteo';
+        let cantidadFinal = null;
+        let criterioCierre = null;
+        let cerradoEn = null;
 
-        if (discrepancia) {
-          await discrepancia.update(
-            {
-              cantidadUltima: nuevaCantidad,
-              diferencia: Math.abs(
-                Number(discrepancia.cantidadBase || 0) - Number(nuevaCantidad || 0)
-              ),
-              ultimaRondaId: ronda.id
-            },
-            { transaction }
-          );
+        if (Number(nuevaCantidad || 0) > 0) {
+          nuevoEstado = nuevaDiferencia === 0
+            ? 'resuelta'
+            : 'reconteo_en_proceso';
+
+          if (nuevoEstado === 'resuelta') {
+            cantidadFinal = Number(nuevaCantidad || 0);
+            criterioCierre = `reconteo_completado_ronda_${ronda.numeroRonda}`;
+            cerradoEn = new Date();
+          }
         }
 
-        const totalEscaneosRonda = await Lectura.sum('cantidad', {
-          where: {
-            rondaId: ronda.id,
-            estado: 'valida'
-          },
-          transaction
-        });
-
-        await ronda.update(
+        await discrepancia.update(
           {
-            totalEscaneos: Number(totalEscaneosRonda || 0),
-            updatedAt: new Date()
+            cantidadUltima: Number(nuevaCantidad || 0),
+            cantidadRecontada: Number(nuevaCantidad || 0),
+            diferencia: nuevaDiferencia,
+            estado: nuevoEstado,
+            cantidadFinal,
+            criterioCierre,
+            cerradoEn,
+            ultimaRondaId: ronda.id
           },
           { transaction }
         );
       }
     }
 
+    if (ronda) {
+      const totalEscaneosRonda = await Lectura.sum('cantidad', {
+        where: {
+          rondaId: ronda.id,
+          estado: 'valida'
+        },
+        transaction
+      });
+
+      await ronda.update(
+        {
+          totalEscaneos: Number(totalEscaneosRonda || 0),
+          updatedAt: new Date()
+        },
+        { transaction }
+      );
+    }
+
     await transaction.commit();
 
-    res.json({
+    return res.json({
       ok: true,
       message: 'Lectura anulada correctamente',
       data: {
         lecturaId: lectura.id,
         sku: lectura.sku,
-        codigoLeido: lectura.codigoLeido
+        codigoLeido: lectura.codigoLeido,
+        rondaId: lectura.rondaId
       }
     });
   } catch (error) {
