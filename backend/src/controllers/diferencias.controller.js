@@ -107,28 +107,31 @@ async function getSkuComparisonRows(
 
   const baseRows = await sequelize.query(
     `
-    WITH ultima_ronda_por_sku AS (
-      SELECT DISTINCT ON (l.sku)
-        l.sku,
-        l."rondaId"
-      FROM lecturas l
-      LEFT JOIN rondas_conteo r ON r.id = l."rondaId"
-      WHERE l."inventarioId" = :inventarioBaseId
-        AND l.estado = 'valida'
-        AND l.sku IS NOT NULL
-        ${zonaBaseId ? 'AND l."zonaId" = :zonaBaseId' : ''}
-        ${filterBase}
-      ORDER BY l.sku, r."createdAt" DESC NULLS LAST
-    )
-    SELECT
-      ur.sku,
-      MAX(l."descripcionSnapshot") AS descripcion,
-      COALESCE(SUM(l.cantidad), 0)::int AS cantidad
-    FROM ultima_ronda_por_sku ur
-    JOIN lecturas l ON l."rondaId" = ur."rondaId" AND l.sku = ur.sku
-    WHERE l.estado = 'valida'
-    GROUP BY ur.sku
-    ORDER BY ur.sku ASC
+  WITH ultima_ronda_completa AS (
+    SELECT id
+    FROM rondas_conteo
+    WHERE "inventarioId" = :inventarioBaseId
+      AND "tipoRonda" = 'completa'
+      AND estado = 'cerrada'
+    ORDER BY "numeroRonda" DESC
+    LIMIT 1
+  ),
+  lecturas_base AS (
+    SELECT l.sku, l."rondaId", l.cantidad, l."descripcionSnapshot"
+    FROM lecturas l
+    WHERE l."inventarioId" = :inventarioBaseId
+      AND l.estado = 'valida'
+      AND l.sku IS NOT NULL
+      AND l."rondaId" IN (SELECT id FROM ultima_ronda_completa)
+      ${filterBase}
+  )
+  SELECT
+    l.sku,
+    MAX(l."descripcionSnapshot") AS descripcion,
+    COALESCE(SUM(l.cantidad), 0)::int AS cantidad
+  FROM lecturas_base l
+  GROUP BY l.sku
+  ORDER BY l.sku ASC
     `,
     {
       replacements: {
@@ -913,32 +916,22 @@ async function exportarComparacionExcel(req, res, next) {
 
 
 async function generarReconteoDesdeComparacion(req, res, next) {
-  console.log('🔥 FUNCIÓN LLAMADA: generarReconteoDesdeComparacion 🔥');
-  console.log('Body recibido:', JSON.stringify(req.body, null, 2));
+  const transaction = await sequelize.transaction();
 
   try {
     const { inventarioBaseId, inventarioComparadoId, zonaId } = req.body;
-    console.log('📦 Parámetros:', { inventarioBaseId, inventarioComparadoId, zonaId });
+
+    console.log('🔥 generarReconteoDesdeComparacion - Parámetros:', { inventarioBaseId, inventarioComparadoId, zonaId });
 
     if (!inventarioBaseId || !inventarioComparadoId) {
+      await transaction.rollback();
       return res.status(400).json({
         ok: false,
         message: 'Se requiere inventarioBaseId y inventarioComparadoId'
       });
     }
 
-    const [inventarioBase, inventarioComparado] = await Promise.all([
-      Inventario.findByPk(inventarioBaseId),
-      Inventario.findByPk(inventarioComparadoId)
-    ]);
-
-    if (!inventarioBase || !inventarioComparado) {
-      return res.status(404).json({
-        ok: false,
-        message: 'Uno de los inventarios no existe'
-      });
-    }
-
+    // 1. Obtener las diferencias entre los inventarios
     const allowedGroupIds = await getAllowedGroupIds(req);
 
     const comparisonRows = await getSkuComparisonRows(
@@ -951,71 +944,125 @@ async function generarReconteoDesdeComparacion(req, res, next) {
 
     const diferencias = comparisonRows.filter(row => row.estado === 'difiere');
 
+    console.log(`📊 Diferencias encontradas: ${diferencias.length}`);
+
     if (diferencias.length === 0) {
+      await transaction.rollback();
       return res.status(400).json({
         ok: false,
         message: 'No hay diferencias entre los inventarios para generar un reconteo'
       });
     }
 
-    const zona = zonaId ? await Zona.findByPk(zonaId) : null;
+    // 2. Obtener la zona (si no viene, usar la primera zona disponible)
+    let zonaFinal = zonaId;
+    if (!zonaFinal) {
+      const primeraZona = await Zona.findOne({
+        where: { inventarioId: inventarioBaseId },
+        order: [['id', 'ASC']],
+        transaction
+      });
+      zonaFinal = primeraZona?.id || null;
+    }
 
-    const lastRonda = await RondaConteo.findOne({
+    // 3. Obtener la última ronda completa
+    const ultimaRondaCompleta = await RondaConteo.findOne({
       where: {
         inventarioId: inventarioBaseId,
-        zonaId: zonaId || null
+        zonaId: zonaFinal,
+        tipoRonda: 'completa'
       },
       order: [['numeroRonda', 'DESC']],
-      attributes: ['numeroRonda', 'id']
+      transaction
     });
 
-    const nextRondaNumero = (lastRonda?.numeroRonda || 0) + 1;
+    // 4. Crear la nueva ronda de reconteo
+    const ultimaRonda = await RondaConteo.findOne({
+      where: { inventarioId: inventarioBaseId, zonaId: zonaFinal },
+      order: [['numeroRonda', 'DESC']],
+      transaction
+    });
+
+    const nuevoNumeroRonda = (ultimaRonda?.numeroRonda || 0) + 1;
 
     const nuevaRonda = await RondaConteo.create({
       inventarioId: inventarioBaseId,
-      zonaId: zonaId || null,
-      numeroRonda: nextRondaNumero,
+      zonaId: zonaFinal,
+      numeroRonda: nuevoNumeroRonda,
       tipoRonda: 'reconteo',
-      estado: 'activa' // Cambiar a activa para que aparezca en el escaneo
-    });
+      estado: 'activa'
+    }, { transaction });
 
-    const discrepanciasCreadas = [];
+    console.log(`✅ Ronda de reconteo creada: ID ${nuevaRonda.id}, Número ${nuevoNumeroRonda}`);
+
+    // 5. Crear discrepancias para cada diferencia
+    let creadas = 0;
+    let actualizadas = 0;
 
     for (const diferencia of diferencias) {
-      const discrepancia = await DiscrepanciaConteo.create({
-        inventarioId: inventarioBaseId,
-        sku: diferencia.sku,
-        zonaId: zonaId || null,
-        cantidadBase: diferencia.cantidadBase,
-        cantidadUltima: diferencia.cantidadComparada,
-        cantidadRecontada: 0,  // ← Agregar este campo
-        diferencia: diferencia.diferencia,
-        estado: 'pendiente_reconteo',
-        rondaReconteoId: nuevaRonda.id,
-        rondaBaseId: lastRonda?.id || 1,
-        reconteoCount: 0,
-        descripcionSnapshot: diferencia.descripcion || 'Sin descripción'
+      // Buscar si ya existe una discrepancia para este SKU
+      const existente = await DiscrepanciaConteo.findOne({
+        where: {
+          inventarioId: inventarioBaseId,
+          zonaId: zonaFinal,
+          sku: diferencia.sku
+        },
+        transaction
       });
-      discrepanciasCreadas.push(discrepancia);
-      console.log(`  ✓ Discrepancia para SKU: ${diferencia.sku}`);
+
+      if (existente) {
+        // Actualizar existente
+        await existente.update({
+          cantidadBase: diferencia.cantidadBase,
+          cantidadUltima: diferencia.cantidadComparada,
+          diferencia: diferencia.diferencia,
+          estado: 'pendiente_reconteo',
+          rondaReconteoId: nuevaRonda.id,
+          cantidadRecontada: 0,
+          reconteoCount: 0,
+          updatedAt: new Date()
+        }, { transaction });
+        actualizadas++;
+        console.log(`🔄 Actualizada discrepancia para SKU: ${diferencia.sku}`);
+      } else {
+        // Crear nueva
+        await DiscrepanciaConteo.create({
+          inventarioId: inventarioBaseId,
+          zonaId: zonaFinal,
+          sku: diferencia.sku,
+          cantidadBase: diferencia.cantidadBase,
+          cantidadUltima: diferencia.cantidadComparada,
+          diferencia: diferencia.diferencia,
+          estado: 'pendiente_reconteo',
+          rondaReconteoId: nuevaRonda.id,
+          rondaBaseId: ultimaRondaCompleta?.id || null,
+          reconteoCount: 0,
+          cantidadRecontada: 0,
+          descripcionSnapshot: diferencia.descripcion || 'Sin descripción'
+        }, { transaction });
+        creadas++;
+        console.log(`✅ Creada discrepancia para SKU: ${diferencia.sku}`);
+      }
     }
 
-    console.log(`✅ Creadas ${discrepanciasCreadas.length} discrepancias para la ronda ${nextRondaNumero}`);
+    console.log(`📊 Resumen: ${creadas} creadas, ${actualizadas} actualizadas`);
 
+    // 6. Actualizar la pareja de inventarios
     const [pareja, created] = await ParejaInventario.findOrCreate({
       where: {
         inventarioBaseId: inventarioBaseId,
         inventarioComparadoId: inventarioComparadoId,
-        zonaId: zonaId || null
+        zonaId: zonaFinal
       },
       defaults: {
         inventarioBaseId: inventarioBaseId,
         inventarioComparadoId: inventarioComparadoId,
-        zonaId: zonaId || null,
+        zonaId: zonaFinal,
         estado: 'en_reconteo',
         fechaComparacion: new Date(),
         rondasReconteoGeneradas: 1
-      }
+      },
+      transaction
     });
 
     if (!created) {
@@ -1024,25 +1071,26 @@ async function generarReconteoDesdeComparacion(req, res, next) {
         rondasReconteoGeneradas: (pareja.rondasReconteoGeneradas || 0) + 1,
         fechaComparacion: new Date(),
         fechaCompletada: null
-      });
+      }, { transaction });
     }
+
+    await transaction.commit();
 
     res.json({
       ok: true,
       message: `Ronda de reconteo generada exitosamente con ${diferencias.length} SKUs para corregir`,
       data: {
         ronda: {
-          ...nuevaRonda.toJSON(),
-          discrepancias: discrepanciasCreadas.map(d => ({
-            sku: d.sku,
-            cantidadBase: d.cantidadBase,
-            cantidadUltima: d.cantidadUltima,
-            diferencia: d.diferencia,
-            descripcion: d.descripcionSnapshot
-          }))
+          id: nuevaRonda.id,
+          numeroRonda: nuevaRonda.numeroRonda,
+          tipoRonda: nuevaRonda.tipoRonda,
+          estado: nuevaRonda.estado,
+          zonaId: nuevaRonda.zonaId
         },
         inventarioObjetivoId: inventarioBaseId,
         totalDiferencias: diferencias.length,
+        discrepanciasCreadas: creadas,
+        discrepanciasActualizadas: actualizadas,
         pareja: {
           id: pareja.id,
           estado: pareja.estado,
@@ -1050,8 +1098,10 @@ async function generarReconteoDesdeComparacion(req, res, next) {
         }
       }
     });
+
   } catch (error) {
-    console.error('Error en generarReconteoDesdeComparacion:', error);
+    await transaction.rollback();
+    console.error('❌ Error en generarReconteoDesdeComparacion:', error);
     next(error);
   }
 }

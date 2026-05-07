@@ -425,17 +425,22 @@ export default function DiferenciasPage() {
         zonaId: Number(zonaBaseId)
       });
 
-      const rondaId = response?.data?.ronda?.id;
-      const rondaNumero = response?.data?.ronda?.numeroRonda;
-      const inventarioObjetivoId =
-        response?.data?.inventarioObjetivoId || Number(inventarioBaseId);
+      // Debug para ver qué está llegando
+      console.log('Respuesta completa:', response);
 
-      setMessage(
-        `Ronda de reconteo generada correctamente${rondaNumero ? ` · Ronda ${rondaNumero}` : ''}`
-      );
+      // Acceder correctamente a los datos
+      const rondaId = response?.data?.ronda?.id ?? response?.ronda?.id;
+      const rondaNumero = response?.data?.ronda?.numeroRonda ?? response?.ronda?.numeroRonda;
+      const inventarioObjetivoId = response?.data?.inventarioObjetivoId ?? response?.inventarioObjetivoId ?? Number(inventarioBaseId);
+      const totalDiferencias = response?.data?.totalDiferencias ?? response?.totalDiferencias ?? 0;
 
-      if (rondaId && inventarioObjetivoId) {
+      if (rondaId) {
+        setMessage(
+          `✅ Ronda de reconteo generada correctamente · Ronda ${rondaNumero} · ${totalDiferencias} SKUs pendientes`
+        );
         navigate(`/escaneo?inventarioId=${inventarioObjetivoId}&rondaId=${rondaId}`);
+      } else {
+        setError('La ronda se generó pero no se pudo obtener el ID');
       }
     } catch (err) {
       setError(

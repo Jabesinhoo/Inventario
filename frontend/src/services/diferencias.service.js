@@ -48,6 +48,5 @@ export async function generarRondaReconteoDesdeComparacion(data) {
     inventarioComparadoId: data.inventarioComparadoId,
     zonaId: data.zonaId
   });
-  
   return response;
 }
