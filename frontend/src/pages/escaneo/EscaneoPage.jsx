@@ -905,7 +905,7 @@ export default function EscaneoPage() {
                 <div className="pending-panel">
                   <div className="pending-header">
                     <AlertTriangle size={16} />
-                    <span>SKU pendientes para reconteo</span>
+                    <span>SKU pendientes para reconteo ({pendientes.length})</span>
                   </div>
 
                   {pendientes.length === 0 ? (
@@ -916,7 +916,7 @@ export default function EscaneoPage() {
                     </div>
                   ) : (
                     <div className="pending-list">
-                      {pendientes.slice(0, 12).map((item) => (
+                      {pendientes.map((item) => (
                         <div key={`${item.sku}-${item.id}`} className="pending-item">
                           <div>
                             <strong>{item.sku}</strong>
