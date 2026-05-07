@@ -1110,60 +1110,62 @@ async function generarReconteoDesdeComparacion(req, res, next) {
     );
 
     /*
-      Crear asignación de ronda para que EscaneoPage tenga grupo asignado.
-      Esto evita que la ronda aparezca sin grupo y no deje escanear.
-      Se requiere que existan Grupo / AsignacionRonda / AsignacionConteo en ../models.
-    */
-    const {
-      Grupo,
-      AsignacionRonda,
-      AsignacionConteo
-    } = require('../models');
+  Crear asignación de ronda para que EscaneoPage tenga grupo asignado.
 
-    let grupoObjetivo = await Grupo.findOne({
-      where: {
-        inventarioId: inventarioObjetivoId,
-        zonaId: zonaObjetivoId
-      },
-      transaction
-    });
+  IMPORTANTE:
+  La tabla/modelo Grupo no tiene zonaId.
+  Por eso buscamos primero en AsignacionConteo por inventarioId + zonaId,
+  y desde ahí obtenemos el grupoId.
+*/
+const {
+  Grupo,
+  AsignacionRonda,
+  AsignacionConteo
+} = require('../models');
 
-    if (!grupoObjetivo) {
-      const asignacionConteo = await AsignacionConteo.findOne({
-        where: {
-          inventarioId: inventarioObjetivoId,
-          zonaId: zonaObjetivoId
-        },
-        order: [['id', 'ASC']],
-        transaction
-      });
+const asignacionConteoObjetivo = await AsignacionConteo.findOne({
+  where: {
+    inventarioId: inventarioObjetivoId,
+    zonaId: zonaObjetivoId
+  },
+  order: [
+    ['conteoTipo', 'ASC'],
+    ['id', 'ASC']
+  ],
+  transaction
+});
 
-      if (asignacionConteo?.grupoId) {
-        grupoObjetivo = await Grupo.findByPk(asignacionConteo.grupoId, {
-          transaction
-        });
-      }
-    }
+if (!asignacionConteoObjetivo?.grupoId) {
+  await transaction.rollback();
+  return res.status(400).json({
+    ok: false,
+    message: `No se encontró una asignación de conteo para el inventario comparado ${inventarioObjetivoId} en la zona ${zonaComparada.nombre}.`
+  });
+}
 
-    if (!grupoObjetivo) {
-      await transaction.rollback();
-      return res.status(400).json({
-        ok: false,
-        message: `No se encontró un grupo asignado para el inventario comparado ${inventarioObjetivoId} en la zona ${zonaComparada.nombre}.`
-      });
-    }
+const grupoObjetivo = await Grupo.findByPk(asignacionConteoObjetivo.grupoId, {
+  transaction
+});
 
-    await AsignacionRonda.findOrCreate({
-      where: {
-        rondaId: nuevaRonda.id
-      },
-      defaults: {
-        rondaId: nuevaRonda.id,
-        grupoId: grupoObjetivo.id,
-        estado: 'asignada'
-      },
-      transaction
-    });
+if (!grupoObjetivo) {
+  await transaction.rollback();
+  return res.status(400).json({
+    ok: false,
+    message: `La asignación de conteo apunta al grupo ${asignacionConteoObjetivo.grupoId}, pero ese grupo no existe.`
+  });
+}
+
+await AsignacionRonda.findOrCreate({
+  where: {
+    rondaId: nuevaRonda.id
+  },
+  defaults: {
+    rondaId: nuevaRonda.id,
+    grupoId: grupoObjetivo.id,
+    estado: 'asignada'
+  },
+  transaction
+});
 
     let creadas = 0;
     let actualizadas = 0;
