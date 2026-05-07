@@ -35,7 +35,7 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.INTEGER,
         allowNull: true
       },
-       rondaReconteoId: {
+      rondaReconteoId: {
         type: DataTypes.INTEGER,
         allowNull: true,
         references: {
@@ -83,7 +83,12 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.INTEGER,
         defaultValue: 0,
         allowNull: true
-      }
+      },
+      cantidadRecontada: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+        defaultValue: 0
+      },
     },
     {
       tableName: 'discrepancias_conteo',

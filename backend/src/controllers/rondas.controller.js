@@ -572,48 +572,39 @@ async function getPendientesRonda(req, res, next) {
     console.log('Tipo ronda:', ronda.tipoRonda);
     console.log('Estado:', ronda.estado);
 
-    // Para rondas de reconteo, buscar discrepancias pendientes
     let discrepancias = [];
     
     if (ronda.tipoRonda === 'reconteo') {
-      // Buscar discrepancias que aún no han sido resueltas
+      // 🔥 CORREGIDO: Buscar discrepancias asociadas a esta ronda O las que tienen diferencia pendiente
       discrepancias = await DiscrepanciaConteo.findAll({
         where: {
           inventarioId: ronda.inventarioId,
-          zonaId: ronda.zonaId,
-          rondaReconteoId: ronda.id,
-          estado: {
-            [Op.in]: ['pendiente_reconteo', 'reconteo_en_proceso']
-          }
+          zonaId: ronda.zonaId || null,
+          [Op.or]: [
+            { rondaReconteoId: ronda.id },  // Discrepancias de esta ronda
+            { 
+              diferencia: { [Op.ne]: 0 },
+              estado: { [Op.in]: ['pendiente_reconteo', 'reconteo_en_proceso', 'pendiente'] },
+              rondaReconteoId: { [Op.is]: null }  // Discrepancias sin asignar
+            }
+          ]
         },
         order: [['diferencia', 'DESC'], ['sku', 'ASC']]
       });
       
       console.log('Discrepancias encontradas:', discrepancias.length);
       
-      // Si no hay discrepancias, buscar también las que tienen diferencia pendiente
-      if (discrepancias.length === 0) {
-        discrepancias = await DiscrepanciaConteo.findAll({
-          where: {
-            inventarioId: ronda.inventarioId,
-            zonaId: ronda.zonaId,
-            diferencia: { [Op.ne]: 0 },
-            estado: { [Op.ne]: 'resuelta' }
-          },
-          order: [['diferencia', 'DESC'], ['sku', 'ASC']]
-        });
-        console.log('Discrepancias por diferencia encontradas:', discrepancias.length);
+      // Si hay discrepancias sin rondaReconteoId, asignarlas a esta ronda
+      for (const disc of discrepancias) {
+        if (!disc.rondaReconteoId) {
+          await disc.update({ rondaReconteoId: ronda.id });
+          console.log(`✅ Asignada discrepancia de ${disc.sku} a ronda ${ronda.id}`);
+        }
       }
     }
 
     console.log('Pendientes encontrados:', discrepancias.length);
-    console.log('Detalle pendientes:', discrepancias.map((x) => ({
-      sku: x.sku,
-      diferencia: x.diferencia,
-      estado: x.estado,
-      cantidadBase: x.cantidadBase,
-      cantidadUltima: x.cantidadUltima
-    })));
+    console.log('Detalle:', discrepancias.map(x => ({ sku: x.sku, diferencia: x.diferencia, estado: x.estado })));
     console.log('=====================================\n');
 
     const skus = [...new Set(discrepancias.map((item) => item.sku).filter(Boolean))];
@@ -624,9 +615,7 @@ async function getPendientesRonda(req, res, next) {
       const detalles = await ConteoInicialDetalle.findAll({
         where: {
           inventarioId: ronda.inventarioId,
-          sku: {
-            [Op.in]: skus
-          }
+          sku: { [Op.in]: skus }
         }
       });
 
@@ -643,25 +632,23 @@ async function getPendientesRonda(req, res, next) {
 
     const pendientes = discrepancias.map((item) => {
       const detalle = mapaDetalle.get(item.sku);
+      
+      // Calcular cantidad recontada actual
+      const cantidadRecontada = item.cantidadRecontada || 0;
+      const diferenciaRestante = item.cantidadBase - cantidadRecontada;
 
       return {
         id: item.id,
         inventarioId: item.inventarioId,
         zonaId: item.zonaId,
-        productoId: item.productoId,
         sku: item.sku,
         descripcionSnapshot: detalle?.descripcionSnapshot || item.descripcionSnapshot || 'Sin descripción',
-        codigoLeido: detalle?.codigoLeido || null,
-        rondaBaseId: item.rondaBaseId,
-        ultimaRondaId: item.ultimaRondaId,
         cantidadBase: Number(item.cantidadBase || 0),
         cantidadUltima: Number(item.cantidadUltima || 0),
-        diferencia: Number(item.diferencia || 0),
+        cantidadRecontada: cantidadRecontada,
+        diferencia: diferenciaRestante,
+        diferenciaOriginal: Number(item.diferencia || 0),
         estado: item.estado,
-        proximaRondaNumero: item.proximaRondaNumero,
-        cantidadFinal: item.cantidadFinal,
-        criterioCierre: item.criterioCierre,
-        cerradoEn: item.cerradoEn,
         reconteoCount: Number(item.reconteoCount || 0)
       };
     });

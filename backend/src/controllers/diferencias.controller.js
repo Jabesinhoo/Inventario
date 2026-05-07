@@ -533,7 +533,7 @@ async function exportarComparacionExcel(req, res, next) {
 
     // Obtener cantidades aceptadas
     let cantidadesAceptadas = {};
-    
+
     if (req.method === 'POST') {
       cantidadesAceptadas = req.body.cantidadesAceptadas || {};
       console.log('📦 Obteniendo cantidades del BODY (POST)');
@@ -626,10 +626,10 @@ async function exportarComparacionExcel(req, res, next) {
 
     // Calcular totales generales
     for (const producto of todosProductos) {
-      let cantidadAceptada = cantidadesAceptadas[producto.sku] !== undefined 
+      let cantidadAceptada = cantidadesAceptadas[producto.sku] !== undefined
         ? Number(cantidadesAceptadas[producto.sku])
         : producto.cantidadComparada || 0;
-      
+
       const datosBD = datosProductosMap.get(producto.sku) || {};
       const precioCoste = datosBD.precioCoste || 0;
 
@@ -704,10 +704,10 @@ async function exportarComparacionExcel(req, res, next) {
 
     // Agregar todos los productos al inventario completo
     for (const producto of todosProductos) {
-      let cantidadAceptada = cantidadesAceptadas[producto.sku] !== undefined 
+      let cantidadAceptada = cantidadesAceptadas[producto.sku] !== undefined
         ? Number(cantidadesAceptadas[producto.sku])
         : producto.cantidadComparada || 0;
-      
+
       const datosBD = datosProductosMap.get(producto.sku) || {};
       const precioCoste = datosBD.precioCoste || 0;
 
@@ -739,15 +739,15 @@ async function exportarComparacionExcel(req, res, next) {
     // ==================== HOJAS POR GRUPO ====================
     // Agrupar productos por grupo
     const productosPorGrupo = new Map();
-    
+
     for (const producto of todosProductos) {
       const datosBD = datosProductosMap.get(producto.sku) || {};
       const grupoNombre = datosBD.grupoNombre || 'SIN GRUPO';
-      
+
       if (!productosPorGrupo.has(grupoNombre)) {
         productosPorGrupo.set(grupoNombre, []);
       }
-      
+
       productosPorGrupo.get(grupoNombre).push({
         ...producto,
         datosBD
@@ -765,9 +765,9 @@ async function exportarComparacionExcel(req, res, next) {
       let sheetName = grupoNombre.substring(0, 31);
       // Reemplazar caracteres no permitidos
       sheetName = sheetName.replace(/[\\/*?:\[\]]/g, '');
-      
+
       const grupoSheet = workbook.addWorksheet(`🏷️ ${sheetName}`);
-      
+
       grupoSheet.columns = [
         { header: 'SKU', key: 'sku', width: 20 },
         { header: 'Descripción', key: 'descripcion', width: 60 },
@@ -795,16 +795,16 @@ async function exportarComparacionExcel(req, res, next) {
         const cantidadAceptada = cantidadesAceptadas[producto.sku] !== undefined
           ? Number(cantidadesAceptadas[producto.sku])
           : producto.cantidadComparada || 0;
-        
+
         const diferencia = cantidadAceptada - producto.cantidadBase;
         const precioCoste = producto.datosBD.precioCoste || 0;
         const subtotal = cantidadAceptada * precioCoste;
-        
+
         subtotalGrupo += subtotal;
         unidadesGrupo += cantidadAceptada;
-        
+
         const estado = diferencia === 0 ? '✅ Coincide' : diferencia > 0 ? '➕ Exceso' : '➖ Falta';
-        
+
         grupoSheet.addRow({
           sku: producto.sku,
           descripcion: producto.datosBD.descripcion || producto.descripcion,
@@ -988,6 +988,7 @@ async function generarReconteoDesdeComparacion(req, res, next) {
         zonaId: zonaId || null,
         cantidadBase: diferencia.cantidadBase,
         cantidadUltima: diferencia.cantidadComparada,
+        cantidadRecontada: 0,  // ← Agregar este campo
         diferencia: diferencia.diferencia,
         estado: 'pendiente_reconteo',
         rondaReconteoId: nuevaRonda.id,
