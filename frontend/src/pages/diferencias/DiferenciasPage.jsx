@@ -420,9 +420,10 @@ export default function DiferenciasPage() {
       }
 
       const response = await generarRondaReconteoDesdeComparacion({
-        inventarioBaseId,
-        inventarioComparadoId,
-        zonaId: Number(zonaBaseId)
+        inventarioBaseId: Number(inventarioBaseId),
+        inventarioComparadoId: Number(inventarioComparadoId),
+        zonaBaseId: zonaBaseId ? Number(zonaBaseId) : null,      // ← más claro
+        zonaComparadaId: zonaComparadaId ? Number(zonaComparadaId) : null
       });
 
       // Debug para ver qué está llegando
