@@ -568,10 +568,215 @@ async function compareInventarios(req, res, next) {
     next(error);
   }
 }
+function sanitizeExcelSheetName(name) {
+  return String(name || 'Hoja')
+    .replace(/[\\/*?:[\]]/g, '')
+    .substring(0, 31)
+    .trim() || 'Hoja';
+}
+
+function addWorksheetSafe(workbook, desiredName, usedNames) {
+  const baseName = sanitizeExcelSheetName(desiredName);
+  let sheetName = baseName;
+  let counter = 2;
+
+  while (usedNames.has(sheetName)) {
+    const suffix = ` ${counter}`;
+    sheetName = `${baseName.substring(0, 31 - suffix.length)}${suffix}`;
+    counter += 1;
+  }
+
+  usedNames.add(sheetName);
+  return workbook.addWorksheet(sheetName);
+}
+
+function styleHeaderRow(sheet, argb = 'FF2563EB') {
+  const header = sheet.getRow(1);
+  header.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+  header.fill = {
+    type: 'pattern',
+    pattern: 'solid',
+    fgColor: { argb }
+  };
+  header.alignment = { vertical: 'middle', horizontal: 'center' };
+}
+
+function getCantidadAceptadaExcel(cantidadesAceptadas, row) {
+  const keys = [
+    `${row.zonaBase?.id}|${row.zonaComparada?.id}|${row.sku}`,
+    `${row.zonaBase?.id}-${row.zonaComparada?.id}-${row.sku}`,
+    String(row.sku)
+  ];
+
+  for (const key of keys) {
+    if (cantidadesAceptadas && cantidadesAceptadas[key] !== undefined) {
+      return Number(cantidadesAceptadas[key] || 0);
+    }
+  }
+
+  return Number(row.cantidadComparada || 0);
+}
+
+async function getZonasInventarioParaExcel(inventarioId, allowedGroupIds = null) {
+  if (allowedGroupIds !== null && (!Array.isArray(allowedGroupIds) || allowedGroupIds.length === 0)) {
+    return [];
+  }
+
+  const groupFilter = allowedGroupIds !== null
+    ? 'AND l."grupoId" IN (:allowedGroupIds)'
+    : '';
+
+  return sequelize.query(
+    `
+    SELECT DISTINCT
+      z.id,
+      z.nombre,
+      z.codigo
+    FROM zonas z
+    WHERE EXISTS (
+      SELECT 1
+      FROM lecturas l
+      WHERE l."inventarioId" = :inventarioId
+        AND l."zonaId" = z.id
+        AND l.estado = 'valida'
+        ${groupFilter}
+    )
+    OR EXISTS (
+      SELECT 1
+      FROM rondas_conteo r
+      WHERE r."inventarioId" = :inventarioId
+        AND r."zonaId" = z.id
+    )
+    ORDER BY z.nombre ASC
+    `,
+    {
+      replacements: {
+        inventarioId,
+        allowedGroupIds
+      },
+      type: QueryTypes.SELECT
+    }
+  );
+}
+
+async function getZonaPairsParaExportacion({
+  inventarioBaseId,
+  inventarioComparadoId,
+  zonaBaseId,
+  zonaComparadaId,
+  allowedGroupIds
+}) {
+  if (zonaBaseId && zonaComparadaId) {
+    const [zonaBase, zonaComparada] = await Promise.all([
+      Zona.findByPk(Number(zonaBaseId), { attributes: ['id', 'nombre', 'codigo'] }),
+      Zona.findByPk(Number(zonaComparadaId), { attributes: ['id', 'nombre', 'codigo'] })
+    ]);
+
+    if (!zonaBase || !zonaComparada) {
+      const error = new Error('Una de las zonas seleccionadas no existe');
+      error.status = 404;
+      throw error;
+    }
+
+    if (!areEquivalentZones(zonaBase, zonaComparada)) {
+      const error = new Error(
+        `No se puede exportar la zona "${zonaBase.nombre}" contra "${zonaComparada.nombre}" porque no son equivalentes.`
+      );
+      error.status = 400;
+      throw error;
+    }
+
+    return [
+      {
+        zonaBase: zonaBase.toJSON(),
+        zonaComparada: zonaComparada.toJSON()
+      }
+    ];
+  }
+
+  const [zonasBase, zonasComparado] = await Promise.all([
+    getZonasInventarioParaExcel(inventarioBaseId, allowedGroupIds),
+    getZonasInventarioParaExcel(inventarioComparadoId, allowedGroupIds)
+  ]);
+
+  const pairs = [];
+
+  for (const zonaBase of zonasBase) {
+    const zonaComparada = zonasComparado.find((zona) =>
+      areEquivalentZones(zonaBase, zona)
+    );
+
+    if (zonaComparada) {
+      pairs.push({
+        zonaBase,
+        zonaComparada
+      });
+    }
+  }
+
+  return pairs;
+}
+
+function setupComparisonSheet(sheet) {
+  sheet.columns = [
+    { header: 'Zona Base', key: 'zonaBase', width: 24 },
+    { header: 'Zona Comparada', key: 'zonaComparada', width: 24 },
+    { header: 'SKU', key: 'sku', width: 16 },
+    { header: 'Descripción', key: 'descripcion', width: 55 },
+    { header: 'Cantidad Base', key: 'cantidadBase', width: 15 },
+    { header: 'Cantidad Comparada', key: 'cantidadComparada', width: 18 },
+    { header: 'Cantidad Aceptada', key: 'cantidadAceptada', width: 18 },
+    { header: 'Diferencia', key: 'diferencia', width: 14 },
+    { header: 'Estado', key: 'estado', width: 16 },
+    { header: 'Fuente Base', key: 'fuenteBase', width: 16 },
+    { header: 'Fuente Comparada', key: 'fuenteComparada', width: 18 },
+    { header: 'Ronda Base ID', key: 'rondaBaseId', width: 14 },
+    { header: 'Ronda Comparada ID', key: 'rondaComparadaId', width: 18 },
+    { header: 'Valor Unitario', key: 'valorUnitario', width: 16 },
+    { header: 'Subtotal', key: 'subtotal', width: 16 }
+  ];
+
+  styleHeaderRow(sheet);
+  sheet.views = [{ state: 'frozen', ySplit: 1 }];
+
+  sheet.getColumn('cantidadBase').numFmt = '#,##0';
+  sheet.getColumn('cantidadComparada').numFmt = '#,##0';
+  sheet.getColumn('cantidadAceptada').numFmt = '#,##0';
+  sheet.getColumn('diferencia').numFmt = '#,##0';
+  sheet.getColumn('valorUnitario').numFmt = '$#,##0';
+  sheet.getColumn('subtotal').numFmt = '$#,##0';
+}
+
+function addComparisonRowsToSheet(sheet, rows, cantidadesAceptadas, productosMap) {
+  for (const row of rows) {
+    const cantidadAceptada = getCantidadAceptadaExcel(cantidadesAceptadas, row);
+    const datosProducto = productosMap.get(String(row.sku)) || {};
+    const valorUnitario = Number(datosProducto.precioCoste || datosProducto.valorUnitario || 0);
+
+    sheet.addRow({
+      zonaBase: row.zonaBase?.nombre || 'Todas',
+      zonaComparada: row.zonaComparada?.nombre || 'Todas',
+      sku: row.sku,
+      descripcion: datosProducto.descripcion || row.descripcion || 'Sin descripción',
+      cantidadBase: Number(row.cantidadBase || 0),
+      cantidadComparada: Number(row.cantidadComparada || 0),
+      cantidadAceptada,
+      diferencia: Number(row.diferencia || 0),
+      estado: Number(row.diferencia || 0) === 0 ? 'Coincide' : 'Difiere',
+      fuenteBase: row.fuenteBase || 'completa',
+      fuenteComparada: row.fuenteComparada || 'completa',
+      rondaBaseId: row.rondaBaseId || '',
+      rondaComparadaId: row.rondaComparadaId || '',
+      valorUnitario,
+      subtotal: cantidadAceptada * valorUnitario
+    });
+  }
+}
+
 
 async function exportarComparacionExcel(req, res, next) {
   try {
-    console.log('📥 Exportando diferencias a Excel...');
+    console.log('📥 Exportando diferencias a Excel por zonas...');
     console.log('📋 Método:', req.method);
     console.log('📋 Query recibido:', req.query);
     console.log('📋 Body recibido:', req.body);
@@ -579,29 +784,24 @@ async function exportarComparacionExcel(req, res, next) {
     const { error, value } = compareSchema.validate(req.query);
 
     if (error) {
-      console.log('❌ Error de validación:', error.details[0].message);
       return res.status(400).json({
         ok: false,
         message: error.details[0].message
       });
     }
 
-    console.log('✅ Validación exitosa. Value:', value);
-
-    // Obtener cantidades aceptadas
     let cantidadesAceptadas = {};
 
     if (req.method === 'POST') {
       cantidadesAceptadas = req.body.cantidadesAceptadas || {};
-      console.log('📦 Obteniendo cantidades del BODY (POST)');
     } else {
       const rawCantidades = req.query.cantidadesAceptadas;
+
       if (rawCantidades) {
         try {
           cantidadesAceptadas = JSON.parse(rawCantidades);
-          console.log('📦 Obteniendo cantidades del QUERY (GET)');
-        } catch (e) {
-          console.error('Error parsing cantidadesAceptadas:', e.message);
+        } catch {
+          cantidadesAceptadas = {};
         }
       }
     }
@@ -609,91 +809,143 @@ async function exportarComparacionExcel(req, res, next) {
     if (typeof cantidadesAceptadas === 'string') {
       try {
         cantidadesAceptadas = JSON.parse(cantidadesAceptadas);
-      } catch (e) {
-        console.error('Error parsing cantidadesAceptadas string:', e.message);
+      } catch {
         cantidadesAceptadas = {};
       }
     }
 
-    console.log(`📦 Cantidades aceptadas: ${Object.keys(cantidadesAceptadas).length} SKUs`);
+    const inventarioBaseId = Number(value.inventarioBaseId);
+    const inventarioComparadoId = Number(value.inventarioComparadoId);
+    const zonaBaseId = value.zonaBaseId ? Number(value.zonaBaseId) : null;
+    const zonaComparadaId = value.zonaComparadaId ? Number(value.zonaComparadaId) : null;
 
-    // Obtener datos de comparación
-    const data = await buildComparisonData(
-      req,
-      Number(value.inventarioBaseId),
-      Number(value.inventarioComparadoId),
-      value.zonaBaseId ? Number(value.zonaBaseId) : null,
-      value.zonaComparadaId ? Number(value.zonaComparadaId) : null
-    );
-
-    // Obtener datos de productos desde la BD
-    const { ConteoInicialDetalle } = require('../models');
-
-    const skusUnicos = [...new Set(data.comparacion.map(p => p.sku))];
-
-    const productosInfo = await ConteoInicialDetalle.findAll({
-      where: {
-        inventarioId: value.inventarioBaseId,
-        sku: { [Op.in]: skusUnicos }
-      },
-      include: [{ model: Zona, as: 'zona', attributes: ['nombre', 'codigo'] }],
-      attributes: ['sku', 'descripcionSnapshot', 'unidadMedida', 'grupoNombre', 'precioCoste']
-    });
-
-    const datosProductosMap = new Map();
-    for (const prod of productosInfo) {
-      if (!datosProductosMap.has(prod.sku)) {
-        datosProductosMap.set(prod.sku, {
-          descripcion: prod.descripcionSnapshot || 'Sin descripción',
-          unidadMedida: prod.unidadMedida || 'Und.',
-          grupoNombre: prod.grupoNombre || 'SIN GRUPO',
-          precioCoste: prod.precioCoste || 0
-        });
-      }
+    if ((zonaBaseId && !zonaComparadaId) || (!zonaBaseId && zonaComparadaId)) {
+      return res.status(400).json({
+        ok: false,
+        message: 'Si vas a exportar por zona, debes enviar zonaBaseId y zonaComparadaId.'
+      });
     }
 
-    console.log(`✅ Datos encontrados en BD: ${datosProductosMap.size} productos`);
+    const allowedGroupIds = await getAllowedGroupIds(req);
+
+    const zonaPairs = await getZonaPairsParaExportacion({
+      inventarioBaseId,
+      inventarioComparadoId,
+      zonaBaseId,
+      zonaComparadaId,
+      allowedGroupIds
+    });
+
+    if (!zonaPairs.length) {
+      return res.status(400).json({
+        ok: false,
+        message: 'No se encontraron zonas equivalentes para exportar.'
+      });
+    }
 
     const workbook = new ExcelJS.Workbook();
-
-    // ==================== HOJA 1: RESUMEN GENERAL ====================
-    const resumenSheet = workbook.addWorksheet('📊 RESUMEN GENERAL');
-    resumenSheet.columns = [
-      { header: 'Concepto', key: 'concepto', width: 35 },
-      { header: 'Valor', key: 'valor', width: 25 }
-    ];
-
-    resumenSheet.getRow(1).font = { bold: true };
-    resumenSheet.getRow(1).fill = {
-      type: 'pattern',
-      pattern: 'solid',
-      fgColor: { argb: 'FF2563eb' }
-    };
-    resumenSheet.getRow(1).font = { color: { argb: 'FFFFFFFF' }, bold: true };
+    const usedSheetNames = new Set();
 
     const fechaActual = new Date();
     const fechaStr = fechaActual.toISOString().slice(0, 10);
     const mesActual = fechaActual.toLocaleString('es', { month: 'long' });
     const nombreEmpresa = 'TECNOCOMPUTER MELISSA SANDOVAL';
-    let totalRegistros = 0;
-    let totalUnidades = 0;
-    let valorTotalInventario = 0;
 
-    const todosProductos = data.comparacion || [];
+    const zonasExportadas = [];
 
-    // Calcular totales generales
-    for (const producto of todosProductos) {
-      let cantidadAceptada = cantidadesAceptadas[producto.sku] !== undefined
-        ? Number(cantidadesAceptadas[producto.sku])
-        : producto.cantidadComparada || 0;
+    for (const pair of zonaPairs) {
+      const dataZona = await buildComparisonData(
+        req,
+        inventarioBaseId,
+        inventarioComparadoId,
+        pair.zonaBase.id,
+        pair.zonaComparada.id
+      );
 
-      const datosBD = datosProductosMap.get(producto.sku) || {};
-      const precioCoste = datosBD.precioCoste || 0;
-
-      totalRegistros++;
-      totalUnidades += cantidadAceptada;
-      valorTotalInventario += cantidadAceptada * precioCoste;
+      zonasExportadas.push({
+        pair,
+        data: dataZona
+      });
     }
+
+    const todosRows = [];
+
+    for (const zonaExportada of zonasExportadas) {
+      const { pair, data } = zonaExportada;
+
+      for (const row of data.comparacion || []) {
+        todosRows.push({
+          ...row,
+          zonaBase: pair.zonaBase,
+          zonaComparada: pair.zonaComparada
+        });
+      }
+    }
+
+    const diferenciasRows = todosRows.filter((row) => Number(row.diferencia || 0) !== 0);
+    const coincidenRows = todosRows.filter((row) => Number(row.diferencia || 0) === 0);
+
+    const { ConteoInicialDetalle } = require('../models');
+
+    const skusUnicos = [...new Set(todosRows.map((row) => String(row.sku)).filter(Boolean))];
+
+    let productosInfo = [];
+
+    if (skusUnicos.length > 0) {
+      productosInfo = await ConteoInicialDetalle.findAll({
+        where: {
+          inventarioId: {
+            [Op.in]: [inventarioBaseId, inventarioComparadoId]
+          },
+          sku: {
+            [Op.in]: skusUnicos
+          }
+        },
+        attributes: [
+          'sku',
+          'descripcionSnapshot',
+          'unidadMedida',
+          'grupoNombre',
+          'precioCoste'
+        ]
+      });
+    }
+
+    const productosMap = new Map();
+
+    for (const producto of productosInfo) {
+      const sku = String(producto.sku);
+
+      if (!productosMap.has(sku)) {
+        productosMap.set(sku, {
+          descripcion: producto.descripcionSnapshot || 'Sin descripción',
+          unidadMedida: producto.unidadMedida || 'Und.',
+          grupoNombre: producto.grupoNombre || 'SIN GRUPO',
+          precioCoste: Number(producto.precioCoste || 0)
+        });
+      }
+    }
+
+    // ==================== RESUMEN ====================
+    const resumenSheet = addWorksheetSafe(workbook, 'Resumen General', usedSheetNames);
+
+    resumenSheet.columns = [
+      { header: 'Concepto', key: 'concepto', width: 36 },
+      { header: 'Valor', key: 'valor', width: 32 }
+    ];
+
+    styleHeaderRow(resumenSheet);
+
+    const totalUnidadesAceptadas = todosRows.reduce((sum, row) => {
+      return sum + getCantidadAceptadaExcel(cantidadesAceptadas, row);
+    }, 0);
+
+    const valorTotalInventario = todosRows.reduce((sum, row) => {
+      const cantidadAceptada = getCantidadAceptadaExcel(cantidadesAceptadas, row);
+      const producto = productosMap.get(String(row.sku)) || {};
+      const precio = Number(producto.precioCoste || 0);
+      return sum + cantidadAceptada * precio;
+    }, 0);
 
     resumenSheet.addRows([
       { concepto: '📊 INFORMACIÓN GENERAL', valor: '' },
@@ -702,20 +954,20 @@ async function exportarComparacionExcel(req, res, next) {
       { concepto: 'Elaborado Por', valor: req.user?.nombre || 'Admin' },
       { concepto: '', valor: '' },
       { concepto: '📦 INVENTARIOS COMPARADOS', valor: '' },
-      { concepto: 'Inventario Base ID', valor: data.resumen.inventarioBaseId },
-      { concepto: 'Inventario Comparado ID', valor: data.resumen.inventarioComparadoId },
-      { concepto: 'Zona Base', valor: data.filtros.zonaBase?.nombre || 'Todas' },
-      { concepto: 'Zona Comparada', valor: data.filtros.zonaComparada?.nombre || 'Todas' },
+      { concepto: 'Inventario Base ID', valor: inventarioBaseId },
+      { concepto: 'Inventario Comparado ID', valor: inventarioComparadoId },
+      { concepto: 'Modo Exportación', valor: zonaBaseId && zonaComparadaId ? 'Zona específica' : 'Todas las zonas' },
+      { concepto: 'Total Zonas Exportadas', valor: zonasExportadas.length },
       { concepto: '', valor: '' },
       { concepto: '📈 ESTADÍSTICAS', valor: '' },
-      { concepto: 'Total Productos', valor: todosProductos.length },
-      { concepto: 'Total Coincidencias', valor: data.coinciden.length },
-      { concepto: 'Total Diferencias', valor: data.diferencias.length },
-      { concepto: 'Total SKU Ajustados', valor: Object.keys(cantidadesAceptadas).length },
+      { concepto: 'Total SKUs Comparados', valor: todosRows.length },
+      { concepto: 'Total Coincidencias', valor: coincidenRows.length },
+      { concepto: 'Total Diferencias', valor: diferenciasRows.length },
+      { concepto: 'Total Diferencia Unidades', valor: diferenciasRows.reduce((sum, row) => sum + Math.abs(Number(row.diferencia || 0)), 0) },
       { concepto: '', valor: '' },
       { concepto: '💰 VALORES', valor: '' },
-      { concepto: 'Total Unidades Aceptadas', valor: totalUnidades.toLocaleString() },
-      { concepto: 'Valor Total Inventario', valor: `$${valorTotalInventario.toLocaleString()}` },
+      { concepto: 'Total Unidades Aceptadas', valor: totalUnidadesAceptadas },
+      { concepto: 'Valor Total Inventario', valor: valorTotalInventario },
       { concepto: '', valor: '' },
       { concepto: '📋 CONFIGURACIÓN', valor: '' },
       { concepto: 'Tipo Documento', valor: 'AI' },
@@ -724,246 +976,110 @@ async function exportarComparacionExcel(req, res, next) {
       { concepto: 'IVA', valor: '0' }
     ]);
 
-    // ==================== HOJA: INVENTARIO COMPLETO ====================
-    const inventarioSheet = workbook.addWorksheet('📦 INVENTARIO COMPLETO');
+    resumenSheet.getColumn('valor').numFmt = '#,##0';
 
-    inventarioSheet.columns = [
-      { header: 'Empresa', key: 'empresa', width: 30 },
-      { header: 'Tipo Documento', key: 'tipoDocumento', width: 15 },
-      { header: 'Documento Número', key: 'documentoNumero', width: 20 },
-      { header: 'Fecha', key: 'fecha', width: 12 },
-      { header: 'Elaborado', key: 'elaborado', width: 20 },
-      { header: 'Destino', key: 'destino', width: 25 },
-      { header: 'Nota', key: 'nota', width: 35 },
-      { header: 'Verificado', key: 'verificado', width: 12 },
-      { header: 'Anulado', key: 'anulado', width: 10 },
-      { header: 'Producto', key: 'producto', width: 20 },
-      { header: 'Descripción', key: 'descripcion', width: 60 },
-      { header: 'Unidad De Medida', key: 'unidadMedida', width: 15 },
-      { header: 'Cantidad Físico', key: 'cantidadFisico', width: 18 },
-      { header: 'Cantidad Sistema', key: 'cantidadSistema', width: 15 },
-      { header: 'IVA', key: 'iva', width: 10 },
-      { header: 'Valor Unitario', key: 'valorUnitario', width: 15 },
-      { header: 'Descuento', key: 'descuento', width: 10 },
-      { header: 'Vencimiento', key: 'vencimiento', width: 12 },
-      { header: 'Lote', key: 'lote', width: 15 },
-      { header: 'Talla', key: 'talla', width: 10 },
-      { header: 'Color', key: 'color', width: 15 }
+    // ==================== ÍNDICE DE ZONAS ====================
+    const zonasSheet = addWorksheetSafe(workbook, 'Zonas Exportadas', usedSheetNames);
+
+    zonasSheet.columns = [
+      { header: 'Zona Base ID', key: 'zonaBaseId', width: 14 },
+      { header: 'Zona Base', key: 'zonaBaseNombre', width: 28 },
+      { header: 'Zona Comparada ID', key: 'zonaComparadaId', width: 18 },
+      { header: 'Zona Comparada', key: 'zonaComparadaNombre', width: 28 },
+      { header: 'SKUs Comparados', key: 'total', width: 18 },
+      { header: 'Diferencias', key: 'diferencias', width: 14 },
+      { header: 'Coincidencias', key: 'coincidencias', width: 14 }
     ];
 
-    inventarioSheet.getRow(1).font = { bold: true };
-    inventarioSheet.getRow(1).fill = {
-      type: 'pattern',
-      pattern: 'solid',
-      fgColor: { argb: 'FF2563eb' }
-    };
-    inventarioSheet.getRow(1).font = { color: { argb: 'FFFFFFFF' }, bold: true };
+    styleHeaderRow(zonasSheet, 'FF0F766E');
 
-    // Agregar todos los productos al inventario completo
-    for (const producto of todosProductos) {
-      let cantidadAceptada = cantidadesAceptadas[producto.sku] !== undefined
-        ? Number(cantidadesAceptadas[producto.sku])
-        : producto.cantidadComparada || 0;
+    for (const zonaExportada of zonasExportadas) {
+      const { pair, data } = zonaExportada;
+      const total = data.comparacion?.length || 0;
+      const diferencias = data.diferencias?.length || 0;
 
-      const datosBD = datosProductosMap.get(producto.sku) || {};
-      const precioCoste = datosBD.precioCoste || 0;
-
-      inventarioSheet.addRow({
-        empresa: nombreEmpresa,
-        tipoDocumento: 'AI',
-        documentoNumero: '',
-        fecha: fechaStr,
-        elaborado: req.user?.nombre || 'Admin',
-        destino: datosBD.grupoNombre || 'SIN GRUPO',
-        nota: `Ajuste de inventario - ${mesActual}`,
-        verificado: -1,
-        anulado: 0,
-        producto: producto.sku,
-        descripcion: datosBD.descripcion || producto.descripcion,
-        unidadMedida: datosBD.unidadMedida || 'Und.',
-        cantidadFisico: cantidadAceptada,
-        cantidadSistema: 0,
-        iva: 0,
-        valorUnitario: precioCoste,
-        descuento: 0,
-        vencimiento: fechaStr,
-        lote: '',
-        talla: '',
-        color: ''
+      zonasSheet.addRow({
+        zonaBaseId: pair.zonaBase.id,
+        zonaBaseNombre: pair.zonaBase.nombre,
+        zonaComparadaId: pair.zonaComparada.id,
+        zonaComparadaNombre: pair.zonaComparada.nombre,
+        total,
+        diferencias,
+        coincidencias: Math.max(total - diferencias, 0)
       });
     }
 
-    // ==================== HOJAS POR GRUPO ====================
-    // Agrupar productos por grupo
-    const productosPorGrupo = new Map();
+    // ==================== INVENTARIO COMPLETO ====================
+    const inventarioSheet = addWorksheetSafe(workbook, 'Inventario Completo', usedSheetNames);
+    setupComparisonSheet(inventarioSheet);
+    addComparisonRowsToSheet(inventarioSheet, todosRows, cantidadesAceptadas, productosMap);
 
-    for (const producto of todosProductos) {
-      const datosBD = datosProductosMap.get(producto.sku) || {};
-      const grupoNombre = datosBD.grupoNombre || 'SIN GRUPO';
+    // ==================== DETALLE DIFERENCIAS ====================
+    const diferenciasSheet = addWorksheetSafe(workbook, 'Detalle Diferencias', usedSheetNames);
+    setupComparisonSheet(diferenciasSheet);
+    styleHeaderRow(diferenciasSheet, 'FFDC2626');
+    addComparisonRowsToSheet(diferenciasSheet, diferenciasRows, cantidadesAceptadas, productosMap);
 
-      if (!productosPorGrupo.has(grupoNombre)) {
-        productosPorGrupo.set(grupoNombre, []);
-      }
+    // ==================== HOJAS POR ZONA ====================
+    for (const zonaExportada of zonasExportadas) {
+      const { pair, data } = zonaExportada;
 
-      productosPorGrupo.get(grupoNombre).push({
-        ...producto,
-        datosBD
-      });
+      const sheetName = pair.zonaBase?.nombre || pair.zonaComparada?.nombre || `Zona ${pair.zonaBase?.id || ''}`;
+      const zonaSheet = addWorksheetSafe(workbook, sheetName, usedSheetNames);
+
+      setupComparisonSheet(zonaSheet);
+      addComparisonRowsToSheet(
+        zonaSheet,
+        (data.comparacion || []).map((row) => ({
+          ...row,
+          zonaBase: pair.zonaBase,
+          zonaComparada: pair.zonaComparada
+        })),
+        cantidadesAceptadas,
+        productosMap
+      );
     }
 
-    // Ordenar grupos alfabéticamente
-    const gruposOrdenados = Array.from(productosPorGrupo.keys()).sort();
-
-    console.log(`📊 Creando ${gruposOrdenados.length} hojas por grupo`);
-
-    for (const grupoNombre of gruposOrdenados) {
-      const productosGrupo = productosPorGrupo.get(grupoNombre);
-      // Limpiar nombre de la hoja (máximo 31 caracteres para Excel)
-      let sheetName = grupoNombre.substring(0, 31);
-      // Reemplazar caracteres no permitidos
-      sheetName = sheetName.replace(/[\\/*?:\[\]]/g, '');
-
-      const grupoSheet = workbook.addWorksheet(`🏷️ ${sheetName}`);
-
-      grupoSheet.columns = [
-        { header: 'SKU', key: 'sku', width: 20 },
-        { header: 'Descripción', key: 'descripcion', width: 60 },
-        { header: 'Cantidad Base', key: 'cantidadBase', width: 15 },
-        { header: 'Cantidad Comparada', key: 'cantidadComparada', width: 15 },
-        { header: 'Cantidad Aceptada', key: 'cantidadAceptada', width: 15 },
-        { header: 'Diferencia', key: 'diferencia', width: 15 },
-        { header: 'Valor Unitario', key: 'valorUnitario', width: 15 },
-        { header: 'Subtotal', key: 'subtotal', width: 15 },
-        { header: 'Estado', key: 'estado', width: 15 }
-      ];
-
-      grupoSheet.getRow(1).font = { bold: true };
-      grupoSheet.getRow(1).fill = {
-        type: 'pattern',
-        pattern: 'solid',
-        fgColor: { argb: 'FF2563eb' }
-      };
-      grupoSheet.getRow(1).font = { color: { argb: 'FFFFFFFF' }, bold: true };
-
-      let subtotalGrupo = 0;
-      let unidadesGrupo = 0;
-
-      for (const producto of productosGrupo) {
-        const cantidadAceptada = cantidadesAceptadas[producto.sku] !== undefined
-          ? Number(cantidadesAceptadas[producto.sku])
-          : producto.cantidadComparada || 0;
-
-        const diferencia = cantidadAceptada - producto.cantidadBase;
-        const precioCoste = producto.datosBD.precioCoste || 0;
-        const subtotal = cantidadAceptada * precioCoste;
-
-        subtotalGrupo += subtotal;
-        unidadesGrupo += cantidadAceptada;
-
-        const estado = diferencia === 0 ? '✅ Coincide' : diferencia > 0 ? '➕ Exceso' : '➖ Falta';
-
-        grupoSheet.addRow({
-          sku: producto.sku,
-          descripcion: producto.datosBD.descripcion || producto.descripcion,
-          cantidadBase: producto.cantidadBase,
-          cantidadComparada: producto.cantidadComparada,
-          cantidadAceptada: cantidadAceptada,
-          diferencia: diferencia,
-          valorUnitario: precioCoste,
-          subtotal: subtotal,
-          estado: estado
-        });
-      }
-
-      // Agregar fila de resumen
-      grupoSheet.addRow({});
-      grupoSheet.addRow({
-        sku: '📊 RESUMEN DEL GRUPO',
-        descripcion: '',
-        cantidadBase: '',
-        cantidadComparada: '',
-        cantidadAceptada: unidadesGrupo,
-        diferencia: '',
-        valorUnitario: '',
-        subtotal: subtotalGrupo,
-        estado: ''
-      });
-
-      // Estilo para la fila de resumen
-      const lastRow = grupoSheet.lastRow;
-      lastRow.font = { bold: true };
-      lastRow.fill = {
-        type: 'pattern',
-        pattern: 'solid',
-        fgColor: { argb: 'FFE6F7FF' }
-      };
-    }
-
-    // ==================== HOJA: DETALLE DE DIFERENCIAS ====================
-    const diferenciasSheet = workbook.addWorksheet('⚠️ DETALLE DIFERENCIAS');
-    diferenciasSheet.columns = [
-      { header: 'SKU', key: 'sku', width: 20 },
-      { header: 'Descripción', key: 'descripcion', width: 60 },
-      { header: 'Grupo', key: 'grupo', width: 25 },
-      { header: 'Cantidad Base', key: 'cantidadBase', width: 15 },
-      { header: 'Cantidad Comparada', key: 'cantidadComparada', width: 15 },
-      { header: 'Cantidad Aceptada', key: 'cantidadAceptada', width: 15 },
-      { header: 'Diferencia', key: 'diferencia', width: 15 },
-      { header: 'Valor Unitario', key: 'valorUnitario', width: 15 },
-      { header: 'Subtotal', key: 'subtotal', width: 15 }
-    ];
-
-    diferenciasSheet.getRow(1).font = { bold: true };
-    diferenciasSheet.getRow(1).fill = {
-      type: 'pattern',
-      pattern: 'solid',
-      fgColor: { argb: 'FFDC2626' }
-    };
-    diferenciasSheet.getRow(1).font = { color: { argb: 'FFFFFFFF' }, bold: true };
-
-    for (const diff of data.diferencias) {
-      const cantidadAceptada = cantidadesAceptadas[diff.sku] !== undefined
-        ? Number(cantidadesAceptadas[diff.sku])
-        : diff.cantidadComparada;
-      const datosBD = datosProductosMap.get(diff.sku) || {};
-      const precioCoste = datosBD.precioCoste || 0;
-
-      diferenciasSheet.addRow({
-        sku: diff.sku,
-        descripcion: datosBD.descripcion || diff.descripcion,
-        grupo: datosBD.grupoNombre || 'SIN GRUPO',
-        cantidadBase: diff.cantidadBase,
-        cantidadComparada: diff.cantidadComparada,
-        cantidadAceptada: cantidadAceptada,
-        diferencia: cantidadAceptada - diff.cantidadBase,
-        valorUnitario: precioCoste,
-        subtotal: cantidadAceptada * precioCoste
-      });
-    }
-
-    // Congelar paneles en todas las hojas
     workbook.eachSheet((sheet) => {
       sheet.views = [{ state: 'frozen', ySplit: 1 }];
+
+      sheet.eachRow((row) => {
+        row.alignment = {
+          vertical: 'middle',
+          wrapText: true
+        };
+      });
     });
 
-    const filename = `inventario_diferencias_${value.inventarioBaseId}_vs_${value.inventarioComparadoId}_${fechaStr}.xlsx`;
+    const filename = zonaBaseId && zonaComparadaId
+      ? `inventario_diferencias_${inventarioBaseId}_vs_${inventarioComparadoId}_zona_${zonaBaseId}_${fechaStr}.xlsx`
+      : `inventario_diferencias_${inventarioBaseId}_vs_${inventarioComparadoId}_todas_zonas_${fechaStr}.xlsx`;
 
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="${encodeURIComponent(filename)}"`);
+    res.setHeader(
+      'Content-Type',
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+    );
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${encodeURIComponent(filename)}"`
+    );
 
     await workbook.xlsx.write(res);
     res.end();
 
-    console.log(`✅ Excel generado: ${gruposOrdenados.length} grupos, ${totalRegistros} productos, ${totalUnidades} unidades`);
-
+    console.log(
+      `✅ Excel generado por zonas: ${zonasExportadas.length} zonas, ${todosRows.length} registros, ${diferenciasRows.length} diferencias`
+    );
   } catch (error) {
     console.error('❌ Error en exportarComparacionExcel:', error);
+
     if (error.status) {
       return res.status(error.status).json({
         ok: false,
         message: error.message
       });
     }
+
     next(error);
   }
 }
