@@ -46,8 +46,9 @@ export async function generarRondaReconteoDesdeComparacion(data) {
   const response = await api.post('/diferencias/reconteo', {
     inventarioBaseId: data.inventarioBaseId,
     inventarioComparadoId: data.inventarioComparadoId,
-    zonaId: data.zonaId || null,
-    zonaComparadaId: data.zonaComparadaId || null   // ← faltaba este
+    zonaBaseId: data.zonaBaseId || null,
+    zonaComparadaId: data.zonaComparadaId || null
   });
-  return response;
+
+  return response.data.data;
 }

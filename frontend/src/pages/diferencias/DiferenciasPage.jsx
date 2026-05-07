@@ -426,14 +426,10 @@ export default function DiferenciasPage() {
         zonaComparadaId: zonaComparadaId ? Number(zonaComparadaId) : null
       });
 
-      // Debug para ver qué está llegando
-      console.log('Respuesta completa:', response);
-
-      // Acceder correctamente a los datos
-      const rondaId = response?.data?.ronda?.id ?? response?.ronda?.id;
-      const rondaNumero = response?.data?.ronda?.numeroRonda ?? response?.ronda?.numeroRonda;
-      const inventarioObjetivoId = response?.data?.inventarioObjetivoId ?? response?.inventarioObjetivoId ?? Number(inventarioBaseId);
-      const totalDiferencias = response?.data?.totalDiferencias ?? response?.totalDiferencias ?? 0;
+      const rondaId = response?.ronda?.id;
+      const rondaNumero = response?.ronda?.numeroRonda;
+      const inventarioObjetivoId = response?.inventarioObjetivoId ?? Number(inventarioBaseId);
+      const totalDiferencias = response?.totalDiferencias ?? 0;
 
       if (rondaId) {
         setMessage(
