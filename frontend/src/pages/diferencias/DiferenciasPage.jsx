@@ -1,5 +1,4 @@
 import { useEffect, useMemo, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import {
   GitCompareArrows,
   AlertTriangle,
@@ -10,7 +9,8 @@ import {
   Users,
   MapPin,
   User,
-  Repeat
+  Repeat,
+  Search
 } from 'lucide-react';
 import { getInventarios } from '../../services/inventarios.service';
 import { getGrupos } from '../../services/grupos.service';
@@ -97,8 +97,6 @@ function getParejaDelInventarioFromList(parejas, inventarioId) {
 }
 
 export default function DiferenciasPage() {
-  const navigate = useNavigate();
-
   const [inventarios, setInventarios] = useState([]);
   const [parejas, setParejas] = useState([]);
   const [inventarioBaseId, setInventarioBaseId] = useState('');
@@ -110,12 +108,14 @@ export default function DiferenciasPage() {
   const [zonaBaseId, setZonaBaseId] = useState('');
   const [zonaComparadaId, setZonaComparadaId] = useState('');
 
-  // Nuevo: permite decidir dónde se crea la ronda de reconteo.
+  // Permite decidir dónde se crea la ronda de reconteo.
   // Valores permitidos por el backend: "base" o "comparado".
   const [reconteoDestino, setReconteoDestino] = useState('comparado');
 
   const [data, setData] = useState(null);
   const [tab, setTab] = useState('diferencias');
+  const [searchTerm, setSearchTerm] = useState('');
+
   const [loading, setLoading] = useState(true);
   const [comparing, setComparing] = useState(false);
   const [exporting, setExporting] = useState(false);
@@ -213,12 +213,38 @@ export default function DiferenciasPage() {
   const rowsActivos = useMemo(() => {
     if (!data) return [];
 
+    let rows = [];
+
     if (tab === 'coinciden') {
-      return (data.comparacion || []).filter((row) => Number(row.diferencia || 0) === 0);
+      rows = (data.comparacion || []).filter((row) => Number(row.diferencia || 0) === 0);
+    } else if (tab === 'todos') {
+      rows = data.comparacion || [];
+    } else {
+      rows = data.diferencias || [];
     }
 
-    return data.diferencias || [];
-  }, [data, tab]);
+    const term = normalizeZoneText(searchTerm);
+
+    if (!term) return rows;
+
+    return rows.filter((row) => {
+      const sku = normalizeZoneText(row.sku);
+      const descripcion = normalizeZoneText(row.descripcion);
+      const fuenteBase = normalizeZoneText(row.fuenteBase);
+      const fuenteComparada = normalizeZoneText(row.fuenteComparada);
+      const cantidadBase = normalizeZoneText(row.cantidadBase);
+      const cantidadComparada = normalizeZoneText(row.cantidadComparada);
+
+      return (
+        sku.includes(term) ||
+        descripcion.includes(term) ||
+        fuenteBase.includes(term) ||
+        fuenteComparada.includes(term) ||
+        cantidadBase.includes(term) ||
+        cantidadComparada.includes(term)
+      );
+    });
+  }, [data, tab, searchTerm]);
 
   const gruposBaseTotales = data?.totales?.base?.grupos || [];
   const gruposComparadoTotales = data?.totales?.comparado?.grupos || [];
@@ -300,6 +326,7 @@ export default function DiferenciasPage() {
     loadGruposBase(inventarioBaseId);
     setZonaBaseId('');
     setData(null);
+    setSearchTerm('');
     setMessage('');
   }, [inventarioBaseId]);
 
@@ -307,6 +334,7 @@ export default function DiferenciasPage() {
     loadGruposComparado(inventarioComparadoId);
     setZonaComparadaId('');
     setData(null);
+    setSearchTerm('');
     setMessage('');
   }, [inventarioComparadoId]);
 
@@ -358,6 +386,7 @@ export default function DiferenciasPage() {
 
       const response = await compareInventariosDiferencias(params);
       setData(response || null);
+      setSearchTerm('');
     } catch (err) {
       setError(err.response?.data?.message || 'No se pudo comparar los inventarios');
       setData(null);
@@ -495,7 +524,6 @@ export default function DiferenciasPage() {
       setMessage(
         `✅ Ronda creada correctamente · ID ${rondaId} · Ronda ${rondaNumero} · Inventario ${inventarioObjetivoId} · Zona ${zonaObjetivoId} · ${totalDiferencias} SKUs pendientes`
       );
-
     } catch (err) {
       console.error('❌ Error generando reconteo:', err);
 
@@ -713,10 +741,38 @@ export default function DiferenciasPage() {
             <CheckCircle size={16} />
             <span>Ver coincidencias ({totalCoinciden})</span>
           </button>
+
+          <button
+            className={`btn ${tab === 'todos' ? 'btn-primary' : 'btn-outline'}`}
+            onClick={() => setTab('todos')}
+          >
+            <FileSpreadsheet size={16} />
+            <span>Ver todos ({resumen.totalItemsComparados})</span>
+          </button>
+        </div>
+
+        <div className="form-group" style={{ marginBottom: '16px' }}>
+          <label>Buscar SKU, descripción o fuente</label>
+          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <Search size={18} />
+            <input
+              type="text"
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              placeholder="Ej: 11342, teclado, reconteo..."
+            />
+          </div>
+          {searchTerm ? (
+            <small className="muted">
+              Mostrando {rowsActivos.length} resultado(s) para "{searchTerm}".
+            </small>
+          ) : null}
         </div>
 
         {!data ? (
           <p className="muted">Selecciona dos inventarios y compara.</p>
+        ) : rowsActivos.length === 0 ? (
+          <p className="muted">No hay registros para mostrar con los filtros actuales.</p>
         ) : (
           <div className="table-container">
             <table className="data-table diferencias-table">
@@ -726,43 +782,56 @@ export default function DiferenciasPage() {
                   <th>Descripción</th>
                   <th>Base</th>
                   <th>Comparado</th>
-                  {tab === 'diferencias' ? <th>Diferencia</th> : null}
-                  <th className="cantidad-aceptada-col">Cantidad Aceptada</th>
+                  {(tab === 'diferencias' || tab === 'todos') ? <th>Diferencia</th> : null}
+                  <th>Fuente base</th>
+                  <th>Fuente comparada</th>
+                  <th className="cantidad-aceptada-col">Cantidad aceptada</th>
                 </tr>
               </thead>
               <tbody>
-                {rowsActivos.map((row, index) => (
-                  <tr
-                    key={`${row.sku}-${index}`}
-                    className={tab === 'diferencias' ? 'row-warning' : 'row-success'}
-                  >
-                    <td>{row.sku}</td>
-                    <td>{row.descripcion || 'Sin descripción'}</td>
-                    <td className="text-center cantidad-base">{row.cantidadBase}</td>
-                    <td className="text-center cantidad-comparada">{row.cantidadComparada}</td>
-                    {tab === 'diferencias' && (
-                      <td
-                        className={`text-center diferencia ${row.diferencia > 0
-                          ? 'text-danger'
-                          : row.diferencia < 0
-                            ? 'text-success'
-                            : ''
+                {rowsActivos.map((row, index) => {
+                  const diferencia = Number(row.diferencia || 0);
+
+                  return (
+                    <tr
+                      key={`${row.sku}-${index}`}
+                      className={diferencia === 0 ? 'row-success' : 'row-warning'}
+                    >
+                      <td>{row.sku}</td>
+                      <td>{row.descripcion || 'Sin descripción'}</td>
+                      <td className="text-center cantidad-base">{row.cantidadBase}</td>
+                      <td className="text-center cantidad-comparada">{row.cantidadComparada}</td>
+                      {(tab === 'diferencias' || tab === 'todos') && (
+                        <td
+                          className={`text-center diferencia ${
+                            diferencia > 0
+                              ? 'text-danger'
+                              : diferencia < 0
+                                ? 'text-success'
+                                : ''
                           }`}
-                      >
-                        {row.diferencia > 0 ? `+${row.diferencia}` : `${row.diferencia}`}
+                        >
+                          {diferencia > 0 ? `+${diferencia}` : `${diferencia}`}
+                        </td>
+                      )}
+                      <td className="text-center">
+                        {row.fuenteBase || 'completa'}
                       </td>
-                    )}
-                    <td className="text-center cantidad-aceptada-cell">
-                      <input
-                        type="number"
-                        min="0"
-                        value={cantidadesEditables[row.sku] ?? row.cantidadComparada}
-                        onChange={(e) => handleCantidadChange(row.sku, e.target.value)}
-                        className="cantidad-aceptada-input"
-                      />
-                    </td>
-                  </tr>
-                ))}
+                      <td className="text-center">
+                        {row.fuenteComparada || 'completa'}
+                      </td>
+                      <td className="text-center cantidad-aceptada-cell">
+                        <input
+                          type="number"
+                          min="0"
+                          value={cantidadesEditables[row.sku] ?? row.cantidadComparada}
+                          onChange={(e) => handleCantidadChange(row.sku, e.target.value)}
+                          className="cantidad-aceptada-input"
+                        />
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>
