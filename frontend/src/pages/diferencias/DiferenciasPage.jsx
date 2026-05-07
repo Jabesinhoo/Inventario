@@ -459,12 +459,18 @@ export default function DiferenciasPage() {
 
       console.log('🚨 Generando reconteo con payload:', payload);
 
-      const response = await generarRondaReconteoDesdeComparacion(payload);
+      const rawResponse = await generarRondaReconteoDesdeComparacion(payload);
+
+      const response =
+        rawResponse?.data?.data ||
+        rawResponse?.data ||
+        rawResponse;
 
       console.log('✅ Respuesta generar reconteo:', response);
 
       const rondaId = response?.ronda?.id;
       const rondaNumero = response?.ronda?.numeroRonda;
+
       const inventarioObjetivoId =
         response?.inventarioObjetivoId ||
         response?.ronda?.inventarioId ||
@@ -481,8 +487,8 @@ export default function DiferenciasPage() {
 
       const totalDiferencias = response?.totalDiferencias ?? 0;
 
-      if (!rondaId) {
-        setError('El backend respondió, pero no devolvió ID de ronda.');
+      if (!rondaId || !inventarioObjetivoId) {
+        setError('El backend respondió, pero no devolvió ID de ronda o inventario objetivo.');
         return;
       }
 
@@ -490,13 +496,16 @@ export default function DiferenciasPage() {
         `✅ Ronda creada correctamente · ID ${rondaId} · Ronda ${rondaNumero} · Inventario ${inventarioObjetivoId} · Zona ${zonaObjetivoId} · ${totalDiferencias} SKUs pendientes`
       );
 
-      // Ya no redirige automáticamente.
-      // Redirige manualmente después de verificar el mensaje:
-      // navigate(`/escaneo?inventarioId=${inventarioObjetivoId}&rondaId=${rondaId}`);
+      navigate(`/escaneo?inventarioId=${inventarioObjetivoId}&rondaId=${rondaId}`, {
+        replace: true
+      });
     } catch (err) {
       console.error('❌ Error generando reconteo:', err);
+
       setError(
-        err.response?.data?.message || 'No se pudo generar la ronda de reconteo'
+        err.response?.data?.message ||
+        err.message ||
+        'No se pudo generar la ronda de reconteo'
       );
     } finally {
       setGenerating(false);
@@ -737,10 +746,10 @@ export default function DiferenciasPage() {
                     {tab === 'diferencias' && (
                       <td
                         className={`text-center diferencia ${row.diferencia > 0
-                            ? 'text-danger'
-                            : row.diferencia < 0
-                              ? 'text-success'
-                              : ''
+                          ? 'text-danger'
+                          : row.diferencia < 0
+                            ? 'text-success'
+                            : ''
                           }`}
                       >
                         {row.diferencia > 0 ? `+${row.diferencia}` : `${row.diferencia}`}
