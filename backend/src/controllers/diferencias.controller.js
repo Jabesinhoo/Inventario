@@ -1115,12 +1115,8 @@ async function generarReconteoDesdeComparacion(req, res, next) {
     );
 
     /*
-  Crear asignación de ronda para que EscaneoPage tenga grupo asignado.
-
-  IMPORTANTE:
-  La tabla/modelo Grupo no tiene zonaId.
-  Por eso buscamos primero en AsignacionConteo por inventarioId + zonaId,
-  y desde ahí obtenemos el grupoId.
+  Asignar la ronda de reconteo a todos los grupos del inventario comparado
+  que estén asignados a la zona objetivo.
 */
     const {
       Grupo,
@@ -1128,7 +1124,7 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       AsignacionConteo
     } = require('../models');
 
-    const asignacionConteoObjetivo = await AsignacionConteo.findOne({
+    const asignacionesConteoObjetivo = await AsignacionConteo.findAll({
       where: {
         inventarioId: inventarioObjetivoId,
         zonaId: zonaObjetivoId
@@ -1140,38 +1136,57 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       transaction
     });
 
-    if (!asignacionConteoObjetivo?.grupoId) {
+    const grupoIdsObjetivo = [
+      ...new Set(
+        asignacionesConteoObjetivo
+          .map((item) => Number(item.grupoId))
+          .filter(Boolean)
+      )
+    ];
+
+    if (grupoIdsObjetivo.length === 0) {
       await transaction.rollback();
       return res.status(400).json({
         ok: false,
-        message: `No se encontró una asignación de conteo para el inventario comparado ${inventarioObjetivoId} en la zona ${zonaComparada.nombre}.`
+        message: `No se encontraron grupos asignados para el inventario comparado ${inventarioObjetivoId} en la zona ${zonaComparada.nombre}.`
       });
     }
 
-    const grupoObjetivo = await Grupo.findByPk(asignacionConteoObjetivo.grupoId, {
-      transaction
-    });
-
-    if (!grupoObjetivo) {
-      await transaction.rollback();
-      return res.status(400).json({
-        ok: false,
-        message: `La asignación de conteo apunta al grupo ${asignacionConteoObjetivo.grupoId}, pero ese grupo no existe.`
-      });
-    }
-
-    await AsignacionRonda.findOrCreate({
+    const gruposObjetivo = await Grupo.findAll({
       where: {
-        rondaId: nuevaRonda.id
-      },
-      defaults: {
-        rondaId: nuevaRonda.id,
-        grupoId: grupoObjetivo.id,
-        estado: 'asignada'
+        id: {
+          [Op.in]: grupoIdsObjetivo
+        }
       },
       transaction
     });
 
+    if (gruposObjetivo.length === 0) {
+      await transaction.rollback();
+      return res.status(400).json({
+        ok: false,
+        message: `Las asignaciones de conteo apuntan a grupos inexistentes: ${grupoIdsObjetivo.join(', ')}.`
+      });
+    }
+
+    for (const grupo of gruposObjetivo) {
+      await AsignacionRonda.findOrCreate({
+        where: {
+          rondaId: nuevaRonda.id,
+          grupoId: grupo.id
+        },
+        defaults: {
+          rondaId: nuevaRonda.id,
+          grupoId: grupo.id,
+          estado: 'asignada'
+        },
+        transaction
+      });
+
+      console.log(`✅ Ronda ${nuevaRonda.id} asignada al grupo ${grupo.id} - ${grupo.nombre}`);
+    }
+
+    const grupoObjetivo = gruposObjetivo[0];
     let creadas = 0;
     let actualizadas = 0;
 
@@ -1281,6 +1296,7 @@ async function generarReconteoDesdeComparacion(req, res, next) {
         zonaBaseId: zonaReferenciaId,
         zonaComparadaId: zonaObjetivoId,
         grupoId: grupoObjetivo.id,
+        grupoIds: gruposObjetivo.map((grupo) => grupo.id),
         totalDiferencias: diferencias.length,
         discrepanciasCreadas: creadas,
         discrepanciasActualizadas: actualizadas,
@@ -1313,6 +1329,7 @@ async function generarReconteoDesdeComparacion(req, res, next) {
         zonaBaseId: zonaReferenciaId,
         zonaComparadaId: zonaObjetivoId,
         grupoId: grupoObjetivo.id,
+        grupoIds: gruposObjetivo.map((grupo) => grupo.id),
         totalDiferencias: diferencias.length,
         discrepanciasCreadas: creadas,
         discrepanciasActualizadas: actualizadas,
