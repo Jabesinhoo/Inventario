@@ -154,7 +154,13 @@ async function getRondaConAcceso(rondaId, req) {
 async function createRonda(req, res, next) {
   try {
     const { error, value } = createRondaSchema.validate(req.body);
-
+    if (value.tipoRonda === 'reconteo') {
+      return res.status(400).json({
+        ok: false,
+        message:
+          'No crees rondas de reconteo desde Rondas. Los reconteos deben generarse desde Diferencias para crear los SKUs pendientes automáticamente.'
+      });
+    }
     if (error) {
       return res.status(400).json({
         ok: false,
@@ -573,12 +579,12 @@ async function getPendientesRonda(req, res, next) {
     console.log('Estado:', ronda.estado);
 
     let discrepancias = [];
-    
+
     if (ronda.tipoRonda === 'reconteo') {
       // 🔥 CORREGIDO: Buscar discrepancias de DOS maneras:
       // 1. Las que tienen rondaReconteoId = esta ronda
       // 2. Las que tienen diferencia != 0 y no tienen rondaReconteoId asignada
-      
+
       const [discrepanciasAsignadas, discrepanciasPendientes] = await Promise.all([
         // Discrepancias ya asignadas a esta ronda
         DiscrepanciaConteo.findAll({
@@ -604,13 +610,13 @@ async function getPendientesRonda(req, res, next) {
           }
         })
       ]);
-      
+
       // Unir ambas listas
       discrepancias = [...discrepanciasAsignadas, ...discrepanciasPendientes];
-      
+
       console.log(`Discrepancias asignadas a esta ronda: ${discrepanciasAsignadas.length}`);
       console.log(`Discrepancias pendientes sin asignar: ${discrepanciasPendientes.length}`);
-      
+
       // Asignar las discrepancias pendientes a esta ronda
       for (const disc of discrepanciasPendientes) {
         await disc.update({ rondaReconteoId: ronda.id });
@@ -619,9 +625,9 @@ async function getPendientesRonda(req, res, next) {
     }
 
     console.log('Total discrepancias encontradas:', discrepancias.length);
-    console.log('Detalle:', discrepancias.map(x => ({ 
-      sku: x.sku, 
-      diferencia: x.diferencia, 
+    console.log('Detalle:', discrepancias.map(x => ({
+      sku: x.sku,
+      diferencia: x.diferencia,
       estado: x.estado,
       cantidadBase: x.cantidadBase,
       cantidadRecontada: x.cantidadRecontada
