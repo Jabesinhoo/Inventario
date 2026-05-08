@@ -800,7 +800,7 @@ function addInventarioCompletoRowsToSheet({
       elaborado: elaboradoPor,
 
       // Destino original del Excel importado en conteo inicial.
-      destino: datosProducto.destino || 'SIN DESTINO',
+      destino: datosProducto.grupoNombre || 'SIN DESTINO',
 
       nota: `Ajuste de inventario - ${mesActual}`,
       verificado: -1,
@@ -1011,8 +1011,7 @@ async function exportarComparacionExcel(req, res, next) {
           'descripcionSnapshot',
           'unidadMedida',
           'grupoNombre',
-          'precioCoste',
-          'destino'
+          'precioCoste'
         ]
       });
     }
@@ -1026,17 +1025,17 @@ async function exportarComparacionExcel(req, res, next) {
         productosMap.set(sku, {
           descripcion: producto.descripcionSnapshot || 'Sin descripción',
           unidadMedida: producto.unidadMedida || 'Und.',
-          grupoNombre: producto.grupoNombre || 'SIN GRUPO',
 
-          // Este viene del Excel importado en conteo inicial.
-          destino: producto.destino || producto.grupoNombre || 'SIN DESTINO',
+          // Este es el valor importado desde el Excel de conteo inicial.
+          // En tu modelo no existe "destino"; el valor está guardado como grupoNombre.
+          grupoNombre: producto.grupoNombre || 'SIN DESTINO',
 
           precioCoste: Number(producto.precioCoste || 0),
           valorUnitario: Number(producto.precioCoste || 0),
-          vencimiento: producto.vencimiento || '',
-          lote: producto.lote || '',
-          talla: producto.talla || '',
-          color: producto.color || ''
+          vencimiento: '',
+          lote: '',
+          talla: '',
+          color: ''
         });
       }
     }
