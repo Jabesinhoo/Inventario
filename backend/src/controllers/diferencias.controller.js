@@ -780,8 +780,7 @@ function addInventarioCompletoRowsToSheet({
   nombreEmpresa,
   fechaStr,
   mesActual,
-  elaboradoPor,
-  zonaNombre = null
+  elaboradoPor
 }) {
   for (const row of rows) {
     const cantidadAceptada = getCantidadAceptadaExcel(cantidadesAceptadas, row);
@@ -799,12 +798,10 @@ function addInventarioCompletoRowsToSheet({
       documentoNumero: '',
       fecha: fechaStr,
       elaborado: elaboradoPor,
-      destino:
-        zonaNombre ||
-        row.zonaComparada?.nombre ||
-        row.zonaBase?.nombre ||
-        datosProducto.grupoNombre ||
-        'SIN GRUPO',
+
+      // Destino original del Excel importado en conteo inicial.
+      destino: datosProducto.destino || 'SIN DESTINO',
+
       nota: `Ajuste de inventario - ${mesActual}`,
       verificado: -1,
       anulado: 0,
@@ -1014,7 +1011,8 @@ async function exportarComparacionExcel(req, res, next) {
           'descripcionSnapshot',
           'unidadMedida',
           'grupoNombre',
-          'precioCoste'
+          'precioCoste',
+          'destino'
         ]
       });
     }
@@ -1029,6 +1027,10 @@ async function exportarComparacionExcel(req, res, next) {
           descripcion: producto.descripcionSnapshot || 'Sin descripción',
           unidadMedida: producto.unidadMedida || 'Und.',
           grupoNombre: producto.grupoNombre || 'SIN GRUPO',
+
+          // Este viene del Excel importado en conteo inicial.
+          destino: producto.destino || producto.grupoNombre || 'SIN DESTINO',
+
           precioCoste: Number(producto.precioCoste || 0),
           valorUnitario: Number(producto.precioCoste || 0),
           vencimiento: producto.vencimiento || '',
@@ -1179,7 +1181,6 @@ async function exportarComparacionExcel(req, res, next) {
         fechaStr,
         mesActual,
         elaboradoPor,
-        zonaNombre: pair.zonaBase?.nombre || pair.zonaComparada?.nombre || null
       });
     }
 
@@ -1664,10 +1665,10 @@ async function generarReconteoDesdeComparacion(req, res, next) {
         discrepanciasActualizadas: actualizadas,
         pareja: pareja
           ? {
-              id: pareja.id,
-              estado: pareja.estado,
-              rondasGeneradas: pareja.rondasReconteoGeneradas
-            }
+            id: pareja.id,
+            estado: pareja.estado,
+            rondasGeneradas: pareja.rondasReconteoGeneradas
+          }
           : null
       }
     });
