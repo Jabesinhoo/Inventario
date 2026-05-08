@@ -568,6 +568,8 @@ async function compareInventarios(req, res, next) {
     next(error);
   }
 }
+
+
 function sanitizeExcelSheetName(name) {
   return String(name || 'Hoja')
     .replace(/[\\/*?:[\]]/g, '')
@@ -592,13 +594,23 @@ function addWorksheetSafe(workbook, desiredName, usedNames) {
 
 function styleHeaderRow(sheet, argb = 'FF2563EB') {
   const header = sheet.getRow(1);
-  header.font = { bold: true, color: { argb: 'FFFFFFFF' } };
+
+  header.font = {
+    bold: true,
+    color: { argb: 'FFFFFFFF' }
+  };
+
   header.fill = {
     type: 'pattern',
     pattern: 'solid',
     fgColor: { argb }
   };
-  header.alignment = { vertical: 'middle', horizontal: 'center' };
+
+  header.alignment = {
+    vertical: 'middle',
+    horizontal: 'center',
+    wrapText: true
+  };
 }
 
 function getCantidadAceptadaExcel(cantidadesAceptadas, row) {
@@ -618,7 +630,10 @@ function getCantidadAceptadaExcel(cantidadesAceptadas, row) {
 }
 
 async function getZonasInventarioParaExcel(inventarioId, allowedGroupIds = null) {
-  if (allowedGroupIds !== null && (!Array.isArray(allowedGroupIds) || allowedGroupIds.length === 0)) {
+  if (
+    allowedGroupIds !== null &&
+    (!Array.isArray(allowedGroupIds) || allowedGroupIds.length === 0)
+  ) {
     return [];
   }
 
@@ -668,8 +683,12 @@ async function getZonaPairsParaExportacion({
 }) {
   if (zonaBaseId && zonaComparadaId) {
     const [zonaBase, zonaComparada] = await Promise.all([
-      Zona.findByPk(Number(zonaBaseId), { attributes: ['id', 'nombre', 'codigo'] }),
-      Zona.findByPk(Number(zonaComparadaId), { attributes: ['id', 'nombre', 'codigo'] })
+      Zona.findByPk(Number(zonaBaseId), {
+        attributes: ['id', 'nombre', 'codigo']
+      }),
+      Zona.findByPk(Number(zonaComparadaId), {
+        attributes: ['id', 'nombre', 'codigo']
+      })
     ]);
 
     if (!zonaBase || !zonaComparada) {
@@ -688,8 +707,8 @@ async function getZonaPairsParaExportacion({
 
     return [
       {
-        zonaBase: zonaBase.toJSON(),
-        zonaComparada: zonaComparada.toJSON()
+        zonaBase: zonaBase.toJSON ? zonaBase.toJSON() : zonaBase,
+        zonaComparada: zonaComparada.toJSON ? zonaComparada.toJSON() : zonaComparada
       }
     ];
   }
@@ -717,6 +736,94 @@ async function getZonaPairsParaExportacion({
   return pairs;
 }
 
+function setupInventarioCompletoSheet(sheet) {
+  sheet.columns = [
+    { header: 'Empresa', key: 'empresa', width: 34 },
+    { header: 'Tipo Documento', key: 'tipoDocumento', width: 16 },
+    { header: 'Documento Número', key: 'documentoNumero', width: 20 },
+    { header: 'Fecha', key: 'fecha', width: 14 },
+    { header: 'Elaborado', key: 'elaborado', width: 24 },
+    { header: 'Destino', key: 'destino', width: 28 },
+    { header: 'Nota', key: 'nota', width: 40 },
+    { header: 'Verificado', key: 'verificado', width: 12 },
+    { header: 'Anulado', key: 'anulado', width: 10 },
+    { header: 'Producto', key: 'producto', width: 18 },
+    { header: 'Descripción', key: 'descripcion', width: 60 },
+    { header: 'Unidad De Medida', key: 'unidadMedida', width: 18 },
+    { header: 'Cantidad Físico', key: 'cantidadFisico', width: 18 },
+    { header: 'Cantidad Sistema', key: 'cantidadSistema', width: 18 },
+    { header: 'IVA', key: 'iva', width: 10 },
+    { header: 'Valor Unitario', key: 'valorUnitario', width: 16 },
+    { header: 'Descuento', key: 'descuento', width: 12 },
+    { header: 'Vencimiento', key: 'vencimiento', width: 14 },
+    { header: 'Lote', key: 'lote', width: 16 },
+    { header: 'Talla', key: 'talla', width: 10 },
+    { header: 'Color', key: 'color', width: 16 }
+  ];
+
+  styleHeaderRow(sheet, 'FF2563EB');
+
+  sheet.views = [{ state: 'frozen', ySplit: 1 }];
+
+  sheet.getColumn('cantidadFisico').numFmt = '#,##0';
+  sheet.getColumn('cantidadSistema').numFmt = '#,##0';
+  sheet.getColumn('iva').numFmt = '#,##0';
+  sheet.getColumn('valorUnitario').numFmt = '#,##0';
+  sheet.getColumn('descuento').numFmt = '#,##0';
+}
+
+function addInventarioCompletoRowsToSheet({
+  sheet,
+  rows,
+  cantidadesAceptadas,
+  productosMap,
+  nombreEmpresa,
+  fechaStr,
+  mesActual,
+  elaboradoPor,
+  zonaNombre = null
+}) {
+  for (const row of rows) {
+    const cantidadAceptada = getCantidadAceptadaExcel(cantidadesAceptadas, row);
+    const datosProducto = productosMap.get(String(row.sku)) || {};
+
+    const valorUnitario = Number(
+      datosProducto.precioCoste ||
+      datosProducto.valorUnitario ||
+      0
+    );
+
+    sheet.addRow({
+      empresa: nombreEmpresa,
+      tipoDocumento: 'AI',
+      documentoNumero: '',
+      fecha: fechaStr,
+      elaborado: elaboradoPor,
+      destino:
+        zonaNombre ||
+        row.zonaComparada?.nombre ||
+        row.zonaBase?.nombre ||
+        datosProducto.grupoNombre ||
+        'SIN GRUPO',
+      nota: `Ajuste de inventario - ${mesActual}`,
+      verificado: -1,
+      anulado: 0,
+      producto: row.sku,
+      descripcion: datosProducto.descripcion || row.descripcion || 'Sin descripción',
+      unidadMedida: datosProducto.unidadMedida || 'Und.',
+      cantidadFisico: cantidadAceptada,
+      cantidadSistema: 0,
+      iva: 0,
+      valorUnitario,
+      descuento: 0,
+      vencimiento: datosProducto.vencimiento || '',
+      lote: datosProducto.lote || '',
+      talla: datosProducto.talla || '',
+      color: datosProducto.color || ''
+    });
+  }
+}
+
 function setupComparisonSheet(sheet) {
   sheet.columns = [
     { header: 'Zona Base', key: 'zonaBase', width: 24 },
@@ -736,15 +843,16 @@ function setupComparisonSheet(sheet) {
     { header: 'Subtotal', key: 'subtotal', width: 16 }
   ];
 
-  styleHeaderRow(sheet);
+  styleHeaderRow(sheet, 'FFDC2626');
+
   sheet.views = [{ state: 'frozen', ySplit: 1 }];
 
   sheet.getColumn('cantidadBase').numFmt = '#,##0';
   sheet.getColumn('cantidadComparada').numFmt = '#,##0';
   sheet.getColumn('cantidadAceptada').numFmt = '#,##0';
   sheet.getColumn('diferencia').numFmt = '#,##0';
-  sheet.getColumn('valorUnitario').numFmt = '$#,##0';
-  sheet.getColumn('subtotal').numFmt = '$#,##0';
+  sheet.getColumn('valorUnitario').numFmt = '#,##0';
+  sheet.getColumn('subtotal').numFmt = '#,##0';
 }
 
 function addComparisonRowsToSheet(sheet, rows, cantidadesAceptadas, productosMap) {
@@ -772,7 +880,6 @@ function addComparisonRowsToSheet(sheet, rows, cantidadesAceptadas, productosMap
     });
   }
 }
-
 
 async function exportarComparacionExcel(req, res, next) {
   try {
@@ -850,6 +957,7 @@ async function exportarComparacionExcel(req, res, next) {
     const fechaStr = fechaActual.toISOString().slice(0, 10);
     const mesActual = fechaActual.toLocaleString('es', { month: 'long' });
     const nombreEmpresa = 'TECNOCOMPUTER MELISSA SANDOVAL';
+    const elaboradoPor = req.user?.nombre || 'Admin';
 
     const zonasExportadas = [];
 
@@ -921,7 +1029,12 @@ async function exportarComparacionExcel(req, res, next) {
           descripcion: producto.descripcionSnapshot || 'Sin descripción',
           unidadMedida: producto.unidadMedida || 'Und.',
           grupoNombre: producto.grupoNombre || 'SIN GRUPO',
-          precioCoste: Number(producto.precioCoste || 0)
+          precioCoste: Number(producto.precioCoste || 0),
+          valorUnitario: Number(producto.precioCoste || 0),
+          vencimiento: producto.vencimiento || '',
+          lote: producto.lote || '',
+          talla: producto.talla || '',
+          color: producto.color || ''
         });
       }
     }
@@ -943,7 +1056,7 @@ async function exportarComparacionExcel(req, res, next) {
     const valorTotalInventario = todosRows.reduce((sum, row) => {
       const cantidadAceptada = getCantidadAceptadaExcel(cantidadesAceptadas, row);
       const producto = productosMap.get(String(row.sku)) || {};
-      const precio = Number(producto.precioCoste || 0);
+      const precio = Number(producto.precioCoste || producto.valorUnitario || 0);
       return sum + cantidadAceptada * precio;
     }, 0);
 
@@ -951,7 +1064,7 @@ async function exportarComparacionExcel(req, res, next) {
       { concepto: '📊 INFORMACIÓN GENERAL', valor: '' },
       { concepto: 'Fecha Exportación', valor: fechaActual.toLocaleString() },
       { concepto: 'Empresa', valor: nombreEmpresa },
-      { concepto: 'Elaborado Por', valor: req.user?.nombre || 'Admin' },
+      { concepto: 'Elaborado Por', valor: elaboradoPor },
       { concepto: '', valor: '' },
       { concepto: '📦 INVENTARIOS COMPARADOS', valor: '' },
       { concepto: 'Inventario Base ID', valor: inventarioBaseId },
@@ -1011,33 +1124,63 @@ async function exportarComparacionExcel(req, res, next) {
 
     // ==================== INVENTARIO COMPLETO ====================
     const inventarioSheet = addWorksheetSafe(workbook, 'Inventario Completo', usedSheetNames);
-    setupComparisonSheet(inventarioSheet);
-    addComparisonRowsToSheet(inventarioSheet, todosRows, cantidadesAceptadas, productosMap);
+
+    setupInventarioCompletoSheet(inventarioSheet);
+
+    addInventarioCompletoRowsToSheet({
+      sheet: inventarioSheet,
+      rows: todosRows,
+      cantidadesAceptadas,
+      productosMap,
+      nombreEmpresa,
+      fechaStr,
+      mesActual,
+      elaboradoPor
+    });
 
     // ==================== DETALLE DIFERENCIAS ====================
     const diferenciasSheet = addWorksheetSafe(workbook, 'Detalle Diferencias', usedSheetNames);
+
     setupComparisonSheet(diferenciasSheet);
     styleHeaderRow(diferenciasSheet, 'FFDC2626');
-    addComparisonRowsToSheet(diferenciasSheet, diferenciasRows, cantidadesAceptadas, productosMap);
+
+    addComparisonRowsToSheet(
+      diferenciasSheet,
+      diferenciasRows,
+      cantidadesAceptadas,
+      productosMap
+    );
 
     // ==================== HOJAS POR ZONA ====================
     for (const zonaExportada of zonasExportadas) {
       const { pair, data } = zonaExportada;
 
-      const sheetName = pair.zonaBase?.nombre || pair.zonaComparada?.nombre || `Zona ${pair.zonaBase?.id || ''}`;
+      const sheetName =
+        pair.zonaBase?.nombre ||
+        pair.zonaComparada?.nombre ||
+        `Zona ${pair.zonaBase?.id || ''}`;
+
       const zonaSheet = addWorksheetSafe(workbook, sheetName, usedSheetNames);
 
-      setupComparisonSheet(zonaSheet);
-      addComparisonRowsToSheet(
-        zonaSheet,
-        (data.comparacion || []).map((row) => ({
-          ...row,
-          zonaBase: pair.zonaBase,
-          zonaComparada: pair.zonaComparada
-        })),
+      setupInventarioCompletoSheet(zonaSheet);
+
+      const rowsZona = (data.comparacion || []).map((row) => ({
+        ...row,
+        zonaBase: pair.zonaBase,
+        zonaComparada: pair.zonaComparada
+      }));
+
+      addInventarioCompletoRowsToSheet({
+        sheet: zonaSheet,
+        rows: rowsZona,
         cantidadesAceptadas,
-        productosMap
-      );
+        productosMap,
+        nombreEmpresa,
+        fechaStr,
+        mesActual,
+        elaboradoPor,
+        zonaNombre: pair.zonaBase?.nombre || pair.zonaComparada?.nombre || null
+      });
     }
 
     workbook.eachSheet((sheet) => {
@@ -1059,6 +1202,7 @@ async function exportarComparacionExcel(req, res, next) {
       'Content-Type',
       'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
     );
+
     res.setHeader(
       'Content-Disposition',
       `attachment; filename="${encodeURIComponent(filename)}"`
@@ -1083,7 +1227,6 @@ async function exportarComparacionExcel(req, res, next) {
     next(error);
   }
 }
-
 
 async function generarReconteoDesdeComparacion(req, res, next) {
   const transaction = await sequelize.transaction();
