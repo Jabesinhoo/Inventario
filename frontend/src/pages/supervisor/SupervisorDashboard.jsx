@@ -308,40 +308,71 @@ export default function SupervisorDashboard() {
       {/* Modal de detalle de grupo */}
       {selectedGrupo && grupoDetalle && (
         <div className="modal-overlay" onClick={() => setSelectedGrupo(null)}>
-          <div className="modal modal-detalle" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3><Users size={18} /> {selectedGrupo.nombre}</h3>
+          <div
+            className="modal-detalle"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              maxWidth: '900px',
+              width: '95%',
+              maxHeight: '85vh',
+              display: 'flex',
+              flexDirection: 'column',
+              background: 'var(--surface)',
+              borderRadius: '16px',
+              overflow: 'hidden'
+            }}
+          >
+            <div className="modal-header" style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
+              <h3 style={{ display: 'flex', alignItems: 'center', gap: '8px', margin: 0 }}>
+                <Users size={18} /> {selectedGrupo.nombre}
+              </h3>
               <button className="icon-btn" onClick={() => setSelectedGrupo(null)}><X size={18} /></button>
             </div>
 
-            <div className="modal-body-scroll">
-              {/* Información del grupo en grid responsivo */}
-              <div className="grupo-detalle-grid">
-                <div className="detail-item">
+            <div
+              className="modal-body-scroll"
+              style={{
+                flex: 1,
+                overflowY: 'auto',
+                padding: '20px',
+                maxHeight: 'calc(85vh - 120px)'
+              }}
+            >
+              {/* Información del grupo */}
+              <div className="grupo-detalle-grid" style={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))',
+                gap: '12px',
+                background: 'var(--surface-soft)',
+                padding: '16px',
+                borderRadius: '12px',
+                marginBottom: '20px'
+              }}>
+                <div className="detail-item" style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px dashed var(--border)' }}>
                   <span className="detail-label">Zona:</span>
                   <span className="detail-value">{grupoDetalle.grupo?.zona || 'Sin zona'} {grupoDetalle.grupo?.zona_codigo && `(${grupoDetalle.grupo.zona_codigo})`}</span>
                 </div>
-                <div className="detail-item">
+                <div className="detail-item" style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px dashed var(--border)' }}>
                   <span className="detail-label">Líder:</span>
                   <span className="detail-value">{grupoDetalle.grupo?.lider || 'Sin líder'}</span>
                 </div>
-                <div className="detail-item">
+                <div className="detail-item" style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px dashed var(--border)' }}>
                   <span className="detail-label">Total escaneos:</span>
                   <span className="detail-value">{grupoDetalle.grupo?.total_escaneos || 0}</span>
                 </div>
-                <div className="detail-item">
+                <div className="detail-item" style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px dashed var(--border)' }}>
                   <span className="detail-label">Productos distintos:</span>
                   <span className="detail-value">{grupoDetalle.grupo?.productos_distintos || 0}</span>
                 </div>
-                <div className="detail-item">
+                <div className="detail-item" style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px dashed var(--border)' }}>
                   <span className="detail-label">Integrantes activos:</span>
                   <span className="detail-value">{grupoDetalle.grupo?.integrantes_activos || 0}</span>
                 </div>
-                <div className="detail-item">
+                <div className="detail-item" style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px dashed var(--border)' }}>
                   <span className="detail-label">Primera actividad:</span>
                   <span className="detail-value">{grupoDetalle.grupo?.primera_actividad ? new Date(grupoDetalle.grupo.primera_actividad).toLocaleString() : 'Nunca'}</span>
                 </div>
-                <div className="detail-item">
+                <div className="detail-item" style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px dashed var(--border)' }}>
                   <span className="detail-label">Última actividad:</span>
                   <span className="detail-value">{grupoDetalle.grupo?.ultima_actividad ? new Date(grupoDetalle.grupo.ultima_actividad).toLocaleString() : 'Nunca'}</span>
                 </div>
@@ -350,26 +381,56 @@ export default function SupervisorDashboard() {
               <h4 style={{ marginTop: '20px', marginBottom: '12px' }}>Productos escaneados por este grupo</h4>
 
               {/* Contenedor con scroll horizontal y vertical */}
-              <div className="table-scroll-container">
-                <table className="data-table detalle-table">
+              <div
+                className="table-scroll-container"
+                style={{
+                  overflow: 'auto',
+                  width: '100%',
+                  borderRadius: '12px',
+                  border: '1px solid var(--border)',
+                  maxHeight: '400px'
+                }}
+              >
+                <table className="detalle-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
                   <thead>
                     <tr>
-                      <th style={{ minWidth: '100px' }}>SKU</th>
-                      <th style={{ minWidth: '300px' }}>Descripción</th>
-                      <th style={{ minWidth: '80px', textAlign: 'center' }}>Cantidad</th>
+                      <th style={{
+                        position: 'sticky',
+                        top: 0,
+                        backgroundColor: 'var(--surface-soft)',
+                        padding: '12px',
+                        textAlign: 'left',
+                        minWidth: '100px'
+                      }}>SKU</th>
+                      <th style={{
+                        position: 'sticky',
+                        top: 0,
+                        backgroundColor: 'var(--surface-soft)',
+                        padding: '12px',
+                        textAlign: 'left',
+                        minWidth: '300px'
+                      }}>Descripción</th>
+                      <th style={{
+                        position: 'sticky',
+                        top: 0,
+                        backgroundColor: 'var(--surface-soft)',
+                        padding: '12px',
+                        textAlign: 'center',
+                        minWidth: '80px'
+                      }}>Cantidad</th>
                     </tr>
                   </thead>
                   <tbody>
                     {grupoDetalle.productos?.map((p) => (
                       <tr key={p.sku}>
-                        <td><strong>{p.sku}</strong></td>
-                        <td>{p.descripcion?.substring(0, 100) || 'Sin descripción'}</td>
-                        <td className="text-center">{p.total}</td>
+                        <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--border-light)' }}><strong>{p.sku}</strong></td>
+                        <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--border-light)' }}>{p.descripcion?.substring(0, 100) || 'Sin descripción'}</td>
+                        <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--border-light)', textAlign: 'center' }}>{p.total}</td>
                       </tr>
                     ))}
                     {(!grupoDetalle.productos || grupoDetalle.productos.length === 0) && (
                       <tr>
-                        <td colSpan="3" className="text-center text-muted">No hay productos escaneados por este grupo</td>
+                        <td colSpan="3" style={{ textAlign: 'center', padding: '20px', color: 'var(--text-muted)' }}>No hay productos escaneados por este grupo</td>
                       </tr>
                     )}
                   </tbody>
@@ -377,51 +438,82 @@ export default function SupervisorDashboard() {
               </div>
             </div>
 
-            <div className="modal-actions">
+            <div className="modal-actions" style={{ padding: '16px 20px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'flex-end' }}>
               <button className="btn btn-primary" onClick={() => setSelectedGrupo(null)}>Cerrar</button>
             </div>
           </div>
         </div>
       )}
-
       {/* Modal de alertas */}
       {showAlertasModal && (
         <div className="modal-overlay" onClick={() => setShowAlertasModal(false)}>
-          <div className="modal modal-detalle" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3><AlertTriangle size={18} /> Alertas - Productos en zona incorrecta</h3>
+          <div
+            className="modal-detalle"
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              maxWidth: '1000px',
+              width: '95%',
+              maxHeight: '85vh',
+              display: 'flex',
+              flexDirection: 'column',
+              background: 'var(--surface)',
+              borderRadius: '16px',
+              overflow: 'hidden'
+            }}
+          >
+            <div className="modal-header" style={{ padding: '16px 20px', borderBottom: '1px solid var(--border)' }}>
+              <h3 style={{ display: 'flex', alignItems: 'center', gap: '8px', margin: 0 }}>
+                <AlertTriangle size={18} /> Alertas - Productos en zona incorrecta
+              </h3>
               <button className="icon-btn" onClick={() => setShowAlertasModal(false)}><X size={18} /></button>
             </div>
 
-            <div className="modal-body-scroll">
+            <div
+              className="modal-body-scroll"
+              style={{
+                flex: 1,
+                overflowY: 'auto',
+                padding: '20px',
+                maxHeight: 'calc(85vh - 120px)'
+              }}
+            >
               {alertasFiltradas.length === 0 ? (
-                <p className="muted">No hay alertas registradas en las últimas 24 horas.</p>
+                <p className="muted" style={{ textAlign: 'center', padding: '40px' }}>No hay alertas registradas en las últimas 24 horas.</p>
               ) : (
-                <div className="table-scroll-container">
-                  <table className="data-table detalle-table">
+                <div
+                  className="table-scroll-container"
+                  style={{
+                    overflow: 'auto',
+                    width: '100%',
+                    borderRadius: '12px',
+                    border: '1px solid var(--border)',
+                    maxHeight: '500px'
+                  }}
+                >
+                  <table className="detalle-table" style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
                     <thead>
                       <tr>
-                        <th style={{ minWidth: '80px' }}>SKU</th>
-                        <th style={{ minWidth: '120px' }}>Zona destino</th>
-                        <th style={{ minWidth: '100px' }}>Grupo destino</th>
-                        <th style={{ minWidth: '70px' }}>Cantidad</th>
-                        <th style={{ minWidth: '120px' }}>Zona origen</th>
-                        <th style={{ minWidth: '100px' }}>Grupo origen</th>
-                        <th style={{ minWidth: '100px' }}>Usuario</th>
-                        <th style={{ minWidth: '150px' }}>Fecha</th>
+                        <th style={{ position: 'sticky', top: 0, backgroundColor: 'var(--surface-soft)', padding: '12px', minWidth: '80px' }}>SKU</th>
+                        <th style={{ position: 'sticky', top: 0, backgroundColor: 'var(--surface-soft)', padding: '12px', minWidth: '120px' }}>Zona destino</th>
+                        <th style={{ position: 'sticky', top: 0, backgroundColor: 'var(--surface-soft)', padding: '12px', minWidth: '100px' }}>Grupo destino</th>
+                        <th style={{ position: 'sticky', top: 0, backgroundColor: 'var(--surface-soft)', padding: '12px', minWidth: '70px' }}>Cantidad</th>
+                        <th style={{ position: 'sticky', top: 0, backgroundColor: 'var(--surface-soft)', padding: '12px', minWidth: '120px' }}>Zona origen</th>
+                        <th style={{ position: 'sticky', top: 0, backgroundColor: 'var(--surface-soft)', padding: '12px', minWidth: '100px' }}>Grupo origen</th>
+                        <th style={{ position: 'sticky', top: 0, backgroundColor: 'var(--surface-soft)', padding: '12px', minWidth: '100px' }}>Usuario</th>
+                        <th style={{ position: 'sticky', top: 0, backgroundColor: 'var(--surface-soft)', padding: '12px', minWidth: '150px' }}>Fecha</th>
                       </tr>
                     </thead>
                     <tbody>
                       {alertasFiltradas.map((alerta) => (
-                        <tr key={alerta.id} className="row-warning">
-                          <td><strong>{alerta.sku}</strong></td>
-                          <td>{alerta.zona_destino}</td>
-                          <td>{alerta.grupo_destino}</td>
-                          <td className="text-center">{alerta.cantidad}</td>
-                          <td>{alerta.zona_origen}</td>
-                          <td>{alerta.grupo_origen}</td>
-                          <td>{alerta.usuario}</td>
-                          <td className="text-muted">{new Date(alerta.fecha).toLocaleString()}</td>
+                        <tr key={alerta.id} style={{ borderLeft: '3px solid var(--warning)' }}>
+                          <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--border-light)' }}><strong>{alerta.sku}</strong></td>
+                          <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--border-light)' }}>{alerta.zona_destino}</td>
+                          <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--border-light)' }}>{alerta.grupo_destino}</td>
+                          <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--border-light)', textAlign: 'center' }}>{alerta.cantidad}</td>
+                          <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--border-light)' }}>{alerta.zona_origen}</td>
+                          <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--border-light)' }}>{alerta.grupo_origen}</td>
+                          <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--border-light)' }}>{alerta.usuario}</td>
+                          <td style={{ padding: '10px 12px', borderBottom: '1px solid var(--border-light)' }}>{new Date(alerta.fecha).toLocaleString()}</td>
                         </tr>
                       ))}
                     </tbody>
@@ -430,7 +522,7 @@ export default function SupervisorDashboard() {
               )}
             </div>
 
-            <div className="modal-actions">
+            <div className="modal-actions" style={{ padding: '16px 20px', borderTop: '1px solid var(--border)', display: 'flex', justifyContent: 'flex-end' }}>
               <button className="btn btn-primary" onClick={() => setShowAlertasModal(false)}>Cerrar</button>
             </div>
           </div>
