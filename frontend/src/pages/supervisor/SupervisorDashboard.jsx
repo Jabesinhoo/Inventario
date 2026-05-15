@@ -308,14 +308,14 @@ export default function SupervisorDashboard() {
       {/* Modal de detalle de grupo */}
       {selectedGrupo && grupoDetalle && (
         <div className="modal-overlay" onClick={() => setSelectedGrupo(null)}>
-          <div className="modal modal-large" onClick={(e) => e.stopPropagation()}>
+          <div className="modal modal-detalle" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h3><Users size={18} /> {selectedGrupo.nombre}</h3>
               <button className="icon-btn" onClick={() => setSelectedGrupo(null)}><X size={18} /></button>
             </div>
 
-            <div className="modal-body" style={{ maxHeight: '70vh', overflowY: 'auto' }}>
-              {/* Información del grupo */}
+            <div className="modal-body-scroll">
+              {/* Información del grupo en grid responsivo */}
               <div className="grupo-detalle-grid">
                 <div className="detail-item">
                   <span className="detail-label">Zona:</span>
@@ -349,21 +349,21 @@ export default function SupervisorDashboard() {
 
               <h4 style={{ marginTop: '20px', marginBottom: '12px' }}>Productos escaneados por este grupo</h4>
 
-              {/* Tabla con scroll */}
-              <div className="table-container" style={{ maxHeight: '300px', overflowY: 'auto' }}>
-                <table className="data-table">
-                  <thead style={{ position: 'sticky', top: 0, backgroundColor: '#f9fafb', zIndex: 1 }}>
+              {/* Contenedor con scroll horizontal y vertical */}
+              <div className="table-scroll-container">
+                <table className="data-table detalle-table">
+                  <thead>
                     <tr>
-                      <th>SKU</th>
-                      <th>Descripción</th>
-                      <th>Cantidad</th>
+                      <th style={{ minWidth: '100px' }}>SKU</th>
+                      <th style={{ minWidth: '300px' }}>Descripción</th>
+                      <th style={{ minWidth: '80px', textAlign: 'center' }}>Cantidad</th>
                     </tr>
                   </thead>
                   <tbody>
                     {grupoDetalle.productos?.map((p) => (
                       <tr key={p.sku}>
                         <td><strong>{p.sku}</strong></td>
-                        <td>{p.descripcion?.substring(0, 80) || 'Sin descripción'}</td>
+                        <td>{p.descripcion?.substring(0, 100) || 'Sin descripción'}</td>
                         <td className="text-center">{p.total}</td>
                       </tr>
                     ))}
@@ -387,28 +387,28 @@ export default function SupervisorDashboard() {
       {/* Modal de alertas */}
       {showAlertasModal && (
         <div className="modal-overlay" onClick={() => setShowAlertasModal(false)}>
-          <div className="modal modal-large" onClick={(e) => e.stopPropagation()}>
+          <div className="modal modal-detalle" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h3><AlertTriangle size={18} /> Alertas - Productos en zona incorrecta</h3>
               <button className="icon-btn" onClick={() => setShowAlertasModal(false)}><X size={18} /></button>
             </div>
 
-            <div className="modal-body" style={{ maxHeight: '70vh', overflowY: 'auto' }}>
+            <div className="modal-body-scroll">
               {alertasFiltradas.length === 0 ? (
                 <p className="muted">No hay alertas registradas en las últimas 24 horas.</p>
               ) : (
-                <div className="table-container" style={{ maxHeight: '400px', overflowY: 'auto' }}>
-                  <table className="data-table">
-                    <thead style={{ position: 'sticky', top: 0, backgroundColor: '#f9fafb', zIndex: 1 }}>
+                <div className="table-scroll-container">
+                  <table className="data-table detalle-table">
+                    <thead>
                       <tr>
-                        <th>SKU</th>
-                        <th>Zona destino</th>
-                        <th>Grupo destino</th>
-                        <th>Cantidad</th>
-                        <th>Zona origen</th>
-                        <th>Grupo origen</th>
-                        <th>Usuario</th>
-                        <th>Fecha</th>
+                        <th style={{ minWidth: '80px' }}>SKU</th>
+                        <th style={{ minWidth: '120px' }}>Zona destino</th>
+                        <th style={{ minWidth: '100px' }}>Grupo destino</th>
+                        <th style={{ minWidth: '70px' }}>Cantidad</th>
+                        <th style={{ minWidth: '120px' }}>Zona origen</th>
+                        <th style={{ minWidth: '100px' }}>Grupo origen</th>
+                        <th style={{ minWidth: '100px' }}>Usuario</th>
+                        <th style={{ minWidth: '150px' }}>Fecha</th>
                       </tr>
                     </thead>
                     <tbody>
