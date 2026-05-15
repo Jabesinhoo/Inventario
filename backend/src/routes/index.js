@@ -19,5 +19,6 @@ router.use('/exportaciones', require('./exportaciones.routes'));
 router.use('/estadisticas', require('./estadisticas.routes'));
 router.use('/scripts', require('./scripts.routes'));
 router.use('/grupo-miembros', require('./grupoMiembros.routes'));
+router.use('/supervisor', require('./supervisor.routes'));  // ← AGREGAR ESTA LÍNEA
 
 module.exports = router;

@@ -8,6 +8,7 @@ const countRoutes = require('./routes/countRoutes');
 const userRoutes = require('./routes/usuarioRoutes');
 const groupRoutes = require('./routes/grupoRoutes');
 const statsRoutes = require('./routes/statsRoutes'); // <-- DEBE ESTAR
+const supervisorRoutes = require('./routes/supervisor.routes');
 
 const app = express();
 
@@ -27,7 +28,7 @@ app.use('/api/v1/counts', countRoutes);
 app.use('/api/v1/users', userRoutes);
 app.use('/api/v1/groups', groupRoutes);
 app.use('/api/v1/stats', statsRoutes); // <-- DEBE ESTAR
-
+app.use('/api/v1/supervisors', supervisorRoutes); // <-- AGREGADO
 // 404
 app.use((req, res) => {
   res.status(404).json({ error: 'Ruta no encontrada' });

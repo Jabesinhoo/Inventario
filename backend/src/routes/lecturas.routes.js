@@ -11,7 +11,6 @@ router.get('/resumen', authMiddleware, injectGrupoId, lecturasController.getResu
 router.get('/historial', authMiddleware, injectGrupoId, lecturasController.getHistorialLecturas);
 router.get('/estadisticas-grupo', authMiddleware, injectGrupoId, lecturasController.getEstadisticasGrupo);
 router.get('/exportar-grupo', authMiddleware, injectGrupoId, lecturasController.exportarResultadosGrupo);
-// IMPORTANTE: Usar agregarLecturaManual (la función corregida)
-router.post('/manual', authMiddleware, lecturasController.agregarLecturaManual);
+router.post('/manual', authMiddleware, lecturasController.agregarLecturaManual);  // ← Verifica que existe
 
 module.exports = router;

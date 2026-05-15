@@ -65,12 +65,16 @@ export default function EscaneoPage() {
   const [syncing, setSyncing] = useState(false);
   const [exporting, setExporting] = useState(false);
 
-  // Estado para el modal de entrada manual
+  // Modal entrada manual
   const [showManualModal, setShowManualModal] = useState(false);
   const [manualSku, setManualSku] = useState('');
   const [manualCantidad, setManualCantidad] = useState(1);
-  const [manualRepeticiones, setManualRepeticiones] = useState(1); // ← Cambiado de manualVeces
+  const [manualRepeticiones, setManualRepeticiones] = useState(1);
   const [loadingManual, setLoadingManual] = useState(false);
+
+  // Modal advertencia de producto en otra zona
+  const [showZoneWarning, setShowZoneWarning] = useState(false);
+  const [zoneWarningInfo, setZoneWarningInfo] = useState(null);
 
   const auth = useAuth();
   const rol = String(auth?.user?.rol || auth?.user?.rol?.nombre || '').toLowerCase();
@@ -85,7 +89,7 @@ export default function EscaneoPage() {
     if (!flash.text) return;
     const timeout = setTimeout(() => {
       setFlash({ type: '', text: '' });
-    }, 3000);
+    }, 5000);
     return () => clearTimeout(timeout);
   }, [flash]);
 
@@ -126,13 +130,10 @@ export default function EscaneoPage() {
 
   const extractArray = (value, keys = []) => {
     const unwrapped = unwrapData(value);
-
     if (Array.isArray(unwrapped)) return unwrapped;
-
     for (const key of keys) {
       if (Array.isArray(unwrapped?.[key])) return unwrapped[key];
     }
-
     return [];
   };
 
@@ -145,25 +146,10 @@ export default function EscaneoPage() {
     return (rows || []).filter((item) => item?.estado !== 'anulada');
   };
 
-  const onlyPendingDiscrepancias = (rows) => {
-    return (rows || []).filter((item) => {
-      const estado = String(item?.estado || '').toLowerCase();
-      const diferencia = Number(item?.diferencia ?? item?.diferenciaOriginal ?? 0);
-
-      return (
-        diferencia !== 0 &&
-        estado !== 'resuelta' &&
-        estado !== 'cerrada' &&
-        estado !== 'anulada'
-      );
-    });
-  };
-
   async function loadInventariosData() {
     try {
       const data = await getInventarios();
       setInventarios(data || []);
-
       if (inventarioIdFromUrl) {
         setSelectedInventario(inventarioIdFromUrl);
       } else if (data?.length > 0) {
@@ -188,8 +174,7 @@ export default function EscaneoPage() {
       const data = extractArray(raw);
       setRondas(data);
 
-      const preferred =
-        data.find((item) => Number(item.id) === Number(rondaIdFromUrl)) ||
+      const preferred = data.find((item) => Number(item.id) === Number(rondaIdFromUrl)) ||
         data.find((item) => Number(item.id) === Number(currentSelectedId)) ||
         data.find((item) => item.tipoRonda === 'reconteo' && item.estado === 'activa') ||
         data.find((item) => item.tipoRonda === 'reconteo' && item.estado === 'pausada') ||
@@ -197,134 +182,80 @@ export default function EscaneoPage() {
         data.find((item) => item.estado === 'activa') ||
         data.find((item) => item.estado === 'pausada') ||
         data.find((item) => item.estado === 'borrador') ||
-        data[0] ||
-        null;
+        data[0] || null;
 
       setSelectedRondaId(preferred?.id || '');
     } catch (err) {
-      setFlashMessage(
-        err.response?.data?.message || 'No se pudieron cargar tus rondas',
-        'error'
-      );
+      setFlashMessage(err.response?.data?.message || 'No se pudieron cargar tus rondas', 'error');
       setRondas([]);
       setSelectedRondaId('');
     }
   }, [setFlashMessage, rondaIdFromUrl]);
 
-    const loadRoundContext = useCallback(async (ronda) => {
-  if (!ronda?.id) {
-    setPendientes([]);
-    setResumen([]);
-    setHistory([]);
-    setStats(null);
-    return;
-  }
-
-  setSyncing(true);
-
-  try {
-    const requests = [
-      getResumenLecturas({ rondaId: ronda.id }),
-      getHistorialLecturas({ rondaId: ronda.id, limit: 50 }),
-      ronda.tipoRonda === 'reconteo'
-        ? getPendientesRonda(ronda.id)
-        : Promise.resolve({ pendientes: [] }),
-      ronda.asignacion?.grupoId || ronda.asignacion?.grupo?.id
-        ? getEstadisticasGrupo({
-            rondaId: ronda.id,
-            grupoId: ronda.asignacion?.grupoId || ronda.asignacion?.grupo?.id
-          })
-        : Promise.resolve(null)
-    ];
-
-    const [resumenRes, historyRes, pendientesRes, statsRes] =
-      await Promise.allSettled(requests);
-
-    const resumenRows =
-      resumenRes.status === 'fulfilled'
-        ? extractArray(resumenRes.value, ['resumen', 'items'])
-        : [];
-
-    const historyRows =
-      historyRes.status === 'fulfilled'
-        ? onlyValidLecturas(
-            extractArray(historyRes.value, ['historial', 'lecturas', 'history'])
-          )
-        : [];
-
-    let pendientesRows = [];
-
-    if (pendientesRes.status === 'fulfilled') {
-      const rawPendientesValue = pendientesRes.value;
-
-      pendientesRows =
-        rawPendientesValue?.pendientes ||
-        rawPendientesValue?.data?.pendientes ||
-        rawPendientesValue?.data?.data?.pendientes ||
-        extractArray(rawPendientesValue, ['pendientes']) ||
-        [];
-
-      // No aplicar onlyPendingDiscrepancias aquí.
-      // El backend getPendientesRonda ya debe devolver solo los pendientes válidos.
-      pendientesRows = Array.isArray(pendientesRows) ? pendientesRows : [];
-
-      console.log('🟡 DEBUG pendientes reconteo:', {
-        rondaId: ronda.id,
-        inventarioId: ronda.inventarioId,
-        zonaId: ronda.zonaId,
-        totalRecibidos: pendientesRows.length,
-        skus: pendientesRows.map((item) => item.sku),
-        raw: rawPendientesValue
-      });
+  const loadRoundContext = useCallback(async (ronda) => {
+    if (!ronda?.id) {
+      setPendientes([]);
+      setResumen([]);
+      setHistory([]);
+      setStats(null);
+      return;
     }
 
-    setResumen(resumenRows);
-    setHistory(historyRows);
-    setPendientes(pendientesRows);
-    setStats(statsRes.status === 'fulfilled' ? extractObject(statsRes.value) : null);
+    setSyncing(true);
 
-    if (pendientesRes.status === 'rejected' && ronda.tipoRonda === 'reconteo') {
-      setFlashMessage(
-        pendientesRes.reason?.response?.data?.message ||
-          'No se pudieron cargar los pendientes del reconteo',
-        'warning'
-      );
-    }
+    try {
+      const requests = [
+        getResumenLecturas({ rondaId: ronda.id }),
+        getHistorialLecturas({ rondaId: ronda.id, limit: 50 }),
+        ronda.tipoRonda === 'reconteo' ? getPendientesRonda(ronda.id) : Promise.resolve({ pendientes: [] }),
+        ronda.asignacion?.grupoId || ronda.asignacion?.grupo?.id
+          ? getEstadisticasGrupo({ rondaId: ronda.id, grupoId: ronda.asignacion?.grupoId || ronda.asignacion?.grupo?.id })
+          : Promise.resolve(null)
+      ];
 
-    if (resumenRes.status === 'rejected' || historyRes.status === 'rejected') {
-      setFlashMessage(
-        'Se cargó la ronda, pero algunas secciones no pudieron sincronizarse',
-        'warning'
-      );
+      const [resumenRes, historyRes, pendientesRes, statsRes] = await Promise.allSettled(requests);
+
+      const resumenRows = resumenRes.status === 'fulfilled' ? extractArray(resumenRes.value, ['resumen', 'items']) : [];
+      const historyRows = historyRes.status === 'fulfilled' ? onlyValidLecturas(extractArray(historyRes.value, ['historial', 'lecturas', 'history'])) : [];
+      let pendientesRows = [];
+
+      if (pendientesRes.status === 'fulfilled') {
+        const rawPendientesValue = pendientesRes.value;
+        pendientesRows = rawPendientesValue?.pendientes ||
+          rawPendientesValue?.data?.pendientes ||
+          rawPendientesValue?.data?.data?.pendientes ||
+          extractArray(rawPendientesValue, ['pendientes']) ||
+          [];
+        pendientesRows = Array.isArray(pendientesRows) ? pendientesRows : [];
+      }
+
+      setResumen(resumenRows);
+      setHistory(historyRows);
+      setPendientes(pendientesRows);
+      setStats(statsRes.status === 'fulfilled' ? extractObject(statsRes.value) : null);
+    } catch (err) {
+      console.error('❌ Error en loadRoundContext:', err);
+      setFlashMessage('No se pudo sincronizar la información de la ronda', 'error');
+    } finally {
+      setSyncing(false);
     }
-  } catch (err) {
-    console.error('❌ Error en loadRoundContext:', err);
-    setFlashMessage('No se pudo sincronizar la información de la ronda', 'error');
-  } finally {
-    setSyncing(false);
-  }
-}, [setFlashMessage]);
+  }, [setFlashMessage]);
 
   useEffect(() => {
     loadInventariosData();
   }, []);
 
   useEffect(() => {
-    if (inventarioIdFromUrl) {
-      setSelectedInventario(inventarioIdFromUrl);
-    }
+    if (inventarioIdFromUrl) setSelectedInventario(inventarioIdFromUrl);
   }, [inventarioIdFromUrl]);
 
   useEffect(() => {
-    if (selectedInventario) {
-      loadRondasData(selectedInventario, rondaIdFromUrl || null);
-    }
+    if (selectedInventario) loadRondasData(selectedInventario, rondaIdFromUrl || null);
   }, [selectedInventario, rondaIdFromUrl, loadRondasData]);
 
   useEffect(() => {
-    if (selectedRonda) {
-      loadRoundContext(selectedRonda);
-    } else {
+    if (selectedRonda) loadRoundContext(selectedRonda);
+    else {
       setPendientes([]);
       setResumen([]);
       setHistory([]);
@@ -334,18 +265,12 @@ export default function EscaneoPage() {
 
   useEffect(() => {
     if (!selectedRonda?.id || selectedRonda.estado !== 'activa') return;
-
-    const interval = setInterval(() => {
-      loadRoundContext(selectedRonda);
-    }, 4000);
-
+    const interval = setInterval(() => loadRoundContext(selectedRonda), 4000);
     return () => clearInterval(interval);
   }, [selectedRonda, loadRoundContext]);
 
   useEffect(() => {
-    if (!bootLoading) {
-      setTimeout(() => inputRef.current?.focus(), 50);
-    }
+    if (!bootLoading) setTimeout(() => inputRef.current?.focus(), 50);
   }, [bootLoading, selectedRondaId]);
 
   const handleRefresh = async () => {
@@ -355,7 +280,6 @@ export default function EscaneoPage() {
 
   const handleRondaAction = async (action) => {
     if (!selectedRonda?.id) return;
-
     try {
       if (action === 'iniciar') {
         await iniciarRonda(selectedRonda.id);
@@ -367,14 +291,10 @@ export default function EscaneoPage() {
         await reanudarRonda(selectedRonda.id);
         setFlashMessage('Ronda reanudada.', 'success');
       }
-
       await loadRondasData(selectedInventario, selectedRonda.id);
       setTimeout(() => inputRef.current?.focus(), 50);
     } catch (err) {
-      setFlashMessage(
-        err.response?.data?.message || 'No se pudo actualizar el estado de la ronda',
-        'error'
-      );
+      setFlashMessage(err.response?.data?.message || 'No se pudo actualizar el estado de la ronda', 'error');
     }
   };
 
@@ -382,52 +302,38 @@ export default function EscaneoPage() {
     e.preventDefault();
 
     const codigoLimpio = codigo.trim();
-
     if (!codigoLimpio) return;
 
     if (!/^\d{5,7}$/.test(codigoLimpio)) {
-      setFlashMessage(
-        'Código inválido. Debe tener entre 5 y 7 dígitos numéricos.',
-        'warning'
-      );
+      setFlashMessage('Codigo invalido. Debe tener entre 5 y 7 digitos numericos.', 'warning');
       setCodigo('');
       setTimeout(() => inputRef.current?.focus(), 50);
       return;
     }
 
     const now = Date.now();
-
-    if (
-      lastSentRef.current.code === codigoLimpio &&
-      now - lastSentRef.current.at < 700
-    ) {
+    if (lastSentRef.current.code === codigoLimpio && now - lastSentRef.current.at < 700) {
       setCodigo('');
       setTimeout(() => inputRef.current?.focus(), 50);
       return;
     }
 
-    lastSentRef.current = {
-      code: codigoLimpio,
-      at: now
-    };
+    lastSentRef.current = { code: codigoLimpio, at: now };
 
     if (!selectedRonda?.id) {
       setFlashMessage('Debes seleccionar una ronda.', 'error');
-      setTimeout(() => inputRef.current?.focus(), 50);
       return;
     }
 
     if (selectedRonda.estado !== 'activa') {
       setFlashMessage('La ronda debe estar activa para escanear.', 'warning');
       setCodigo('');
-      setTimeout(() => inputRef.current?.focus(), 50);
       return;
     }
 
     if (!grupoAsignado?.id) {
       setFlashMessage('Esta ronda no tiene un grupo asignado.', 'error');
       setCodigo('');
-      setTimeout(() => inputRef.current?.focus(), 50);
       return;
     }
 
@@ -453,10 +359,15 @@ export default function EscaneoPage() {
       await loadRoundContext(selectedRonda);
       setTimeout(() => inputRef.current?.focus(), 50);
     } catch (err) {
-      setFlashMessage(
-        err.response?.data?.message || 'Error al registrar lectura',
-        'error'
-      );
+      // 🔥 Manejar el error 409 (producto en otra zona)
+      if (err.response?.status === 409 && err.response?.data?.code === 'PRODUCTO_EN_OTRA_ZONA') {
+        const errorData = err.response.data;
+        setShowZoneWarning(true);
+        setZoneWarningInfo(errorData.data);
+        setFlashMessage(errorData.message, 'error');
+      } else {
+        setFlashMessage(err.response?.data?.message || 'Error al registrar lectura', 'error');
+      }
       setCodigo('');
       setTimeout(() => inputRef.current?.focus(), 50);
     } finally {
@@ -464,14 +375,15 @@ export default function EscaneoPage() {
     }
   };
 
-  // NUEVA FUNCIÓN: Agregar producto manualmente con cantidad y veces
   const handleAgregarManual = async () => {
-    if (!manualSku.trim()) {
+    const skuLimpio = manualSku.trim().toUpperCase();
+
+    if (!skuLimpio) {
       setFlashMessage('Debes ingresar un SKU', 'error');
       return;
     }
 
-    if (!/^\d{5,7}$/.test(manualSku.trim())) {
+    if (!/^\d{5,7}$/.test(skuLimpio)) {
       setFlashMessage('SKU inválido. Debe tener entre 5 y 7 dígitos numéricos.', 'warning');
       return;
     }
@@ -504,35 +416,17 @@ export default function EscaneoPage() {
     setLoadingManual(true);
 
     try {
-      let totalAgregados = 0;
-      let errores = [];
+      // Intentar agregar el producto
+      const response = await agregarLecturaManual({
+        rondaId: selectedRonda.id,
+        grupoId: grupoAsignado.id,
+        sku: skuLimpio,
+        cantidad: manualCantidad * manualRepeticiones  // Cantidad total = cantidad × repeticiones
+      });
 
-      // Agregar la cantidad de repeticiones seleccionada
-      for (let i = 0; i < manualRepeticiones; i++) {
-        try {
-          await agregarLecturaManual({
-            rondaId: selectedRonda.id,
-            grupoId: grupoAsignado.id,
-            sku: manualSku.trim(),
-            cantidad: manualCantidad
-          });
-
-          totalAgregados++;
-          playBeep();
-        } catch (err) {
-          errores.push(`Intento ${i + 1}: ${err.response?.data?.message || err.message}`);
-        }
-
-        // Pequeña pausa entre agregados
-        if (i < manualRepeticiones - 1) {
-          await new Promise(resolve => setTimeout(resolve, 100));
-        }
-      }
-
-      if (totalAgregados > 0) {
-        const unidadesTotales = manualRepeticiones * manualCantidad;
-        const mensaje = `✅ Se agregaron ${totalAgregados} registros de ${manualSku.trim()} (${unidadesTotales} unidades totales)`;
-        setFlashMessage(mensaje, errores.length > 0 ? 'warning' : 'success');
+      if (response.ok) {
+        playBeep();
+        setFlashMessage(response.message || `Producto ${skuLimpio} agregado correctamente`, 'success');
 
         // Cerrar modal y limpiar
         setShowManualModal(false);
@@ -542,18 +436,21 @@ export default function EscaneoPage() {
 
         // Recargar datos
         await loadRoundContext(selectedRonda);
+      } else {
+        setFlashMessage(response.message || 'Error al agregar producto', 'error');
       }
-
-      if (errores.length > 0) {
-        console.error('Errores en agregados manuales:', errores);
-        setFlashMessage(`⚠️ ${errores.length} errores. Último: ${errores[0]}`, 'warning');
-      }
-
     } catch (err) {
-      setFlashMessage(
-        err.response?.data?.message || 'Error al agregar producto manualmente',
-        'error'
-      );
+      console.error('Error en agregar manual:', err);
+
+      // Manejar error 409 (producto en otra zona)
+      if (err.response?.status === 409 && err.response?.data?.code === 'PRODUCTO_EN_OTRA_ZONA') {
+        const errorData = err.response.data;
+        setShowZoneWarning(true);
+        setZoneWarningInfo(errorData.data);
+        setFlashMessage(errorData.message, 'error');
+      } else {
+        setFlashMessage(err.response?.data?.message || 'Error al agregar producto manualmente', 'error');
+      }
     } finally {
       setLoadingManual(false);
     }
@@ -569,10 +466,7 @@ export default function EscaneoPage() {
       setFlashMessage('Lectura anulada correctamente', 'success');
       await loadRoundContext(selectedRonda);
     } catch (err) {
-      setFlashMessage(
-        err.response?.data?.message || 'No se pudo anular la lectura',
-        'error'
-      );
+      setFlashMessage(err.response?.data?.message || 'No se pudo anular la lectura', 'error');
     }
   };
 
@@ -605,23 +499,14 @@ export default function EscaneoPage() {
         ])
       ];
 
-      const csv = rows
-        .map((row) =>
-          row
-            .map((value) => `"${String(value ?? '').replace(/"/g, '""')}"`)
-            .join(',')
-        )
-        .join('\n');
+      const csv = rows.map((row) => row.map((value) => `"${String(value ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
 
       const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
       const link = document.createElement('a');
 
       link.href = url;
-      link.setAttribute(
-        'download',
-        `grupo-${data?.grupo?.nombre || 'resultado'}-ronda-${data?.ronda?.numeroRonda || 'x'}.csv`
-      );
+      link.setAttribute('download', `grupo-${data?.grupo?.nombre || 'resultado'}-ronda-${data?.ronda?.numeroRonda || 'x'}.csv`);
 
       document.body.appendChild(link);
       link.click();
@@ -630,10 +515,7 @@ export default function EscaneoPage() {
 
       setFlashMessage('Exportación del grupo generada correctamente', 'success');
     } catch (err) {
-      setFlashMessage(
-        err.response?.data?.message || 'No se pudo exportar el grupo',
-        'error'
-      );
+      setFlashMessage(err.response?.data?.message || 'No se pudo exportar el grupo', 'error');
     } finally {
       setExporting(false);
     }
@@ -657,14 +539,9 @@ export default function EscaneoPage() {
           <div className="filters-form">
             <div className="form-group">
               <label>Inventario</label>
-              <select
-                value={selectedInventario}
-                onChange={(e) => setSelectedInventario(Number(e.target.value))}
-              >
+              <select value={selectedInventario} onChange={(e) => setSelectedInventario(Number(e.target.value))}>
                 {inventarios.map((inv) => (
-                  <option key={inv.id} value={inv.id}>
-                    {inv.nombre} - {inv.fecha}
-                  </option>
+                  <option key={inv.id} value={inv.id}>{inv.nombre} - {inv.fecha}</option>
                 ))}
               </select>
             </div>
@@ -672,11 +549,7 @@ export default function EscaneoPage() {
             {!isContador && (
               <div className="form-group">
                 <label>Ronda de trabajo</label>
-                <select
-                  value={selectedRondaId || ''}
-                  onChange={(e) => setSelectedRondaId(e.target.value ? Number(e.target.value) : '')}
-                  disabled={rondas.length === 0}
-                >
+                <select value={selectedRondaId || ''} onChange={(e) => setSelectedRondaId(e.target.value ? Number(e.target.value) : '')} disabled={rondas.length === 0}>
                   <option value="">Selecciona una ronda</option>
                   {rondas.map((ronda) => (
                     <option key={ronda.id} value={ronda.id}>
@@ -690,14 +563,7 @@ export default function EscaneoPage() {
             {isContador && (
               <div className="form-group">
                 <label>Ronda asignada</label>
-                <input
-                  value={
-                    selectedRonda
-                      ? `Ronda ${selectedRonda.numeroRonda} · ${selectedRonda.tipoRonda} · ${selectedRonda.estado}`
-                      : 'No tienes ronda activa en este inventario'
-                  }
-                  disabled
-                />
+                <input value={selectedRonda ? `Ronda ${selectedRonda.numeroRonda} · ${selectedRonda.tipoRonda} · ${selectedRonda.estado}` : 'No tienes ronda activa en este inventario'} disabled />
               </div>
             )}
           </div>
@@ -707,7 +573,6 @@ export default function EscaneoPage() {
               <Clock size={14} />
               <span>{syncing ? 'Sincronizando...' : 'Vista sincronizada'}</span>
             </div>
-
             <button className="btn btn-outline" onClick={handleRefresh}>
               <RefreshCw size={16} className={syncing ? 'spin' : ''} />
               <span>Actualizar</span>
@@ -721,41 +586,24 @@ export default function EscaneoPage() {
               <span className="meta-label">Grupo</span>
               <strong>{grupoAsignado?.nombre || 'Sin grupo'}</strong>
             </div>
-
             <div className="escaneo-meta-item">
               <span className="meta-label">Zona</span>
-              <strong>
-                {zonaRonda?.nombre || 'Sin zona'}
-                {zonaRonda?.codigo ? ` (${zonaRonda.codigo})` : ''}
-              </strong>
+              <strong>{zonaRonda?.nombre || 'Sin zona'}{zonaRonda?.codigo ? ` (${zonaRonda.codigo})` : ''}</strong>
             </div>
-
             <div className="escaneo-meta-item">
               <span className="meta-label">Tipo</span>
-              <strong>
-                {selectedRonda.tipoRonda === 'reconteo' ? 'Reconteo' : 'Completa'}
-              </strong>
+              <strong>{selectedRonda.tipoRonda === 'reconteo' ? 'Reconteo' : 'Completa'}</strong>
             </div>
-
             <div className="escaneo-meta-item">
               <span className="meta-label">Estado</span>
-              <span className={`status-chip ${selectedRonda.estado}`}>
-                {selectedRonda.estado}
-              </span>
+              <span className={`status-chip ${selectedRonda.estado}`}>{selectedRonda.estado}</span>
             </div>
           </div>
         ) : null}
       </div>
 
       {flash.text ? (
-        <div
-          className={`alert-${flash.type === 'error'
-            ? 'error'
-            : flash.type === 'warning'
-              ? 'warning'
-              : 'success'
-            }`}
-        >
+        <div className={`alert-${flash.type === 'error' ? 'error' : flash.type === 'warning' ? 'warning' : 'success'}`}>
           {flash.text}
         </div>
       ) : null}
@@ -764,29 +612,21 @@ export default function EscaneoPage() {
         <>
           <div className="kpi-grid">
             <div className="card kpi-card">
-              <div className="kpi-icon">
-                <Boxes size={24} />
-              </div>
+              <div className="kpi-icon"><Boxes size={24} /></div>
               <div className="kpi-content">
                 <p className="kpi-title">Total escaneos</p>
                 <h3 className="kpi-value">{totalEscaneos}</h3>
               </div>
             </div>
-
             <div className="card kpi-card">
-              <div className="kpi-icon">
-                <Layers3 size={24} />
-              </div>
+              <div className="kpi-icon"><Layers3 size={24} /></div>
               <div className="kpi-content">
                 <p className="kpi-title">Productos distintos</p>
                 <h3 className="kpi-value">{productosUnicos}</h3>
               </div>
             </div>
-
             <div className="card kpi-card">
-              <div className="kpi-icon">
-                <AlertTriangle size={24} />
-              </div>
+              <div className="kpi-icon"><AlertTriangle size={24} /></div>
               <div className="kpi-content">
                 <p className="kpi-title">Pendientes</p>
                 <h3 className="kpi-value">{isReconteo ? pendientes.length : 0}</h3>
@@ -797,157 +637,73 @@ export default function EscaneoPage() {
           <div className="scan-layout">
             <div className="card scanner-shell">
               <div className="list-header">
-                <h2 className="section-title">
-                  <ScanLine size={20} />
-                  <span>Escanear producto</span>
-                </h2>
-
+                <h2 className="section-title"><ScanLine size={20} /><span>Escanear producto</span></h2>
                 <div className="scanner-actions">
-                  <button
-                    className="btn btn-outline"
-                    onClick={() => setShowManualModal(true)}
-                    disabled={!canScan}
-                  >
-                    <Edit3 size={16} />
-                    <span>Agregar Manual</span>
+                  <button className="btn btn-outline" onClick={() => setShowManualModal(true)} disabled={!canScan}>
+                    <Edit3 size={16} /><span>Agregar Manual</span>
                   </button>
-
-                  {selectedRonda.estado === 'borrador' ? (
+                  {selectedRonda.estado === 'borrador' && (
                     <button className="btn btn-primary" onClick={() => handleRondaAction('iniciar')}>
-                      <Play size={16} />
-                      <span>Iniciar</span>
+                      <Play size={16} /><span>Iniciar</span>
                     </button>
-                  ) : null}
-
-                  {selectedRonda.estado === 'activa' ? (
+                  )}
+                  {selectedRonda.estado === 'activa' && (
                     <button className="btn btn-outline" onClick={() => handleRondaAction('pausar')}>
-                      <Pause size={16} />
-                      <span>Pausar</span>
+                      <Pause size={16} /><span>Pausar</span>
                     </button>
-                  ) : null}
-
-                  {selectedRonda.estado === 'pausada' ? (
+                  )}
+                  {selectedRonda.estado === 'pausada' && (
                     <button className="btn btn-primary" onClick={() => handleRondaAction('reanudar')}>
-                      <Play size={16} />
-                      <span>Reanudar</span>
+                      <Play size={16} /><span>Reanudar</span>
                     </button>
-                  ) : null}
-
-                  <button
-                    className="btn btn-outline"
-                    onClick={handleExportGrupo}
-                    disabled={!grupoAsignado?.id || exporting}
-                  >
-                    <Download size={16} />
-                    <span>{exporting ? 'Exportando...' : 'Exportar grupo'}</span>
+                  )}
+                  <button className="btn btn-outline" onClick={handleExportGrupo} disabled={!grupoAsignado?.id || exporting}>
+                    <Download size={16} /><span>{exporting ? 'Exportando...' : 'Exportar grupo'}</span>
                   </button>
                 </div>
               </div>
 
               <form onSubmit={handleScan}>
                 <div className="scanner-input-row">
-                  <input
-                    ref={inputRef}
-                    type="text"
-                    value={codigo}
-                    onChange={(e) => setCodigo(e.target.value)}
-                    placeholder="Escanea o escribe el código"
-                    autoComplete="off"
-                    disabled={!canScan || loadingScan}
-                  />
-                  <button className="btn btn-primary" type="submit" disabled={!canScan || loadingScan}>
-                    {loadingScan ? '...' : 'Escanear'}
-                  </button>
+                  <input ref={inputRef} type="text" value={codigo} onChange={(e) => setCodigo(e.target.value)} placeholder="Escanea o escribe el código" autoComplete="off" disabled={!canScan || loadingScan} />
+                  <button className="btn btn-primary" type="submit" disabled={!canScan || loadingScan}>{loadingScan ? '...' : 'Escanear'}</button>
                 </div>
               </form>
 
-              <p className="scan-helper">
-                Solo se aceptan códigos numéricos de 5 a 7 dígitos. También puedes agregar productos manualmente con el botón "Agregar Manual".
-              </p>
+              <p className="scan-helper">Solo se aceptan códigos numéricos de 5 a 7 dígitos. También puedes agregar productos manualmente con el botón "Agregar Manual".</p>
 
               {lastScan ? (
                 <div className="last-scan-card">
-                  <div className="last-scan-header">
-                    <CheckCircle size={18} className="text-success" />
-                    <span>Último escaneo</span>
-                  </div>
-
+                  <div className="last-scan-header"><CheckCircle size={18} className="text-success" /><span>Último escaneo</span></div>
                   <div className="last-scan-grid">
-                    <div>
-                      <span className="meta-label">SKU</span>
-                      <strong>{lastScan.producto?.sku || 'No reconocido'}</strong>
-                    </div>
-
-                    <div>
-                      <span className="meta-label">Descripción</span>
-                      <strong>{lastScan.producto?.descripcion || 'Sin descripción'}</strong>
-                    </div>
-
-                    <div>
-                      <span className="meta-label">Acumulado del SKU</span>
-                      <strong>{lastScan.acumuladoSku || 0}</strong>
-                    </div>
+                    <div><span className="meta-label">SKU</span><strong>{lastScan.producto?.sku || 'No reconocido'}</strong></div>
+                    <div><span className="meta-label">Descripción</span><strong>{lastScan.producto?.descripcion || 'Sin descripción'}</strong></div>
+                    <div><span className="meta-label">Acumulado del SKU</span><strong>{lastScan.acumuladoSku || 0}</strong></div>
                   </div>
                 </div>
               ) : null}
             </div>
 
             <div className="card round-summary-card">
-              <h2 className="section-title">
-                <Zap size={20} />
-                <span>Estado de la ronda</span>
-              </h2>
-
+              <h2 className="section-title"><Zap size={20} /><span>Estado de la ronda</span></h2>
               <div className="round-summary-grid">
-                <div className="summary-box">
-                  <span>Inicio</span>
-                  <strong>{formatDateTime(selectedRonda.tiempoInicio)}</strong>
-                </div>
-
-                <div className="summary-box">
-                  <span>Fin</span>
-                  <strong>{formatDateTime(selectedRonda.tiempoFin)}</strong>
-                </div>
-
-                <div className="summary-box">
-                  <span>Primera lectura</span>
-                  <strong>{formatDateTime(stats?.primeraLectura)}</strong>
-                </div>
-
-                <div className="summary-box">
-                  <span>Última lectura</span>
-                  <strong>{formatDateTime(stats?.ultimaLectura)}</strong>
-                </div>
-
-                <div className="summary-box full">
-                  <span>Tiempo activo</span>
-                  <strong>{stats?.tiempoFormateado || '—'}</strong>
-                </div>
+                <div className="summary-box"><span>Inicio</span><strong>{formatDateTime(selectedRonda.tiempoInicio)}</strong></div>
+                <div className="summary-box"><span>Fin</span><strong>{formatDateTime(selectedRonda.tiempoFin)}</strong></div>
+                <div className="summary-box"><span>Primera lectura</span><strong>{formatDateTime(stats?.primeraLectura)}</strong></div>
+                <div className="summary-box"><span>Última lectura</span><strong>{formatDateTime(stats?.ultimaLectura)}</strong></div>
+                <div className="summary-box full"><span>Tiempo activo</span><strong>{stats?.tiempoFormateado || '—'}</strong></div>
               </div>
 
               {isReconteo ? (
                 <div className="pending-panel">
-                  <div className="pending-header">
-                    <AlertTriangle size={16} />
-                    <span>SKU pendientes para reconteo ({pendientes.length})</span>
-                  </div>
-
+                  <div className="pending-header"><AlertTriangle size={16} /><span>SKU pendientes para reconteo ({pendientes.length})</span></div>
                   {pendientes.length === 0 ? (
-                    <div className="escaneo-empty">
-                      No hay pendientes para esta ronda.
-                      <br />
-                      <small>Ronda #{selectedRonda.id} · Zona {selectedRonda.zonaId || zonaRonda?.id || '—'}</small>
-                    </div>
+                    <div className="escaneo-empty">No hay pendientes para esta ronda.<br /><small>Ronda #{selectedRonda.id} · Zona {selectedRonda.zonaId || zonaRonda?.id || '—'}</small></div>
                   ) : (
                     <div className="pending-list">
                       {pendientes.map((item) => (
                         <div key={`${item.sku}-${item.id}`} className="pending-item">
-                          <div>
-                            <strong>{item.sku}</strong>
-                            <p className="pending-sku-desc">{item.descripcionSnapshot || 'Sin descripción'}</p>
-                          </div>
-                          <div className="pending-diff">
-                          </div>
+                          <div><strong>{item.sku}</strong><p className="pending-sku-desc">{item.descripcionSnapshot || 'Sin descripción'}</p></div>
                         </div>
                       ))}
                     </div>
@@ -959,31 +715,15 @@ export default function EscaneoPage() {
 
           <div className="grid-2">
             <div className="card resumen-card">
-              <div className="list-header">
-                <h2 className="section-title">
-                  <Boxes size={20} />
-                  <span>Resumen por producto</span>
-                </h2>
-              </div>
-
-              {resumen.length === 0 ? (
-                <div className="escaneo-empty">Aún no hay escaneos registrados.</div>
-              ) : (
+              <div className="list-header"><h2 className="section-title"><Boxes size={20} /><span>Resumen por producto</span></h2></div>
+              {resumen.length === 0 ? <div className="escaneo-empty">Aún no hay escaneos registrados.</div> : (
                 <div className="table-container">
                   <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>SKU</th>
-                        <th>Descripción</th>
-                        <th>Cantidad</th>
-                      </tr>
-                    </thead>
+                    <thead><tr><th>SKU</th><th>Descripción</th><th>Cantidad</th></tr></thead>
                     <tbody>
                       {resumen.map((item, index) => (
                         <tr key={`${item.sku || 'sku'}-${index}`}>
-                          <td>
-                            <strong>{item.sku}</strong>
-                          </td>
+                          <td><strong>{item.sku}</strong></td>
                           <td>{item.descripcionSnapshot || 'Sin descripción'}</td>
                           <td>{item.cantidadTotal}</td>
                         </tr>
@@ -995,44 +735,22 @@ export default function EscaneoPage() {
             </div>
 
             <div className="card historial-card">
-              <div className="list-header">
-                <h2 className="section-title">
-                  <History size={20} />
-                  <span>Historial reciente</span>
-                </h2>
-              </div>
-
-              {history.length === 0 ? (
-                <div className="escaneo-empty">No hay lecturas recientes.</div>
-              ) : (
+              <div className="list-header"><h2 className="section-title"><History size={20} /><span>Historial reciente</span></h2></div>
+              {history.length === 0 ? <div className="escaneo-empty">No hay lecturas recientes.</div> : (
                 <div className="history-list">
                   {history.slice(0, 20).map((lectura) => (
-                    <div
-                      key={lectura.id}
-                      className={`history-item ${lectura.estado === 'anulada' ? 'anulada' : ''}`}
-                    >
+                    <div key={lectura.id} className={`history-item ${lectura.estado === 'anulada' ? 'anulada' : ''}`}>
                       <div className="history-main">
                         <strong>{lectura.codigoLeido}</strong>
                         <p>{lectura.sku || 'No reconocido'}</p>
-                        {lectura.esManual && (
-                          <span className="manual-badge">✏️ Manual</span>
-                        )}
+                        {lectura.esManual && <span className="manual-badge">✏️ Manual</span>}
                       </div>
-
                       <div className="history-meta">
                         <span className="tag-muted">{formatOnlyTime(lectura.fechaHora)}</span>
-                        <span className={`status-chip mini ${lectura.estado}`}>
-                          {lectura.estado}
-                        </span>
-                        {lectura.estado !== 'anulada' ? (
-                          <button
-                            className="icon-btn"
-                            onClick={() => handleAnularLectura(lectura.id)}
-                            title="Anular lectura"
-                          >
-                            <Trash2 size={14} />
-                          </button>
-                        ) : null}
+                        <span className={`status-chip mini ${lectura.estado}`}>{lectura.estado}</span>
+                        {lectura.estado !== 'anulada' && (
+                          <button className="icon-btn" onClick={() => handleAnularLectura(lectura.id)} title="Anular lectura"><Trash2 size={14} /></button>
+                        )}
                       </div>
                     </div>
                   ))}
@@ -1042,9 +760,7 @@ export default function EscaneoPage() {
           </div>
         </>
       ) : (
-        <div className="card">
-          <p className="muted">Selecciona un inventario que tenga rondas disponibles.</p>
-        </div>
+        <div className="card"><p className="muted">Selecciona un inventario que tenga rondas disponibles.</p></div>
       )}
 
       {/* Modal para entrada manual */}
@@ -1052,86 +768,106 @@ export default function EscaneoPage() {
         <div className="modal-overlay" onClick={() => setShowManualModal(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h3>
-                <Plus size={18} />
-                Agregar Producto Manualmente
-              </h3>
-              <button className="icon-btn" onClick={() => setShowManualModal(false)}>
-                <X size={18} />
-              </button>
+              <h3><Plus size={18} /> Agregar Producto Manualmente</h3>
+              <button className="icon-btn" onClick={() => setShowManualModal(false)}><X size={18} /></button>
             </div>
-
             <div className="modal-body">
               <div className="form-group">
                 <label>Código SKU *</label>
                 <input
                   type="text"
                   value={manualSku}
-                  onChange={(e) => setManualSku(e.target.value.toUpperCase())}
+                  onChange={(e) => setManualSku(e.target.value.toUpperCase())}  // ← Mayúsculas automáticas
                   placeholder="Ej: 123456"
                   autoFocus
-                  className="manual-sku-input"
                 />
                 <small>Ingresa el código numérico de 5 a 7 dígitos</small>
               </div>
-
               <div className="form-row">
                 <div className="form-group">
                   <label>Cantidad por registro *</label>
-                  <input
-                    type="number"
-                    value={manualCantidad}
-                    onChange={(e) => setManualCantidad(parseInt(e.target.value) || 1)}
-                    min="1"
-                    max="999999"
-                    step="1"
-                  />
+                  <input type="number" value={manualCantidad} onChange={(e) => setManualCantidad(parseInt(e.target.value) || 1)} min="1" max="999999" step="1" />
                   <small>Unidades por cada registro</small>
                 </div>
-
                 <div className="form-group">
                   <label>Número de repeticiones *</label>
-                  <input
-                    type="number"
-                    value={manualRepeticiones}
-                    onChange={(e) => setManualRepeticiones(parseInt(e.target.value) || 1)}
-                    min="1"
-                    max="100"
-                    step="1"
-                  />
+                  <input type="number" value={manualRepeticiones} onChange={(e) => setManualRepeticiones(parseInt(e.target.value) || 1)} min="1" max="100" step="1" />
                   <small>¿Cuántas veces quieres agregar este producto? (1-100)</small>
                 </div>
               </div>
-
               <div className="manual-summary">
-                <p>
-                  <strong>Resumen:</strong>
-                </p>
-                <p>
-                  • {manualRepeticiones} registro(s) de {manualSku || 'SKU'}
-                </p>
-                <p>
-                  • {manualCantidad} unidad(es) por registro
-                </p>
-                <p className="total-unidades">
-                  📦 Total de unidades: <strong>{manualRepeticiones * manualCantidad}</strong>
-                </p>
+                <p><strong>Resumen:</strong></p>
+                <p>• {manualRepeticiones} registro(s) de {manualSku || 'SKU'}</p>
+                <p>• {manualCantidad} unidad(es) por registro</p>
+                <p className="total-unidades">📦 Total de unidades: <strong>{manualRepeticiones * manualCantidad}</strong></p>
               </div>
             </div>
-
             <div className="modal-actions">
-              <button
-                className="btn btn-outline"
-                onClick={() => setShowManualModal(false)}
-              >
-                Cancelar
-              </button>
-              <button
-                className="btn btn-primary"
-                onClick={handleAgregarManual}
-                disabled={loadingManual || !manualSku.trim()}
-              >
+              <button className="btn btn-outline" onClick={() => setShowManualModal(false)}>Cancelar</button>
+              <button className="btn btn-primary" onClick={handleAgregarManual} disabled={loadingManual || !manualSku.trim()}>
                 {loadingManual ? 'Agregando...' : `Agregar (${manualRepeticiones} × ${manualCantidad})`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de advertencia - Producto en otra zona */}
+      {showZoneWarning && zoneWarningInfo && (
+        <div className="modal-overlay" onClick={() => setShowZoneWarning(false)}>
+          <div className="modal modal-warning" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3>⚠️ Producto registrado en otra zona</h3>
+              <button className="icon-btn" onClick={() => setShowZoneWarning(false)}>
+                <X size={18} />
+              </button>
+            </div>
+            <div className="modal-body">
+              <p className="warning-text">
+                El producto <strong>{zoneWarningInfo.sku}</strong> ya fue escaneado en la zona
+                <strong> {zoneWarningInfo.zona?.nombre}</strong> con
+                <strong> {zoneWarningInfo.cantidadEnOtraZona} unidades</strong>.
+              </p>
+
+              <div className="alert-destino">
+                <p className="destino-title">Debes entregar este producto en la Zona: <strong>{zoneWarningInfo.zona?.nombre}</strong>
+                  {zoneWarningInfo.zona?.codigo && ` (${zoneWarningInfo.zona.codigo})`}</p>
+                <p className="destino-grupo">
+                  Grupo responsable de la Zona: <strong>{zoneWarningInfo.grupo?.nombre}</strong>
+                </p>
+              </div>
+
+              <p className="warning-text" style={{ marginTop: '12px' }}>
+                El escaneo ha sido bloqueado. Por favor, lleva el producto físico a la zona indicada.
+              </p>
+
+              <div className="warning-details">
+                <div className="detail-row">
+                  <span className="detail-label">Producto: </span>
+                  <span className="detail-value">{zoneWarningInfo.sku}</span>
+                </div>
+                <div className="detail-row">
+                  <span className="detail-label">Zona destino: </span>
+                  <span className="detail-value text-warning">
+                    <strong>{zoneWarningInfo.zona?.nombre}</strong>
+                    {zoneWarningInfo.zona?.codigo && ` (${zoneWarningInfo.zona.codigo})`}
+                  </span>
+                </div>
+                <div className="detail-row">
+                  <span className="detail-label">Grupo destino:</span>
+                  <span className="detail-value">{zoneWarningInfo.grupo?.nombre}</span>
+                </div>
+                <div className="detail-row">
+                  <span className="detail-label">Cantidad registrada en esa Zona por el grupo: </span>
+                  <span className="detail-value text-warning">
+                    <strong>{zoneWarningInfo.cantidadEnOtraZona} unidades</strong>
+                  </span>
+                </div>
+              </div>
+            </div>
+            <div className="modal-actions">
+              <button className="btn btn-primary" onClick={() => setShowZoneWarning(false)}>
+                Entendido, llevaré el producto a la Zona: {zoneWarningInfo.zona?.nombre}
               </button>
             </div>
           </div>

@@ -8,7 +8,9 @@ import {
   Users,
   Settings,
   Layers3,
-  ClipboardList
+  ClipboardList,
+  Eye,
+  UserCog
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 
@@ -19,35 +21,65 @@ export default function Sidebar() {
   const rol = String(rolRaw).toLowerCase();
 
   const isContador = rol === 'contador';
-  const isAdminOrSupervisor = rol === 'admin' || rol === 'supervisor';
+  const isSupervisor = rol === 'supervisor';
+  const isAdmin = rol === 'admin';
 
-  const itemsAdminSupervisor = [
-    { to: '/', label: 'Dashboard', icon: BarChart3 },
+  // Items que SOLO ve el ADMIN
+  const itemsAdminOnly = [
+    { to: '/usuarios', label: 'Usuarios', icon: UserCog },
+    { to: '/scripts', label: 'Herramientas', icon: Settings }
+  ];
+
+  // Items que ven ADMIN y SUPERVISOR
+  const itemsComunes = [
+    { to: '/supervisor', label: 'Dashboard Supervisor', icon: Eye },  // ← AMBOS ven esto
     { to: '/inventarios', label: 'Inventarios', icon: ClipboardList },
     { to: '/zonas', label: 'Zonas', icon: LayoutGrid },
     { to: '/grupos', label: 'Grupos', icon: Users },
     { to: '/rondas', label: 'Rondas', icon: Layers3 },
     { to: '/conteo-inicial', label: 'Conteo inicial', icon: FileSpreadsheet },
     { to: '/diferencias', label: 'Diferencias', icon: GitCompareArrows },
-    { to: '/escaneo', label: 'Escaneo', icon: ScanLine },
-    { to: '/scripts', label: 'Herramientas', icon: Settings },
-    { to: '/usuarios', label: 'Usuarios', icon: Users }
+    { to: '/escaneo', label: 'Escaneo', icon: ScanLine }
   ];
 
+  // Items solo para ADMIN (además de los comunes)
+  const itemsAdminAdicionales = [
+    { to: '/', label: 'Dashboard Admin', icon: BarChart3 }
+  ];
+
+  // Items solo para SUPERVISOR (además de los comunes)
+  const itemsSupervisorAdicionales = [
+    // Supervisor no tiene dashboard admin adicional
+  ];
+
+  // Items para CONTADOR
   const itemsContador = [
     { to: '/escaneo', label: 'Escaneo', icon: ScanLine },
     { to: '/diferencias', label: 'Diferencias', icon: GitCompareArrows }
   ];
 
-  const items = isContador
-    ? itemsContador
-    : isAdminOrSupervisor
-      ? itemsAdminSupervisor
-      : itemsContador;
+  let items = [];
+  
+  if (isAdmin) {
+    // Admin: itemsAdminAdicionales + itemsComunes + itemsAdminOnly
+    items = [...itemsAdminAdicionales, ...itemsComunes, ...itemsAdminOnly];
+  } else if (isSupervisor) {
+    // Supervisor: itemsComunes solamente
+    items = [...itemsComunes];
+  } else if (isContador) {
+    items = itemsContador;
+  } else {
+    items = itemsContador;
+  }
 
   return (
     <aside className="sidebar">
-      <div className="sidebar-brand">Inventario App</div>
+      <div className="sidebar-brand">
+        <div className="brand-title">Inventario App</div>
+        <div className="brand-role">
+          {isAdmin ? 'Administrador' : isSupervisor ? 'Supervisor' : 'Contador'}
+        </div>
+      </div>
 
       <nav className="sidebar-nav">
         {items.map((item) => {
@@ -69,6 +101,11 @@ export default function Sidebar() {
           );
         })}
       </nav>
+
+      <div className="sidebar-footer">
+        <div className="user-name">{auth?.user?.nombre || 'Usuario'}</div>
+        <div className="user-email">{auth?.user?.email || ''}</div>
+      </div>
     </aside>
   );
 }

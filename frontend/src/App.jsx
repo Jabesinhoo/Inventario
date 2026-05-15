@@ -13,6 +13,7 @@ import ZonasPage from './pages/zonas/ZonasPage';
 import ScriptsPage from './pages/admin/ScriptsPage';
 import RondasPage from './pages/rondas/RondasPage';
 import UsuariosPage from './pages/usuarios/UsuariosPage';
+import SupervisorDashboard from './pages/supervisor/SupervisorDashboard'; // ← NUEVA IMPORTACIÓN
 
 function getRol(auth) {
   const rolRaw = auth?.user?.rol || auth?.user?.rol?.nombre || '';
@@ -21,7 +22,16 @@ function getRol(auth) {
 
 function getHomeByRole(auth) {
   const rol = getRol(auth);
-  return rol === 'contador' ? '/escaneo' : '/';
+  if (rol === 'contador') return '/escaneo';
+  if (rol === 'supervisor') return '/supervisor'; // ← Supervisores van a su dashboard
+  return '/'; // Admin va al dashboard normal
+}
+
+function AdminRoute({ auth, children }) {
+  const rol = getRol(auth);
+  const permitido = rol === 'admin';
+
+  return permitido ? children : <Navigate to={getHomeByRole(auth)} replace />;
 }
 
 function AdminSupervisorRoute({ auth, children }) {
@@ -33,8 +43,7 @@ function AdminSupervisorRoute({ auth, children }) {
 
 function ContadorOrAdminRoute({ auth, children }) {
   const rol = getRol(auth);
-  const permitido =
-    rol === 'contador' || rol === 'admin' || rol === 'supervisor';
+  const permitido = rol === 'contador' || rol === 'admin' || rol === 'supervisor';
 
   return permitido ? children : <Navigate to="/login" replace />;
 }
@@ -66,14 +75,27 @@ export default function App() {
             </ProtectedRoute>
           }
         >
+          {/* Dashboard para Admin */}
           <Route
             index
             element={
               rol === 'contador' ? (
                 <Navigate to="/escaneo" replace />
+              ) : rol === 'supervisor' ? (
+                <Navigate to="/supervisor" replace />
               ) : (
                 <DashboardPage auth={auth} />
               )
+            }
+          />
+
+          {/* NUEVA RUTA: Dashboard de Supervisor */}
+          <Route
+            path="supervisor"
+            element={
+              <AdminSupervisorRoute auth={auth}>
+                <SupervisorDashboard />
+              </AdminSupervisorRoute>
             }
           />
 
@@ -125,9 +147,9 @@ export default function App() {
           <Route
             path="scripts"
             element={
-              <AdminSupervisorRoute auth={auth}>
+              <AdminRoute auth={auth}>
                 <ScriptsPage />
-              </AdminSupervisorRoute>
+              </AdminRoute>
             }
           />
 
@@ -139,14 +161,16 @@ export default function App() {
               </ContadorOrAdminRoute>
             }
           />
+
           <Route
-  path="usuarios"
-  element={
-    getRol(auth) === 'admin'
-      ? <UsuariosPage />
-      : <Navigate to={getHomeByRole(auth)} replace />
-  }
-/>
+            path="usuarios"
+            element={
+              <AdminRoute auth={auth}>
+                <UsuariosPage />
+              </AdminRoute>
+            }
+          />
+
           <Route
             path="escaneo"
             element={
@@ -156,7 +180,7 @@ export default function App() {
             }
           />
         </Route>
-            
+
         <Route path="*" element={<Navigate to={homePath} replace />} />
       </Routes>
     </BrowserRouter>

@@ -22,6 +22,60 @@
   position: relative;
 }
 
+/* Modal de advertencia - sin emojis excesivos */
+.modal-warning {
+  border-top: 4px solid #dc2626;
+  max-width: 500px;
+}
+
+.modal-warning .modal-header h3 {
+  color: #dc2626;
+  font-weight: 600;
+}
+
+.warning-text {
+  color: #991b1b;
+  background-color: #fee2e2;
+  padding: 12px;
+  border-radius: 8px;
+  margin-bottom: 16px;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.warning-details {
+  background-color: #fef2f2;
+  border: 1px solid #fecaca;
+  border-radius: 8px;
+  padding: 12px;
+  margin: 16px 0;
+}
+
+.detail-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 6px 0;
+  border-bottom: 1px solid #fecaca;
+}
+
+.detail-row:last-child {
+  border-bottom: none;
+}
+
+.detail-label {
+  font-weight: 600;
+  color: #991b1b;
+}
+
+.detail-value {
+  color: #450a0a;
+}
+
+.text-warning {
+  color: #dc2626;
+  font-weight: bold;
+}
+
 .hero .base,
 .hero .framework,
 .hero .vite {
