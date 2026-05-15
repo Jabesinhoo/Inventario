@@ -2893,7 +2893,65 @@ input[type="number"]::-webkit-outer-spin-button {
   font-size: 13px;
   color: white;
 }
+/* Modal con scroll */
+.modal-body {
+  padding: 20px;
+}
 
+.modal-large {
+  max-width: 800px;
+  width: 90%;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.modal-large .modal-body {
+  flex: 1;
+  overflow-y: auto;
+}
+
+/* Sticky header para tablas dentro de modales */
+.table-container {
+  overflow-x: auto;
+}
+
+.data-table thead th {
+  position: sticky;
+  top: 0;
+  background-color: #f9fafb;
+  z-index: 10;
+}
+
+/* Mejoras para el detalle de grupo */
+.grupo-detalle-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  background-color: #f8fafc;
+  padding: 16px;
+  border-radius: 12px;
+  margin-bottom: 20px;
+}
+
+.detail-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 4px 0;
+}
+
+.detail-label {
+  font-weight: 600;
+  color: #64748b;
+  font-size: 13px;
+}
+
+.detail-value {
+  color: #1e293b;
+  font-size: 14px;
+  font-weight: 500;
+}
 .user-email {
   font-size: 10px;
   color: rgba(255, 255, 255, 0.5);

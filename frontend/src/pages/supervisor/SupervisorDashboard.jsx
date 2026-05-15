@@ -21,7 +21,7 @@ export default function SupervisorDashboard() {
   const [grupoDetalle, setGrupoDetalle] = useState(null);
   const [showAlertasModal, setShowAlertasModal] = useState(false);
   const [alertasFiltradas, setAlertasFiltradas] = useState([]);
-  
+
   const pollingRef = useRef(null);
 
   // Cargar inventarios
@@ -40,7 +40,7 @@ export default function SupervisorDashboard() {
   // Cargar dashboard
   async function loadDashboard(showRefreshing = false) {
     if (!inventarioId) return;
-    
+
     if (showRefreshing) {
       setRefreshing(true);
     } else {
@@ -313,7 +313,9 @@ export default function SupervisorDashboard() {
               <h3><Users size={18} /> {selectedGrupo.nombre}</h3>
               <button className="icon-btn" onClick={() => setSelectedGrupo(null)}><X size={18} /></button>
             </div>
-            <div className="modal-body">
+
+            <div className="modal-body" style={{ maxHeight: '70vh', overflowY: 'auto' }}>
+              {/* Información del grupo */}
               <div className="grupo-detalle-grid">
                 <div className="detail-item">
                   <span className="detail-label">Zona:</span>
@@ -345,24 +347,36 @@ export default function SupervisorDashboard() {
                 </div>
               </div>
 
-              <h4 style={{ marginTop: '20px' }}>Productos escaneados por este grupo</h4>
-              <div className="table-container">
+              <h4 style={{ marginTop: '20px', marginBottom: '12px' }}>Productos escaneados por este grupo</h4>
+
+              {/* Tabla con scroll */}
+              <div className="table-container" style={{ maxHeight: '300px', overflowY: 'auto' }}>
                 <table className="data-table">
-                  <thead>
-                    <tr><th>SKU</th><th>Descripción</th><th>Cantidad</th></tr>
+                  <thead style={{ position: 'sticky', top: 0, backgroundColor: '#f9fafb', zIndex: 1 }}>
+                    <tr>
+                      <th>SKU</th>
+                      <th>Descripción</th>
+                      <th>Cantidad</th>
+                    </tr>
                   </thead>
                   <tbody>
                     {grupoDetalle.productos?.map((p) => (
                       <tr key={p.sku}>
-                        <td>{p.sku}</td>
-                        <td>{p.descripcion?.substring(0, 60) || 'Sin descripción'}</td>
+                        <td><strong>{p.sku}</strong></td>
+                        <td>{p.descripcion?.substring(0, 80) || 'Sin descripción'}</td>
                         <td className="text-center">{p.total}</td>
                       </tr>
                     ))}
+                    {(!grupoDetalle.productos || grupoDetalle.productos.length === 0) && (
+                      <tr>
+                        <td colSpan="3" className="text-center text-muted">No hay productos escaneados por este grupo</td>
+                      </tr>
+                    )}
                   </tbody>
                 </table>
               </div>
             </div>
+
             <div className="modal-actions">
               <button className="btn btn-primary" onClick={() => setSelectedGrupo(null)}>Cerrar</button>
             </div>
@@ -378,13 +392,14 @@ export default function SupervisorDashboard() {
               <h3><AlertTriangle size={18} /> Alertas - Productos en zona incorrecta</h3>
               <button className="icon-btn" onClick={() => setShowAlertasModal(false)}><X size={18} /></button>
             </div>
-            <div className="modal-body">
+
+            <div className="modal-body" style={{ maxHeight: '70vh', overflowY: 'auto' }}>
               {alertasFiltradas.length === 0 ? (
                 <p className="muted">No hay alertas registradas en las últimas 24 horas.</p>
               ) : (
-                <div className="table-container">
+                <div className="table-container" style={{ maxHeight: '400px', overflowY: 'auto' }}>
                   <table className="data-table">
-                    <thead>
+                    <thead style={{ position: 'sticky', top: 0, backgroundColor: '#f9fafb', zIndex: 1 }}>
                       <tr>
                         <th>SKU</th>
                         <th>Zona destino</th>
@@ -414,6 +429,7 @@ export default function SupervisorDashboard() {
                 </div>
               )}
             </div>
+
             <div className="modal-actions">
               <button className="btn btn-primary" onClick={() => setShowAlertasModal(false)}>Cerrar</button>
             </div>
