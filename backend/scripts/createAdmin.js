@@ -3,6 +3,17 @@ const readline = require('readline');
 const { Usuario, Rol, sequelize } = require('../src/models');
 const config = require('../config/config');
 
+// Función para generar username a partir del nombre
+function generarUsername(nombre) {
+  return nombre
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .substring(0, 50);
+}
+
 async function createAdmin() {
   const rl = readline.createInterface({
     input: process.stdin,
@@ -55,6 +66,17 @@ async function createAdmin() {
       throw new Error('El usuario ya existe');
     }
 
+    // Generar username a partir del nombre
+    let username = generarUsername(nombre);
+    
+    // Verificar que el username sea único
+    let usernameFinal = username;
+    let contador = 1;
+    while (await Usuario.findOne({ where: { username: usernameFinal } })) {
+      usernameFinal = `${username}_${contador}`;
+      contador++;
+    }
+
     const passwordHash = await bcrypt.hash(
       password,
       config.bcrypt?.rounds || 10
@@ -63,6 +85,7 @@ async function createAdmin() {
     const usuario = await Usuario.create({
       nombre,
       email,
+      username: usernameFinal,
       passwordHash,
       rolId: rolAdmin.id,
       activo: true
@@ -70,6 +93,8 @@ async function createAdmin() {
 
     console.log('\n[SUCCESS] Administrador creado exitosamente');
     console.log(`[INFO] ID: ${usuario.id}`);
+    console.log(`[INFO] Nombre: ${usuario.nombre}`);
+    console.log(`[INFO] Username: ${usuario.username}`);
     console.log(`[INFO] Email: ${usuario.email}`);
     console.log(`[INFO] Rol: ${rolAdmin.nombre}\n`);
   } catch (error) {
