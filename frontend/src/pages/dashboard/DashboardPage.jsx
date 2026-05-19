@@ -12,7 +12,8 @@ import {
   ScanLine,
   Trophy,
   Users,
-  Zap
+  Zap,
+  Layers3,
 } from 'lucide-react';
 import {
   Bar,
@@ -58,7 +59,7 @@ export default function DashboardPage() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdate, setLastUpdate] = useState(null);
-  
+
   const pollingRef = useRef(null);
 
   // Cargar lista de inventarios
@@ -78,20 +79,20 @@ export default function DashboardPage() {
   // Cargar datos del dashboard
   const loadDashboardData = async (showRefreshing = false) => {
     if (!inventarioId) return;
-    
+
     if (showRefreshing) {
       setRefreshing(true);
     } else {
       setLoading(true);
     }
-    
+
     try {
       console.log('Cargando dashboard para inventario:', inventarioId);
-      const result = await getDashboard({ 
-        inventarioId, 
-        ...(fecha ? { fecha } : {}) 
+      const result = await getDashboard({
+        inventarioId,
+        ...(fecha ? { fecha } : {})
       });
-      
+
       setData(result);
       setLastUpdate(new Date());
       setError('');
@@ -109,7 +110,7 @@ export default function DashboardPage() {
     if (pollingRef.current) {
       clearInterval(pollingRef.current);
     }
-    
+
     pollingRef.current = setInterval(() => {
       if (inventarioId && !refreshing && !loading) {
         loadDashboardData(true);
@@ -120,7 +121,7 @@ export default function DashboardPage() {
   // Cargar datos iniciales
   useEffect(() => {
     loadInventariosList();
-    
+
     return () => {
       if (pollingRef.current) {
         clearInterval(pollingRef.current);
@@ -134,7 +135,7 @@ export default function DashboardPage() {
       loadDashboardData();
       startPolling();
     }
-    
+
     return () => {
       if (pollingRef.current) {
         clearInterval(pollingRef.current);
@@ -202,8 +203,8 @@ export default function DashboardPage() {
           <div className="filters-form">
             <div className="form-group">
               <label>Inventario</label>
-              <select 
-                value={inventarioId} 
+              <select
+                value={inventarioId}
                 onChange={(e) => setInventarioId(e.target.value)}
                 disabled={loading || refreshing}
               >
@@ -215,22 +216,22 @@ export default function DashboardPage() {
             </div>
             <div className="form-group">
               <label>Fecha específica</label>
-              <input 
-                type="date" 
-                value={fecha} 
+              <input
+                type="date"
+                value={fecha}
                 onChange={(e) => setFecha(e.target.value)}
                 disabled={loading || refreshing}
               />
             </div>
-            <button 
-              className="btn btn-primary" 
+            <button
+              className="btn btn-primary"
               onClick={handleFilter}
               disabled={loading || refreshing}
             >
               Filtrar
             </button>
           </div>
-          
+
           <div className="filters-actions">
             {lastUpdate && (
               <div className="last-update">
@@ -238,9 +239,9 @@ export default function DashboardPage() {
                 <span>Última actualización: {lastUpdate.toLocaleTimeString()}</span>
               </div>
             )}
-            <button 
-              className="btn btn-outline" 
-              onClick={handleRefresh} 
+            <button
+              className="btn btn-outline"
+              onClick={handleRefresh}
               disabled={refreshing || loading}
             >
               <RefreshCw size={16} className={refreshing ? 'spin' : ''} />
@@ -254,7 +255,6 @@ export default function DashboardPage() {
       <div className="kpi-grid">
         <KpiCard title="Total Zonas" value={resumenGeneral?.totalZonas} icon={LayoutGrid} />
         <KpiCard title="Total Grupos" value={resumenGeneral?.totalGrupos} icon={Users} />
-        <KpiCard title="Total Asignaciones" value={resumenGeneral?.totalAsignaciones} icon={BarChart3} />
         <KpiCard title="Total Escaneos" value={resumenGeneral?.totalEscaneos} icon={ScanLine} />
         <KpiCard title="Productos Distintos" value={resumenGeneral?.productosDistintos} icon={Boxes} />
       </div>
@@ -263,38 +263,127 @@ export default function DashboardPage() {
       <div className="kpi-grid">
         <KpiCard title="Conteo 1" value={conteos?.conteo1} icon={CheckCircle2} />
         <KpiCard title="Conteo 2" value={conteos?.conteo2} icon={CheckCircle2} />
-        <KpiCard title="Reconteos" value={conteos?.reconteos || 0} icon={Clock} />
         <KpiCard title="Diferencia Global" value={conteos?.diferenciaGlobal} icon={GitCompareArrows} />
         <KpiCard title="Precisión" value={`${conteos?.precisionPorcentaje || 0}%`} icon={Trophy} />
       </div>
 
-      {/* Rankings de Grupos */}
+      {/* Rankings de Grupos - MEJORADO */}
       <div className="rankings-grid">
         <div className="card ranking-card">
-          <div className="ranking-header"><Trophy size={18} color="#f59e0b" /> Grupo más productivo</div>
+          <div className="ranking-header">
+            <Trophy size={18} color="#f59e0b" />
+            <span>Grupo más productivo</span>
+          </div>
           <div className="ranking-content">
             <strong>{porGrupo?.grupoMasProductivo?.nombre || 'N/D'}</strong>
-            <p className="muted">{porGrupo?.grupoMasProductivo?.totalUnidades || 0} unidades</p>
+            <p className="muted">
+              {porGrupo?.grupoMasProductivo?.totalUnidades || 0} unidades
+              {porGrupo?.grupoMasProductivo?.productosDistintos && (
+                <span> · {porGrupo?.grupoMasProductivo?.productosDistintos} productos</span>
+              )}
+            </p>
           </div>
         </div>
+
         <div className="card ranking-card">
-          <div className="ranking-header"><AlertTriangle size={18} color="#ef4444" /> Grupo menor diferencia</div>
+          <div className="ranking-header">
+            <CheckCircle2 size={18} color="#10b981" />
+            <span>Grupo con menos diferencias</span>
+          </div>
           <div className="ranking-content">
-            <strong>{porGrupo?.grupoMenorDiferencia?.nombre || 'N/D'}</strong>
-            <p className="muted">Diferencia: {porGrupo?.grupoMenorDiferencia?.diferenciaTotal || 0}</p>
+            <strong>{porGrupo?.grupoMenosDiferencias?.nombre || 'N/D'}</strong>
+            <p className="muted">
+              Diferencia: {porGrupo?.grupoMenosDiferencias?.diferenciaTotal || 0} unidades
+              {porGrupo?.grupoMenosDiferencias?.precisionPorcentaje && (
+                <span> · {porGrupo?.grupoMenosDiferencias?.precisionPorcentaje}% precisión</span>
+              )}
+            </p>
           </div>
         </div>
+
         <div className="card ranking-card">
-          <div className="ranking-header"><Zap size={18} color="#10b981" /> Grupo más rápido</div>
+          <div className="ranking-header">
+            <Zap size={18} color="#8b5cf6" />
+            <span>Grupo más rápido</span>
+          </div>
           <div className="ranking-content">
             <strong>{porGrupo?.grupoMasRapido?.nombre || 'N/D'}</strong>
-            <p className="muted">{porGrupo?.grupoMasRapido?.tiempoFormateado || 'N/D'}</p>
+            <p className="muted">
+              {porGrupo?.grupoMasRapido?.rendimientoPorHora || 0} unidades/hora
+              <span> · {porGrupo?.grupoMasRapido?.tiempoFormateado || 'N/D'}</span>
+            </p>
           </div>
         </div>
+
         <div className="card ranking-card">
-          <div className="ranking-header"><Trophy size={18} color="#3b82f6" /> Grupo que terminó primero</div>
+          <div className="ranking-header">
+            <BarChart3 size={18} color="#3b82f6" />
+            <span>Grupo más preciso</span>
+          </div>
+          <div className="ranking-content">
+            <strong>{porGrupo?.grupoMasPreciso?.nombre || 'N/D'}</strong>
+            <p className="muted">
+              {porGrupo?.grupoMasPreciso?.precisionPorcentaje || 0}% precisión
+              <span> · {porGrupo?.grupoMasPreciso?.diferenciaTotal || 0} diferencia</span>
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <div className="rankings-grid">
+        <div className="card ranking-card">
+          <div className="ranking-header">
+            <CheckCircle2 size={18} color="#06b6d4" />
+            <span>Grupo más consistente</span>
+          </div>
+          <div className="ranking-content">
+            <strong>{porGrupo?.grupoMasConsistente?.nombre || 'N/D'}</strong>
+            <p className="muted">
+              {porGrupo?.grupoMasConsistente?.tasaError || 0}% tasa de error
+              <span> · {porGrupo?.grupoMasConsistente?.codigosNoReconocidos || 0} códigos no reconocidos</span>
+            </p>
+          </div>
+        </div>
+
+        <div className="card ranking-card">
+          <div className="ranking-header">
+            <Layers3 size={18} color="#f97316" />
+            <span>Grupo más activo</span>
+          </div>
+          <div className="ranking-content">
+            <strong>{porGrupo?.grupoMasActivo?.nombre || 'N/D'}</strong>
+            <p className="muted">
+              {porGrupo?.grupoMasActivo?.rondasRealizadas || 0} rondas realizadas
+              <span> · {porGrupo?.grupoMasActivo?.totalUnidades || 0} unidades</span>
+            </p>
+          </div>
+        </div>
+
+        <div className="card ranking-card">
+          <div className="ranking-header">
+            <Boxes size={18} color="#ec4899" />
+            <span>Grupo más variado</span>
+          </div>
+          <div className="ranking-content">
+            <strong>{porGrupo?.grupoMasVariado?.nombre || 'N/D'}</strong>
+            <p className="muted">
+              {porGrupo?.grupoMasVariado?.productosDistintos || 0} productos distintos
+              <span> · {porGrupo?.grupoMasVariado?.totalUnidades || 0} unidades</span>
+            </p>
+          </div>
+        </div>
+
+        <div className="card ranking-card">
+          <div className="ranking-header">
+            <Clock size={18} color="#a855f7" />
+            <span>Grupo que terminó primero</span>
+          </div>
           <div className="ranking-content">
             <strong>{porGrupo?.grupoTerminoPrimero?.nombre || 'N/D'}</strong>
+            <p className="muted">
+              {porGrupo?.grupoTerminoPrimero?.ultimaLectura ?
+                new Date(porGrupo.grupoTerminoPrimero.ultimaLectura).toLocaleString() : 'N/D'}
+            </p>
           </div>
         </div>
       </div>
@@ -380,7 +469,6 @@ export default function DashboardPage() {
           <h3><AlertTriangle size={16} /> Alertas</h3>
           <div className="alert-item"><strong>Zonas que requieren reconteo:</strong> {alertas?.zonasRequierenReconteo?.length || 0}</div>
           <div className="alert-item"><strong>Grupos sin actividad:</strong> {alertas?.gruposSinActividad?.length || 0}</div>
-          <div className="alert-item"><strong>Fechas sin conteo 2:</strong> {alertas?.fechasSinConteo2?.length || 0}</div>
         </div>
 
         <div className="card stats-card">
@@ -419,7 +507,6 @@ export default function DashboardPage() {
           <div><strong>Total discrepancias:</strong> {reconteos?.totalDiscrepancias || 0}</div>
           <div><strong>Zonas con reconteo:</strong> {reconteos?.zonasConReconteo || 0}</div>
           <div><strong>Grupos con reconteo:</strong> {reconteos?.gruposConReconteo || 0}</div>
-          <div><strong>Diferencia promedio:</strong> {reconteos?.diferenciaPromedio || 0} unidades</div>
         </div>
       </div>
     </div>

@@ -104,11 +104,11 @@ async function findProductoLocal(inventarioId, zonaId, codigoLimpio, transaction
 function validarCodigo(codigo) {
   const codigoLimpio = String(codigo || '').trim();
 
-  if (codigoLimpio.length < 5 || codigoLimpio.length > 7) {
+  if (codigoLimpio.length < 5 || codigoLimpio.length > 6) {
     return {
       ok: false,
       codigoLimpio,
-      message: 'Código inválido. Debe tener entre 5 y 7 dígitos.'
+      message: 'Código inválido. Debe tener entre 5 y 6 dígitos.'
     };
   }
 

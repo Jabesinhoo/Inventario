@@ -179,16 +179,16 @@ export default function InventariosPage() {
   };
 
   const getParejaDeInventario = (inventarioId) => {
-    const pareja = parejas.find(p => 
-      p.inventarioBaseId === inventarioId || 
+    const pareja = parejas.find(p =>
+      p.inventarioBaseId === inventarioId ||
       p.inventarioComparadoId === inventarioId
     );
-    
+
     if (!pareja) return null;
-    
+
     const esBase = pareja.inventarioBaseId === inventarioId;
     const inventarioPareja = esBase ? pareja.inventarioComparado : pareja.inventarioBase;
-    
+
     return {
       id: pareja.id,
       nombre: inventarioPareja?.nombre,
@@ -200,8 +200,8 @@ export default function InventariosPage() {
 
   const inventariosSinPareja = inventarios.filter(inv => {
     if (editing === inv.id) return true;
-    const tienePareja = parejas.some(p => 
-      p.inventarioBaseId === inv.id || 
+    const tienePareja = parejas.some(p =>
+      p.inventarioBaseId === inv.id ||
       p.inventarioComparadoId === inv.id
     );
     return !tienePareja;
@@ -213,7 +213,7 @@ export default function InventariosPage() {
 
     try {
       let inventarioCreado;
-      
+
       if (editing) {
         await updateInventario(editing, {
           nombre: form.nombre,
@@ -236,12 +236,12 @@ export default function InventariosPage() {
 
       if (form.inventarioParejaId) {
         const inventarioParejaId = Number(form.inventarioParejaId);
-        
-        const existePareja = parejas.some(p => 
+
+        const existePareja = parejas.some(p =>
           (p.inventarioBaseId === inventarioCreado.id && p.inventarioComparadoId === inventarioParejaId) ||
           (p.inventarioBaseId === inventarioParejaId && p.inventarioComparadoId === inventarioCreado.id)
         );
-        
+
         if (!existePareja) {
           await api.post('/diferencias/parejas', {
             inventarioBaseId: inventarioCreado.id,
@@ -381,30 +381,7 @@ export default function InventariosPage() {
               >
                 <option value="borrador">Borrador</option>
                 <option value="activo">Activo</option>
-                <option value="cerrado">Cerrado</option>
               </select>
-            </div>
-
-            <div className="form-group">
-              <label
-                style={{
-                  display: 'flex',
-                  gap: '8px',
-                  alignItems: 'center'
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={form.requiereConteo3}
-                  onChange={(e) =>
-                    setForm((prev) => ({
-                      ...prev,
-                      requiereConteo3: e.target.checked
-                    }))
-                  }
-                />
-                Requiere conteo 3
-              </label>
             </div>
 
             <div className="form-group">
@@ -480,7 +457,7 @@ export default function InventariosPage() {
             <div className="table-list">
               {inventarios.map((item) => {
                 const parejaInfo = getParejaDeInventario(item.id);
-                
+
                 return (
                   <div
                     key={item.id}
@@ -584,7 +561,7 @@ export default function InventariosPage() {
                   <th>Inventario Base</th>
                   <th>Inventario Comparado</th>
                   <th>Estado</th>
-                 </tr>
+                </tr>
               </thead>
               <tbody>
                 {parejas.map((pareja) => (
