@@ -4352,3 +4352,55 @@ input[type="number"]::-webkit-outer-spin-button {
     gap: 4px;
   }
 }
+
+/* Connection bar global */
+.connection-bar-global {
+  position: fixed;
+  bottom: 16px;
+  right: 16px;
+  z-index: 1000;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 16px;
+  border-radius: 40px;
+  font-size: 12px;
+  font-weight: 500;
+  box-shadow: var(--shadow-md);
+  cursor: default;
+}
+
+.connection-bar-global.online {
+  background: var(--success-bg);
+  color: var(--success-text);
+  border: 1px solid var(--success);
+}
+
+.connection-bar-global.offline {
+  background: var(--warning-bg);
+  color: var(--warning-text);
+  border: 1px solid var(--warning);
+}
+
+.btn-sync {
+  background: rgba(0,0,0,0.1);
+  border: none;
+  border-radius: 20px;
+  padding: 4px 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 500;
+  transition: var(--transition);
+}
+
+.btn-sync:hover {
+  background: rgba(0,0,0,0.2);
+}
+
+.btn-sync:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}

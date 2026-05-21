@@ -3,6 +3,7 @@ import { Outlet, useNavigate } from 'react-router-dom';
 import { Menu, X } from 'lucide-react';
 import Header from '../components/layout/Header';
 import Sidebar from '../components/layout/Sidebar';
+import ConnectionBar from '../components/layout/ConnectionBar';
 
 export default function AppLayout({ auth }) {
   const navigate = useNavigate();
@@ -39,6 +40,7 @@ export default function AppLayout({ auth }) {
           <Outlet />
         </main>
       </div>
+      <ConnectionBar />
     </div>
   );
 }

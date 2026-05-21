@@ -17,10 +17,7 @@ import {
   Layers3,
   X,
   Maximize2,
-  Minimize2,
-  Wifi,
-  WifiOff,
-  CloudSync
+  Minimize2
 } from 'lucide-react';
 import {
   scanLecturaRonda,
@@ -43,7 +40,8 @@ import {
   savePendingScan,
   getPendingStats,
   syncAllPendingScans,
-  isOnline as checkOnline
+  isOnline as checkOnline,
+  clearAllOfflineData
 } from '../../services/offlineStorage';
 
 export default function EscaneoPage() {
@@ -266,15 +264,24 @@ export default function EscaneoPage() {
       setFlashMessage('No hay conexión a internet para sincronizar', 'warning');
       return;
     }
+    
+    if (offlineSyncing) {
+      console.log('Ya hay una sincronización en curso');
+      return;
+    }
+    
     setOfflineSyncing(true);
     try {
-      await syncAllPendingScans(api, (progress) => {
-        console.log(`Sincronizando: ${progress.sincronizados}/${progress.total}`);
+      const result = await syncAllPendingScans(api, (progress) => {
+        console.log(`Sincronizando escaneos: ${progress.sincronizados}/${progress.total}`);
         loadPendingStatsOffline();
       });
-      setFlashMessage('Sincronización de escaneos offline completada', 'success');
-      if (selectedRonda) {
-        loadRoundContext(selectedRonda);
+      
+      if (result.sincronizados > 0) {
+        setFlashMessage(`${result.sincronizados} escaneo(s) sincronizado(s) correctamente`, 'success');
+        if (selectedRonda) {
+          await loadRoundContext(selectedRonda);
+        }
       }
     } catch (error) {
       console.error('Error sincronizando offline:', error);
@@ -282,7 +289,7 @@ export default function EscaneoPage() {
     } finally {
       setOfflineSyncing(false);
     }
-  }, [loadRoundContext, selectedRonda, loadPendingStatsOffline]);
+  }, [loadRoundContext, selectedRonda, loadPendingStatsOffline, offlineSyncing]);
 
   // Monitoreo de conexión
   useEffect(() => {
@@ -295,18 +302,19 @@ export default function EscaneoPage() {
       setIsOnline(false);
       setFlashMessage('Sin conexión a internet. Los escaneos se guardarán localmente.', 'warning');
     };
+    
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
+    
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
     };
   }, [syncOfflineScans]);
 
-  // Cargar pendientes al montar y cuando cambie la conexión
   useEffect(() => {
     loadPendingStatsOffline();
-  }, [loadPendingStatsOffline, isOnline]);
+  }, [loadPendingStatsOffline]);
 
   useEffect(() => {
     loadInventariosData();
@@ -365,13 +373,13 @@ export default function EscaneoPage() {
     }
   };
 
-  // Escaneo con soporte offline
+  // Escaneo con soporte offline - SIN DUPLICADOS
   const procesarEscaneo = useCallback(async (codigoLimpio) => {
     if (processingRef.current) return;
     if (!/^\d{5,6}$/.test(codigoLimpio)) return;
 
     const now = Date.now();
-    if (lastSentRef.current.code === codigoLimpio && now - lastSentRef.current.at < 100) {
+    if (lastSentRef.current.code === codigoLimpio && now - lastSentRef.current.at < 300) {
       return;
     }
 
@@ -383,8 +391,46 @@ export default function EscaneoPage() {
       return;
     }
 
-    // Si no hay internet, guardar offline
-    if (!checkOnline()) {
+    // Si hay internet, enviar al servidor directamente
+    if (checkOnline()) {
+      try {
+        const raw = await scanLecturaRonda({
+          rondaId: selectedRonda.id,
+          grupoId: grupoAsignado.id,
+          codigo: codigoLimpio
+        });
+
+        const backend = raw?.ok !== undefined ? raw : raw?.data?.ok !== undefined ? raw.data : null;
+        const payload = backend?.data || raw?.data || raw || null;
+        const message = backend?.message || raw?.message || 'Lectura registrada';
+        const warning = Boolean(backend?.warning || raw?.warning);
+        const warningData = payload?.warning || null;
+
+        playBeep();
+        setLastScan(payload);
+
+        if (warningData?.type === 'producto_en_otra_zona') {
+          setShowZoneWarning(true);
+          setZoneWarningInfo(warningData);
+          setFlashMessage(warningData.message, 'warning');
+        } else {
+          setFlashMessage(message, warning ? 'warning' : 'success');
+        }
+
+        loadRoundContext(selectedRonda);
+      } catch (err) {
+        // Si falla el envío (servidor caído), guardar offline
+        await savePendingScan({
+          rondaId: selectedRonda.id,
+          grupoId: grupoAsignado.id,
+          codigo: codigoLimpio,
+          fecha: new Date().toISOString()
+        });
+        await loadPendingStatsOffline();
+        setFlashMessage('Error en el servidor. Escaneo guardado localmente.', 'warning');
+      }
+    } else {
+      // Sin internet, guardar offline directamente
       await savePendingScan({
         rondaId: selectedRonda.id,
         grupoId: grupoAsignado.id,
@@ -395,50 +441,9 @@ export default function EscaneoPage() {
       playBeep();
       setFlashMessage('Sin conexión. Escaneo guardado localmente. Se sincronizará después.', 'warning');
       setLastScan({ producto: { sku: codigoLimpio, descripcion: 'Guardado local' }, acumuladoSku: 'pendiente' });
-      processingRef.current = false;
-      return;
     }
-
-    // Con internet: intentar enviar al servidor
-    try {
-      const raw = await scanLecturaRonda({
-        rondaId: selectedRonda.id,
-        grupoId: grupoAsignado.id,
-        codigo: codigoLimpio
-      });
-
-      const backend = raw?.ok !== undefined ? raw : raw?.data?.ok !== undefined ? raw.data : null;
-      const payload = backend?.data || raw?.data || raw || null;
-      const message = backend?.message || raw?.message || 'Lectura registrada';
-      const warning = Boolean(backend?.warning || raw?.warning);
-      const warningData = payload?.warning || null;
-
-      playBeep();
-      setLastScan(payload);
-
-      if (warningData?.type === 'producto_en_otra_zona') {
-        setShowZoneWarning(true);
-        setZoneWarningInfo(warningData);
-        setFlashMessage(warningData.message, 'warning');
-      } else {
-        setFlashMessage(message, warning ? 'warning' : 'success');
-      }
-
-      loadRoundContext(selectedRonda);
-    } catch (err) {
-      // Si falla (ej. servidor caído), guardar offline
-      await savePendingScan({
-        rondaId: selectedRonda.id,
-        grupoId: grupoAsignado.id,
-        codigo: codigoLimpio,
-        fecha: new Date().toISOString()
-      });
-      await loadPendingStatsOffline();
-      setFlashMessage('Error en el servidor. Escaneo guardado localmente.', 'warning');
-      setLastScan({ producto: { sku: codigoLimpio, descripcion: 'Guardado local' }, acumuladoSku: 'pendiente' });
-    } finally {
-      processingRef.current = false;
-    }
+    
+    processingRef.current = false;
   }, [selectedRonda, grupoAsignado, loadRoundContext, loadPendingStatsOffline]);
 
   const handleCodigoChange = useCallback((e) => {
@@ -528,7 +533,7 @@ export default function EscaneoPage() {
     <div className={`dashboard-container escaneo-page ${fullScreen ? 'fullscreen-mode' : ''}`}>
       <audio ref={audioRef} src="/beep.mp3" preload="auto" />
 
-      {/* Header móvil con menú hamburguesa */}
+      {/* Header móvil */}
       <div className="escaneo-mobile-header">
         <button 
           className="mobile-menu-btn-escaneo"
@@ -545,7 +550,7 @@ export default function EscaneoPage() {
         </button>
       </div>
 
-      {/* Panel móvil desplegable */}
+      {/* Panel móvil */}
       <div className={`escaneo-mobile-panel ${mobileMenuOpen ? 'open' : ''}`}>
         <div className="form-group">
           <label>Inventario</label>
@@ -627,34 +632,6 @@ export default function EscaneoPage() {
             </button>
           </div>
         </div>
-      </div>
-
-      {/* Indicador de conexión y pendientes */}
-      <div className="connection-bar">
-        {isOnline ? (
-          <div className="connection-status online">
-            <Wifi size={14} />
-            <span>Online</span>
-            {pendingCount > 0 && (
-              <button 
-                className="btn btn-sm btn-primary"
-                onClick={syncOfflineScans}
-                disabled={offlineSyncing}
-              >
-                <CloudSync size={14} />
-                {offlineSyncing ? 'Sincronizando...' : `Sincronizar (${pendingCount})`}
-              </button>
-            )}
-          </div>
-        ) : (
-          <div className="connection-status offline">
-            <WifiOff size={14} />
-            <span>Offline - Los escaneos se guardarán localmente</span>
-            {pendingCount > 0 && (
-              <span className="pending-badge">{pendingCount} pendientes</span>
-            )}
-          </div>
-        )}
       </div>
 
       {/* Información de la ronda */}

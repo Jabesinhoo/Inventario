@@ -1,252 +1,276 @@
-// Sistema de almacenamiento offline para escaneos
+// src/services/offlineStorage.js
 const DB_NAME = 'inventario_offline';
-const DB_VERSION = 2; // Incrementar versión para forzar actualización
-const STORES = {
-  SCANS: 'pending_scans',
-  INVENTORIES: 'inventories',
-  RONDAS: 'rondas',
-  GROUPS: 'groups',
-  ZONES: 'zones'
-};
+const DB_VERSION = 7;
 
 let db = null;
+let dbInitPromise = null;
+let isSyncing = false;
 
-// Abrir/crear base de datos IndexedDB
-export async function openDB() {
-  return new Promise((resolve, reject) => {
+// Inicializar base de datos
+async function ensureDB() {
+  if (db) return db;
+  if (dbInitPromise) return dbInitPromise;
+  
+  dbInitPromise = new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
     
-    request.onerror = () => reject(request.error);
+    request.onerror = () => {
+      console.error('[Offline] Error:', request.error);
+      reject(request.error);
+    };
+    
     request.onsuccess = () => {
       db = request.result;
+      console.log('[Offline] Base de datos conectada, versión:', DB_VERSION);
       resolve(db);
     };
     
     request.onupgradeneeded = (event) => {
       const db = event.target.result;
-      const oldVersion = event.oldVersion;
+      console.log('[Offline] Creando stores...');
       
-      console.log('[IndexedDB] Actualizando de versión', oldVersion, 'a', DB_VERSION);
-      
-      // Eliminar stores antiguos si existen (para evitar inconsistencias)
-      if (db.objectStoreNames.contains(STORES.SCANS)) {
-        db.deleteObjectStore(STORES.SCANS);
-      }
-      if (db.objectStoreNames.contains(STORES.INVENTORIES)) {
-        db.deleteObjectStore(STORES.INVENTORIES);
-      }
-      if (db.objectStoreNames.contains(STORES.RONDAS)) {
-        db.deleteObjectStore(STORES.RONDAS);
-      }
-      if (db.objectStoreNames.contains(STORES.GROUPS)) {
-        db.deleteObjectStore(STORES.GROUPS);
-      }
-      if (db.objectStoreNames.contains(STORES.ZONES)) {
-        db.deleteObjectStore(STORES.ZONES);
+      // Store para escaneos pendientes
+      if (!db.objectStoreNames.contains('pending_scans')) {
+        const scansStore = db.createObjectStore('pending_scans', { 
+          keyPath: 'id', 
+          autoIncrement: true 
+        });
+        scansStore.createIndex('sincronizado', 'sincronizado');
+        scansStore.createIndex('created_at', 'created_at');
+        console.log('[Offline] Store pending_scans creado');
       }
       
-      // Crear stores nuevos
-      const scansStore = db.createObjectStore(STORES.SCANS, { 
-        keyPath: 'id', 
-        autoIncrement: true 
-      });
-      scansStore.createIndex('created_at', 'created_at');
-      scansStore.createIndex('sincronizado', 'sincronizado');
-      
-      db.createObjectStore(STORES.INVENTORIES, { keyPath: 'id' });
-      db.createObjectStore(STORES.RONDAS, { keyPath: 'id' });
-      db.createObjectStore(STORES.GROUPS, { keyPath: 'id' });
-      db.createObjectStore(STORES.ZONES, { keyPath: 'id' });
-      
-      console.log('[IndexedDB] Stores creados correctamente');
+      // Store para caché de inventarios
+      if (!db.objectStoreNames.contains('cache_inventarios')) {
+        db.createObjectStore('cache_inventarios', { keyPath: 'id' });
+        console.log('[Offline] Store cache_inventarios creado');
+      }
     };
   });
+  
+  return dbInitPromise;
 }
 
-// Guardar escaneo pendiente (offline)
+// ==================== ESCANEOS OFFLINE ====================
+
 export async function savePendingScan(scanData) {
-  if (!db) await openDB();
-  
-  const transaction = db.transaction([STORES.SCANS], 'readwrite');
-  const store = transaction.objectStore(STORES.SCANS);
-  
-  const pendingScan = {
-    ...scanData,
-    created_at: new Date().toISOString(),
-    sincronizado: false,
-    intentos: 0
-  };
-  
-  return new Promise((resolve, reject) => {
-    const request = store.add(pendingScan);
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
+  try {
+    const database = await ensureDB();
+    const transaction = database.transaction(['pending_scans'], 'readwrite');
+    const store = transaction.objectStore('pending_scans');
+    
+    const pendingScan = {
+      ...scanData,
+      created_at: Date.now(),
+      sincronizado: false,
+      intentos: 0
+    };
+    
+    return new Promise((resolve) => {
+      const request = store.add(pendingScan);
+      request.onsuccess = () => {
+        console.log('[Offline] Escaneo guardado localmente, id:', request.result);
+        resolve(request.result);
+      };
+      request.onerror = () => {
+        console.error('[Offline] Error guardando:', request.error);
+        resolve(null);
+      };
+    });
+  } catch (error) {
+    console.error('[Offline] Error en savePendingScan:', error);
+    return null;
+  }
 }
 
-// Obtener todos los escaneos pendientes (versión segura sin índices)
 export async function getPendingScans() {
-  if (!db) await openDB();
-  
-  const transaction = db.transaction([STORES.SCANS], 'readonly');
-  const store = transaction.objectStore(STORES.SCANS);
-  
-  return new Promise((resolve, reject) => {
-    const request = store.getAll();
-    request.onsuccess = () => {
-      const all = request.result || [];
-      const pendientes = all.filter(scan => !scan.sincronizado);
-      resolve(pendientes);
-    };
-    request.onerror = () => {
-      console.error('Error en getPendingScans:', request.error);
-      resolve([]);
-    };
-  });
+  try {
+    const database = await ensureDB();
+    const transaction = database.transaction(['pending_scans'], 'readonly');
+    const store = transaction.objectStore('pending_scans');
+    
+    return new Promise((resolve) => {
+      const request = store.getAll();
+      request.onsuccess = () => {
+        const all = request.result || [];
+        const pendientes = all.filter(scan => !scan.sincronizado);
+        console.log('[Offline] Escaneos pendientes:', pendientes.length);
+        resolve(pendientes);
+      };
+      request.onerror = () => {
+        console.error('[Offline] Error obteniendo:', request.error);
+        resolve([]);
+      };
+    });
+  } catch (error) {
+    console.error('[Offline] Error en getPendingScans:', error);
+    return [];
+  }
 }
 
-// Marcar escaneo como sincronizado
-export async function markAsSynced(scanId) {
-  if (!db) await openDB();
-  
-  const transaction = db.transaction([STORES.SCANS], 'readwrite');
-  const store = transaction.objectStore(STORES.SCANS);
-  
-  return new Promise((resolve, reject) => {
-    const getRequest = store.get(scanId);
-    getRequest.onsuccess = () => {
-      const scan = getRequest.result;
-      if (scan) {
-        scan.sincronizado = true;
-        scan.sincronizado_en = new Date().toISOString();
-        const updateRequest = store.put(scan);
-        updateRequest.onsuccess = () => resolve();
-        updateRequest.onerror = () => reject(updateRequest.error);
-      } else {
-        resolve();
-      }
-    };
-    getRequest.onerror = () => reject(getRequest.error);
-  });
+export async function markScanAsSynced(scanId) {
+  try {
+    const database = await ensureDB();
+    const transaction = database.transaction(['pending_scans'], 'readwrite');
+    const store = transaction.objectStore('pending_scans');
+    
+    return new Promise((resolve) => {
+      const getRequest = store.get(scanId);
+      getRequest.onsuccess = () => {
+        const scan = getRequest.result;
+        if (scan && !scan.sincronizado) {
+          scan.sincronizado = true;
+          scan.sincronizado_en = Date.now();
+          store.put(scan);
+          console.log('[Offline] Escaneo marcado como sincronizado:', scanId);
+        }
+        resolve(true);
+      };
+      getRequest.onerror = () => resolve(false);
+    });
+  } catch (error) {
+    console.error('[Offline] Error en markScanAsSynced:', error);
+    return false;
+  }
 }
 
-// Eliminar escaneo sincronizado
-export async function deleteSyncedScan(scanId) {
-  if (!db) await openDB();
-  
-  const transaction = db.transaction([STORES.SCANS], 'readwrite');
-  const store = transaction.objectStore(STORES.SCANS);
-  
-  return new Promise((resolve, reject) => {
-    const request = store.delete(scanId);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
-  });
+async function isStillPending(scanId) {
+  try {
+    const database = await ensureDB();
+    const transaction = database.transaction(['pending_scans'], 'readonly');
+    const store = transaction.objectStore('pending_scans');
+    
+    return new Promise((resolve) => {
+      const request = store.get(scanId);
+      request.onsuccess = () => {
+        const scan = request.result;
+        resolve(scan && !scan.sincronizado);
+      };
+      request.onerror = () => resolve(false);
+    });
+  } catch (error) {
+    return false;
+  }
 }
 
-// Cachear datos para offline
-export async function cacheData(storeName, data) {
-  if (!db) await openDB();
-  
-  const transaction = db.transaction([storeName], 'readwrite');
-  const store = transaction.objectStore(storeName);
-  
-  // Limpiar cache anterior
-  store.clear();
-  
-  // Guardar nuevos datos
-  data.forEach(item => {
-    store.put({ ...item, cached_at: new Date().toISOString() });
-  });
-  
-  return new Promise((resolve, reject) => {
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error);
-  });
-}
-
-// Obtener datos cacheados
-export async function getCachedData(storeName) {
-  if (!db) await openDB();
-  
-  const transaction = db.transaction([storeName], 'readonly');
-  const store = transaction.objectStore(storeName);
-  
-  return new Promise((resolve, reject) => {
-    const request = store.getAll();
-    request.onsuccess = () => resolve(request.result || []);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-// Obtener estadísticas de pendientes
-export async function getPendingStats() {
-  const pendientes = await getPendingScans();
-  const gruposMap = {};
-  pendientes.forEach(scan => {
-    gruposMap[scan.grupoId] = (gruposMap[scan.grupoId] || 0) + 1;
-  });
-  return {
-    total: pendientes.length,
-    grupos: gruposMap
-  };
-}
-
-// Sincronizar todos los pendientes
 export async function syncAllPendingScans(api, onProgress) {
+  if (isSyncing) {
+    console.log('[Offline] Ya hay una sincronización en curso');
+    return { sincronizados: 0, errores: 0, total: 0, yaEnCurso: true };
+  }
+  
+  isSyncing = true;
   const pendientes = await getPendingScans();
   let sincronizados = 0;
   let errores = 0;
   
+  console.log('[Offline] Sincronizando', pendientes.length, 'escaneos');
+  
   for (const scan of pendientes) {
+    const stillPending = await isStillPending(scan.id);
+    if (!stillPending) {
+      console.log('[Offline] Escaneo ya no está pendiente:', scan.id);
+      sincronizados++;
+      continue;
+    }
+    
     try {
-      await api.post('/lecturas/scan-ronda', {
+      const response = await api.post('/lecturas/scan-ronda', {
         rondaId: scan.rondaId,
         grupoId: scan.grupoId,
         codigo: scan.codigo
       });
       
-      await markAsSynced(scan.id);
-      sincronizados++;
-      
-      if (onProgress) {
-        onProgress({ sincronizados, errores, total: pendientes.length });
+      if (response.data?.ok) {
+        await markScanAsSynced(scan.id);
+        sincronizados++;
+        console.log('[Offline] ✅ Escaneo sincronizado:', scan.codigo);
+      } else {
+        errores++;
+        console.warn('[Offline] ❌ Respuesta no ok:', response.data);
       }
     } catch (error) {
       errores++;
-      scan.intentos = (scan.intentos || 0) + 1;
-      if (scan.intentos >= 5) {
-        await markAsSynced(scan.id); // Marcar como fallido definitivo
-      } else {
-        // Actualizar intentos en la base de datos
-        if (db) {
-          const transaction = db.transaction([STORES.SCANS], 'readwrite');
-          const store = transaction.objectStore(STORES.SCANS);
-          store.put(scan);
-        }
-      }
+      console.error('[Offline] ❌ Error en sync:', error.message);
+    }
+    
+    if (onProgress) {
+      onProgress({ sincronizados, errores, total: pendientes.length });
     }
   }
   
+  console.log(`[Offline] Sincronización: ${sincronizados} ok, ${errores} errores`);
+  isSyncing = false;
   return { sincronizados, errores, total: pendientes.length };
 }
 
-// Verificar conexión a internet
+export async function getPendingStats() {
+  const pendientes = await getPendingScans();
+  return { total: pendientes.length };
+}
+
+// ==================== CACHÉ DE INVENTARIOS ====================
+
+export async function cacheInventarios(data) {
+  try {
+    const database = await ensureDB();
+    const transaction = database.transaction(['cache_inventarios'], 'readwrite');
+    const store = transaction.objectStore('cache_inventarios');
+    
+    store.clear();
+    data.forEach(item => {
+      store.put({ ...item, cached_at: Date.now() });
+    });
+    
+    console.log('[Offline] Inventarios cacheados:', data.length);
+    return true;
+  } catch (error) {
+    console.error('[Offline] Error cacheando inventarios:', error);
+    return false;
+  }
+}
+
+export async function getCachedInventarios() {
+  try {
+    const database = await ensureDB();
+    const transaction = database.transaction(['cache_inventarios'], 'readonly');
+    const store = transaction.objectStore('cache_inventarios');
+    
+    return new Promise((resolve) => {
+      const request = store.getAll();
+      request.onsuccess = () => resolve(request.result || []);
+      request.onerror = () => resolve([]);
+    });
+  } catch (error) {
+    console.error('[Offline] Error obteniendo caché:', error);
+    return [];
+  }
+}
+
+// ==================== UTILIDADES ====================
+
 export function isOnline() {
   return navigator.onLine;
 }
 
-// Escuchar cambios de conexión
-export function onConnectionChange(callback) {
-  const onlineHandler = () => callback(true);
-  const offlineHandler = () => callback(false);
-  
-  window.addEventListener('online', onlineHandler);
-  window.addEventListener('offline', offlineHandler);
-  
-  // Retornar función para limpiar
-  return () => {
-    window.removeEventListener('online', onlineHandler);
-    window.removeEventListener('offline', offlineHandler);
-  };
+export async function clearAllOfflineData() {
+  try {
+    if (db) {
+      db.close();
+      db = null;
+    }
+    dbInitPromise = null;
+    isSyncing = false;
+    
+    await new Promise((resolve) => {
+      const request = indexedDB.deleteDatabase(DB_NAME);
+      request.onsuccess = () => {
+        console.log('[Offline] Base de datos eliminada');
+        resolve();
+      };
+      request.onerror = () => resolve();
+    });
+  } catch (error) {
+    console.error('[Offline] Error limpiando:', error);
+  }
 }
