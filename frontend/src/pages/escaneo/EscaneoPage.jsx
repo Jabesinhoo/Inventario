@@ -17,7 +17,10 @@ import {
   Layers3,
   X,
   Maximize2,
-  Minimize2
+  Minimize2,
+  Wifi,
+  WifiOff,
+  CloudSync
 } from 'lucide-react';
 import {
   scanLecturaRonda,
@@ -35,6 +38,13 @@ import {
   getPendientesRonda
 } from '../../services/rondas.service';
 import { getInventarios } from '../../services/inventarios.service';
+import api from '../../services/api';
+import {
+  savePendingScan,
+  getPendingStats,
+  syncAllPendingScans,
+  isOnline as checkOnline
+} from '../../services/offlineStorage';
 
 export default function EscaneoPage() {
   const [searchParams] = useSearchParams();
@@ -69,6 +79,11 @@ export default function EscaneoPage() {
   const [showZoneWarning, setShowZoneWarning] = useState(false);
   const [zoneWarningInfo, setZoneWarningInfo] = useState(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  // Offline state
+  const [isOnline, setIsOnline] = useState(checkOnline());
+  const [pendingCount, setPendingCount] = useState(0);
+  const [offlineSyncing, setOfflineSyncing] = useState(false);
 
   const auth = useAuth();
   const rol = String(auth?.user?.rol || auth?.user?.rol?.nombre || '').toLowerCase();
@@ -234,6 +249,65 @@ export default function EscaneoPage() {
     }
   }, []);
 
+  // Offline: cargar pendientes
+  const loadPendingStatsOffline = useCallback(async () => {
+    try {
+      const stats = await getPendingStats();
+      setPendingCount(stats.total);
+    } catch (error) {
+      console.error('Error cargando pendientes offline:', error);
+      setPendingCount(0);
+    }
+  }, []);
+
+  // Sincronizar pendientes cuando hay internet
+  const syncOfflineScans = useCallback(async () => {
+    if (!checkOnline()) {
+      setFlashMessage('No hay conexión a internet para sincronizar', 'warning');
+      return;
+    }
+    setOfflineSyncing(true);
+    try {
+      await syncAllPendingScans(api, (progress) => {
+        console.log(`Sincronizando: ${progress.sincronizados}/${progress.total}`);
+        loadPendingStatsOffline();
+      });
+      setFlashMessage('Sincronización de escaneos offline completada', 'success');
+      if (selectedRonda) {
+        loadRoundContext(selectedRonda);
+      }
+    } catch (error) {
+      console.error('Error sincronizando offline:', error);
+      setFlashMessage('Error al sincronizar escaneos offline', 'error');
+    } finally {
+      setOfflineSyncing(false);
+    }
+  }, [loadRoundContext, selectedRonda, loadPendingStatsOffline]);
+
+  // Monitoreo de conexión
+  useEffect(() => {
+    const handleOnline = () => {
+      setIsOnline(true);
+      setFlashMessage('Conexión restablecida. Sincronizando...', 'success');
+      syncOfflineScans();
+    };
+    const handleOffline = () => {
+      setIsOnline(false);
+      setFlashMessage('Sin conexión a internet. Los escaneos se guardarán localmente.', 'warning');
+    };
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+    return () => {
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, [syncOfflineScans]);
+
+  // Cargar pendientes al montar y cuando cambie la conexión
+  useEffect(() => {
+    loadPendingStatsOffline();
+  }, [loadPendingStatsOffline, isOnline]);
+
   useEffect(() => {
     loadInventariosData();
   }, []);
@@ -291,6 +365,7 @@ export default function EscaneoPage() {
     }
   };
 
+  // Escaneo con soporte offline
   const procesarEscaneo = useCallback(async (codigoLimpio) => {
     if (processingRef.current) return;
     if (!/^\d{5,6}$/.test(codigoLimpio)) return;
@@ -308,6 +383,23 @@ export default function EscaneoPage() {
       return;
     }
 
+    // Si no hay internet, guardar offline
+    if (!checkOnline()) {
+      await savePendingScan({
+        rondaId: selectedRonda.id,
+        grupoId: grupoAsignado.id,
+        codigo: codigoLimpio,
+        fecha: new Date().toISOString()
+      });
+      await loadPendingStatsOffline();
+      playBeep();
+      setFlashMessage('Sin conexión. Escaneo guardado localmente. Se sincronizará después.', 'warning');
+      setLastScan({ producto: { sku: codigoLimpio, descripcion: 'Guardado local' }, acumuladoSku: 'pendiente' });
+      processingRef.current = false;
+      return;
+    }
+
+    // Con internet: intentar enviar al servidor
     try {
       const raw = await scanLecturaRonda({
         rondaId: selectedRonda.id,
@@ -334,11 +426,20 @@ export default function EscaneoPage() {
 
       loadRoundContext(selectedRonda);
     } catch (err) {
-      setFlashMessage(err.response?.data?.message || 'Error', 'error');
+      // Si falla (ej. servidor caído), guardar offline
+      await savePendingScan({
+        rondaId: selectedRonda.id,
+        grupoId: grupoAsignado.id,
+        codigo: codigoLimpio,
+        fecha: new Date().toISOString()
+      });
+      await loadPendingStatsOffline();
+      setFlashMessage('Error en el servidor. Escaneo guardado localmente.', 'warning');
+      setLastScan({ producto: { sku: codigoLimpio, descripcion: 'Guardado local' }, acumuladoSku: 'pendiente' });
     } finally {
       processingRef.current = false;
     }
-  }, [selectedRonda, grupoAsignado, loadRoundContext]);
+  }, [selectedRonda, grupoAsignado, loadRoundContext, loadPendingStatsOffline]);
 
   const handleCodigoChange = useCallback((e) => {
     const value = e.target.value;
@@ -528,7 +629,35 @@ export default function EscaneoPage() {
         </div>
       </div>
 
-      {/* Información de la ronda - siempre visible */}
+      {/* Indicador de conexión y pendientes */}
+      <div className="connection-bar">
+        {isOnline ? (
+          <div className="connection-status online">
+            <Wifi size={14} />
+            <span>Online</span>
+            {pendingCount > 0 && (
+              <button 
+                className="btn btn-sm btn-primary"
+                onClick={syncOfflineScans}
+                disabled={offlineSyncing}
+              >
+                <CloudSync size={14} />
+                {offlineSyncing ? 'Sincronizando...' : `Sincronizar (${pendingCount})`}
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="connection-status offline">
+            <WifiOff size={14} />
+            <span>Offline - Los escaneos se guardarán localmente</span>
+            {pendingCount > 0 && (
+              <span className="pending-badge">{pendingCount} pendientes</span>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Información de la ronda */}
       {selectedRonda && (
         <div className="escaneo-meta-grid">
           <div className="escaneo-meta-item">
@@ -558,7 +687,6 @@ export default function EscaneoPage() {
 
       {selectedRonda ? (
         <>
-          {/* KPIs - responsive */}
           <div className="kpi-grid">
             <div className="card kpi-card">
               <div className="kpi-icon"><Boxes size={24} /></div>
@@ -583,7 +711,6 @@ export default function EscaneoPage() {
             </div>
           </div>
 
-          {/* Scanner y estado - responsive */}
           <div className="scan-layout">
             <div className="card scanner-shell">
               <div className="list-header">
@@ -678,7 +805,6 @@ export default function EscaneoPage() {
             </div>
           </div>
 
-          {/* Resumen e historial - responsive */}
           <div className="grid-2">
             <div className="card resumen-card">
               <div className="list-header">
