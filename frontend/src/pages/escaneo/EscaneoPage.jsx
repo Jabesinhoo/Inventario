@@ -262,7 +262,6 @@ export default function EscaneoPage() {
     }
   }, [bootLoading, canScan, loadingScan]);
 
-  // Cerrar menú móvil al cambiar de ronda
   useEffect(() => {
     setMobileMenuOpen(false);
   }, [selectedRondaId]);
@@ -682,12 +681,20 @@ export default function EscaneoPage() {
           {/* Resumen e historial - responsive */}
           <div className="grid-2">
             <div className="card resumen-card">
-              <div className="list-header"><h2 className="section-title"><Boxes size={20} /><span>Resumen por producto</span></h2></div>
-              {resumen.length === 0 ? <div className="escaneo-empty">No hay escaneos</div> : (
+              <div className="list-header">
+                <h2 className="section-title"><Boxes size={20} /><span>Resumen por producto</span></h2>
+              </div>
+              {resumen.length === 0 ? (
+                <div className="escaneo-empty">No hay escaneos</div>
+              ) : (
                 <div className="table-responsive-container">
                   <table className="data-table resumen-table">
                     <thead>
-                      <tr><th>SKU</th><th>Descripción</th><th>Cantidad</th></tr>
+                      <tr>
+                        <th>SKU</th>
+                        <th>Descripción</th>
+                        <th>Cantidad</th>
+                      </tr>
                     </thead>
                     <tbody>
                       {resumen.slice(0, 15).map((item, index) => (
@@ -695,7 +702,7 @@ export default function EscaneoPage() {
                           <td data-label="SKU"><strong>{item.sku}</strong></td>
                           <td data-label="Descripción">{item.descripcionSnapshot || 'Sin descripción'}</td>
                           <td data-label="Cantidad" className="text-center">{item.cantidadTotal}</td>
-                        <tr>
+                        </tr>
                       ))}
                       {resumen.length > 15 && (
                         <tr className="more-items">
@@ -709,8 +716,12 @@ export default function EscaneoPage() {
             </div>
 
             <div className="card historial-card">
-              <div className="list-header"><h2 className="section-title"><History size={20} /><span>Historial reciente</span></h2></div>
-              {history.length === 0 ? <div className="escaneo-empty">No hay lecturas</div> : (
+              <div className="list-header">
+                <h2 className="section-title"><History size={20} /><span>Historial reciente</span></h2>
+              </div>
+              {history.length === 0 ? (
+                <div className="escaneo-empty">No hay lecturas</div>
+              ) : (
                 <div className="history-list">
                   {history.slice(0, 15).map((lectura) => (
                     <div key={lectura.id} className={`history-item ${lectura.estado === 'anulada' ? 'anulada' : ''}`}>
@@ -720,7 +731,7 @@ export default function EscaneoPage() {
                       </div>
                       <div className="history-meta">
                         <span className="tag-muted">{formatOnlyTime(lectura.fechaHora)}</span>
-                        <span className={`status-chip mini ${lectura.estado}`}>{lectura.estado === 'valida' ? 'OK' : '❌'}</span>
+                        <span className={`status-chip mini ${lectura.estado}`}>{lectura.estado === 'valida' ? 'OK' : 'NO'}</span>
                         {lectura.estado !== 'anulada' && (
                           <button className="icon-btn" onClick={() => handleAnularLectura(lectura.id)} title="Anular"><Trash2 size={14} /></button>
                         )}
@@ -733,7 +744,9 @@ export default function EscaneoPage() {
           </div>
         </>
       ) : (
-        <div className="card"><p className="muted">Selecciona un inventario con rondas disponibles</p></div>
+        <div className="card">
+          <p className="muted">Selecciona un inventario con rondas disponibles</p>
+        </div>
       )}
 
       {/* Modal de advertencia */}
