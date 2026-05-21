@@ -15,7 +15,9 @@ import {
   Clock,
   Boxes,
   Layers3,
-  X
+  X,
+  Maximize2,
+  Minimize2
 } from 'lucide-react';
 import {
   scanLecturaRonda,
@@ -62,9 +64,11 @@ export default function EscaneoPage() {
   const [loadingScan, setLoadingScan] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [fullScreen, setFullScreen] = useState(false);
 
   const [showZoneWarning, setShowZoneWarning] = useState(false);
   const [zoneWarningInfo, setZoneWarningInfo] = useState(null);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   const auth = useAuth();
   const rol = String(auth?.user?.rol || auth?.user?.rol?.nombre || '').toLowerCase();
@@ -79,7 +83,7 @@ export default function EscaneoPage() {
     if (!flash.text) return;
     const timeout = setTimeout(() => {
       setFlash({ type: '', text: '' });
-    }, 2000);
+    }, 3000);
     return () => clearTimeout(timeout);
   }, [flash]);
 
@@ -252,12 +256,16 @@ export default function EscaneoPage() {
     }
   }, [selectedRonda, loadRoundContext]);
 
-  // Auto-focus inmediato
   useEffect(() => {
     if (!bootLoading && canScan) {
       inputRef.current?.focus();
     }
   }, [bootLoading, canScan, loadingScan]);
+
+  // Cerrar menú móvil al cambiar de ronda
+  useEffect(() => {
+    setMobileMenuOpen(false);
+  }, [selectedRondaId]);
 
   const handleRefresh = async () => {
     if (!selectedInventario) return;
@@ -284,15 +292,10 @@ export default function EscaneoPage() {
     }
   };
 
-  // 🔥 FUNCIÓN PRINCIPAL OPTIMIZADA
   const procesarEscaneo = useCallback(async (codigoLimpio) => {
-    // Evitar procesamiento concurrente
     if (processingRef.current) return;
-    
-    // Validación rápida de dígitos
     if (!/^\d{5,6}$/.test(codigoLimpio)) return;
 
-    // Anti-doble escaneo ultra rápido (100ms)
     const now = Date.now();
     if (lastSentRef.current.code === codigoLimpio && now - lastSentRef.current.at < 100) {
       return;
@@ -301,7 +304,6 @@ export default function EscaneoPage() {
     lastSentRef.current = { code: codigoLimpio, at: now };
     processingRef.current = true;
 
-    // Validaciones básicas
     if (!selectedRonda?.id || selectedRonda.estado !== 'activa' || !grupoAsignado?.id) {
       processingRef.current = false;
       return;
@@ -331,7 +333,6 @@ export default function EscaneoPage() {
         setFlashMessage(message, warning ? 'warning' : 'success');
       }
 
-      // Actualizar datos en segundo plano sin bloquear
       loadRoundContext(selectedRonda);
     } catch (err) {
       setFlashMessage(err.response?.data?.message || 'Error', 'error');
@@ -340,21 +341,18 @@ export default function EscaneoPage() {
     }
   }, [selectedRonda, grupoAsignado, loadRoundContext]);
 
-  // 🔥 HANDLE CHANGE - Auto-procesamiento inmediato
   const handleCodigoChange = useCallback((e) => {
     const value = e.target.value;
     const numeros = value.replace(/[^0-9]/g, '').slice(0, 6);
     
     setCodigo(numeros);
     
-    // Procesar inmediatamente al llegar a 5 o 6 dígitos
     if (numeros.length === 5 || numeros.length === 6) {
       procesarEscaneo(numeros);
-      setCodigo(''); // Limpiar instantáneamente
+      setCodigo('');
     }
   }, [procesarEscaneo]);
 
-  // Submit manual por si acaso
   const handleSubmit = useCallback((e) => {
     e.preventDefault();
     if (codigo.length === 5 || codigo.length === 6) {
@@ -427,10 +425,64 @@ export default function EscaneoPage() {
   }
 
   return (
-    <div className="dashboard-container escaneo-page">
+    <div className={`dashboard-container escaneo-page ${fullScreen ? 'fullscreen-mode' : ''}`}>
       <audio ref={audioRef} src="/beep.mp3" preload="auto" />
 
-      <div className="card filters-card escaneo-toolbar">
+      {/* Header móvil con menú hamburguesa */}
+      <div className="escaneo-mobile-header">
+        <button 
+          className="mobile-menu-btn-escaneo"
+          onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
+        >
+          {mobileMenuOpen ? <X size={24} /> : <ScanLine size={24} />}
+        </button>
+        <h2 className="mobile-title">Escaneo</h2>
+        <button 
+          className="fullscreen-btn"
+          onClick={() => setFullScreen(!fullScreen)}
+        >
+          {fullScreen ? <Minimize2 size={20} /> : <Maximize2 size={20} />}
+        </button>
+      </div>
+
+      {/* Panel móvil desplegable */}
+      <div className={`escaneo-mobile-panel ${mobileMenuOpen ? 'open' : ''}`}>
+        <div className="form-group">
+          <label>Inventario</label>
+          <select value={selectedInventario} onChange={(e) => setSelectedInventario(Number(e.target.value))}>
+            {inventarios.map((inv) => (
+              <option key={inv.id} value={inv.id}>{inv.nombre}</option>
+            ))}
+          </select>
+        </div>
+
+        {!isContador && (
+          <div className="form-group">
+            <label>Ronda de trabajo</label>
+            <select value={selectedRondaId || ''} onChange={(e) => setSelectedRondaId(e.target.value ? Number(e.target.value) : '')} disabled={rondas.length === 0}>
+              <option value="">Selecciona una ronda</option>
+              {rondas.map((ronda) => (
+                <option key={ronda.id} value={ronda.id}>
+                  Ronda {ronda.numeroRonda} - {ronda.estado}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+
+        <div className="last-update-mobile">
+          <Clock size={14} />
+          <span>{syncing ? 'Sincronizando...' : 'Listo'}</span>
+        </div>
+
+        <button className="btn btn-outline" onClick={handleRefresh}>
+          <RefreshCw size={16} className={syncing ? 'spin' : ''} />
+          <span>Actualizar</span>
+        </button>
+      </div>
+
+      {/* Toolbar desktop */}
+      <div className="card filters-card escaneo-toolbar desktop-only">
         <div className="filters-header">
           <div className="filters-form">
             <div className="form-group">
@@ -475,28 +527,29 @@ export default function EscaneoPage() {
             </button>
           </div>
         </div>
-
-        {selectedRonda ? (
-          <div className="escaneo-meta-grid">
-            <div className="escaneo-meta-item">
-              <span className="meta-label">Grupo</span>
-              <strong>{grupoAsignado?.nombre || 'Sin grupo'}</strong>
-            </div>
-            <div className="escaneo-meta-item">
-              <span className="meta-label">Zona</span>
-              <strong>{zonaRonda?.nombre || 'Sin zona'}{zonaRonda?.codigo ? ` (${zonaRonda.codigo})` : ''}</strong>
-            </div>
-            <div className="escaneo-meta-item">
-              <span className="meta-label">Tipo</span>
-              <strong>{selectedRonda.tipoRonda === 'reconteo' ? 'Reconteo' : 'Completa'}</strong>
-            </div>
-            <div className="escaneo-meta-item">
-              <span className="meta-label">Estado</span>
-              <span className={`status-chip ${selectedRonda.estado}`}>{selectedRonda.estado}</span>
-            </div>
-          </div>
-        ) : null}
       </div>
+
+      {/* Información de la ronda - siempre visible */}
+      {selectedRonda && (
+        <div className="escaneo-meta-grid">
+          <div className="escaneo-meta-item">
+            <span className="meta-label">Grupo</span>
+            <strong>{grupoAsignado?.nombre || 'Sin grupo'}</strong>
+          </div>
+          <div className="escaneo-meta-item">
+            <span className="meta-label">Zona</span>
+            <strong>{zonaRonda?.nombre || 'Sin zona'}{zonaRonda?.codigo ? ` (${zonaRonda.codigo})` : ''}</strong>
+          </div>
+          <div className="escaneo-meta-item">
+            <span className="meta-label">Tipo</span>
+            <strong>{selectedRonda.tipoRonda === 'reconteo' ? 'Reconteo' : 'Completa'}</strong>
+          </div>
+          <div className="escaneo-meta-item">
+            <span className="meta-label">Estado</span>
+            <span className={`status-chip ${selectedRonda.estado}`}>{selectedRonda.estado}</span>
+          </div>
+        </div>
+      )}
 
       {flash.text && (
         <div className={`alert-${flash.type === 'error' ? 'error' : flash.type === 'warning' ? 'warning' : 'success'}`}>
@@ -506,6 +559,7 @@ export default function EscaneoPage() {
 
       {selectedRonda ? (
         <>
+          {/* KPIs - responsive */}
           <div className="kpi-grid">
             <div className="card kpi-card">
               <div className="kpi-icon"><Boxes size={24} /></div>
@@ -530,6 +584,7 @@ export default function EscaneoPage() {
             </div>
           </div>
 
+          {/* Scanner y estado - responsive */}
           <div className="scan-layout">
             <div className="card scanner-shell">
               <div className="list-header">
@@ -551,7 +606,7 @@ export default function EscaneoPage() {
                     </button>
                   )}
                   <button className="btn btn-outline" onClick={handleExportGrupo} disabled={!grupoAsignado?.id || exporting}>
-                    <Download size={16} /><span>{exporting ? 'Exportando...' : 'Exportar grupo'}</span>
+                    <Download size={16} /><span>{exporting ? 'Exportando...' : 'Exportar'}</span>
                   </button>
                 </div>
               </div>
@@ -569,13 +624,6 @@ export default function EscaneoPage() {
                     autoCapitalize="off"
                     spellCheck="false"
                     disabled={!canScan}
-                    style={{ 
-                      fontFamily: 'monospace', 
-                      fontSize: '28px', 
-                      letterSpacing: '4px', 
-                      textAlign: 'center',
-                      fontWeight: 'bold'
-                    }}
                   />
                   <button className="btn btn-primary" type="submit" disabled={!canScan}>
                     {loadingScan ? '...' : 'Escanear'}
@@ -616,11 +664,14 @@ export default function EscaneoPage() {
                     <div className="escaneo-empty">No hay pendientes</div>
                   ) : (
                     <div className="pending-list">
-                      {pendientes.map((item) => (
+                      {pendientes.slice(0, 10).map((item) => (
                         <div key={`${item.sku}-${item.id}`} className="pending-item">
                           <div><strong>{item.sku}</strong><p className="pending-sku-desc">{item.descripcionSnapshot || 'Sin descripción'}</p></div>
                         </div>
                       ))}
+                      {pendientes.length > 10 && (
+                        <div className="pending-more">+{pendientes.length - 10} más</div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -628,21 +679,29 @@ export default function EscaneoPage() {
             </div>
           </div>
 
+          {/* Resumen e historial - responsive */}
           <div className="grid-2">
             <div className="card resumen-card">
               <div className="list-header"><h2 className="section-title"><Boxes size={20} /><span>Resumen por producto</span></h2></div>
               {resumen.length === 0 ? <div className="escaneo-empty">No hay escaneos</div> : (
-                <div className="table-container">
-                  <table className="data-table">
-                    <thead><tr><th>SKU</th><th>Descripción</th><th>Cantidad</th></tr></thead>
+                <div className="table-responsive-container">
+                  <table className="data-table resumen-table">
+                    <thead>
+                      <tr><th>SKU</th><th>Descripción</th><th>Cantidad</th></tr>
+                    </thead>
                     <tbody>
-                      {resumen.map((item, index) => (
+                      {resumen.slice(0, 15).map((item, index) => (
                         <tr key={`${item.sku || 'sku'}-${index}`}>
-                          <td><strong>{item.sku}</strong></td>
-                          <td>{item.descripcionSnapshot || 'Sin descripción'}</td>
-                          <td>{item.cantidadTotal}</td>
-                        </tr>
+                          <td data-label="SKU"><strong>{item.sku}</strong></td>
+                          <td data-label="Descripción">{item.descripcionSnapshot || 'Sin descripción'}</td>
+                          <td data-label="Cantidad" className="text-center">{item.cantidadTotal}</td>
+                        <tr>
                       ))}
+                      {resumen.length > 15 && (
+                        <tr className="more-items">
+                          <td colSpan="3" className="text-center">+{resumen.length - 15} productos más</td>
+                        </tr>
+                      )}
                     </tbody>
                   </table>
                 </div>
@@ -653,7 +712,7 @@ export default function EscaneoPage() {
               <div className="list-header"><h2 className="section-title"><History size={20} /><span>Historial reciente</span></h2></div>
               {history.length === 0 ? <div className="escaneo-empty">No hay lecturas</div> : (
                 <div className="history-list">
-                  {history.slice(0, 20).map((lectura) => (
+                  {history.slice(0, 15).map((lectura) => (
                     <div key={lectura.id} className={`history-item ${lectura.estado === 'anulada' ? 'anulada' : ''}`}>
                       <div className="history-main">
                         <strong>{lectura.codigoLeido}</strong>
@@ -661,7 +720,7 @@ export default function EscaneoPage() {
                       </div>
                       <div className="history-meta">
                         <span className="tag-muted">{formatOnlyTime(lectura.fechaHora)}</span>
-                        <span className={`status-chip mini ${lectura.estado}`}>{lectura.estado}</span>
+                        <span className={`status-chip mini ${lectura.estado}`}>{lectura.estado === 'valida' ? 'OK' : '❌'}</span>
                         {lectura.estado !== 'anulada' && (
                           <button className="icon-btn" onClick={() => handleAnularLectura(lectura.id)} title="Anular"><Trash2 size={14} /></button>
                         )}

@@ -10,7 +10,9 @@ import {
   Server,
   Search,
   Package,
-  MapPin
+  MapPin,
+  X,
+  Filter
 } from 'lucide-react';
 import { getInventarios } from '../../services/inventarios.service';
 import {
@@ -35,34 +37,42 @@ export default function ConteoInicialPage() {
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const [showFilters, setShowFilters] = useState(false);
+  const [zonaFiltro, setZonaFiltro] = useState('');
 
-  // Cargar el último inventario activo
   async function loadInventarioActivo() {
     try {
       const inventarios = await getInventarios();
       if (inventarios && inventarios.length > 0) {
-        // Tomar el último inventario creado o el activo
         const activo = inventarios.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0];
         setInventarioActivo(activo);
         return activo.id;
       }
+      setInventarioActivo(null);
       return null;
     } catch (err) {
+      console.error('Error cargando inventarios:', err);
       setError('No se pudo cargar el inventario activo');
+      setInventarioActivo(null);
       return null;
     }
   }
 
   async function loadResumen(inventarioId) {
-    if (!inventarioId) return;
+    if (!inventarioId) {
+      setResumen([]);
+      setFilteredResumen([]);
+      return;
+    }
     try {
       const data = await getConteoInicialResumen(inventarioId);
-      setResumen(data);
-      setFilteredResumen(data);
+      setResumen(data || []);
+      setFilteredResumen(data || []);
     } catch (err) {
+      console.error('Error cargando resumen:', err);
       setError('No se pudo cargar el resumen');
-    } finally {
-      setLoading(false);
+      setResumen([]);
+      setFilteredResumen([]);
     }
   }
 
@@ -77,33 +87,38 @@ export default function ConteoInicialPage() {
 
   useEffect(() => {
     async function init() {
+      setLoading(true);
       const inventarioId = await loadInventarioActivo();
-      if (inventarioId) {
-        await loadResumen(inventarioId);
-      }
+      await loadResumen(inventarioId);
       await checkSqlServerStatus();
+      setLoading(false);
     }
     init();
   }, []);
 
-  // Filtrar por búsqueda
+  // Filtrar por búsqueda y zona
   useEffect(() => {
-    if (!searchTerm.trim()) {
-      setFilteredResumen(resumen);
-    } else {
+    let filtered = [...resumen];
+    
+    if (searchTerm.trim()) {
       const term = searchTerm.toLowerCase();
-      const filtered = resumen.filter(item =>
+      filtered = filtered.filter(item =>
         item.sku?.toLowerCase().includes(term) ||
         item.descripcion?.toLowerCase().includes(term)
       );
-      setFilteredResumen(filtered);
     }
-  }, [searchTerm, resumen]);
+    
+    if (zonaFiltro) {
+      filtered = filtered.filter(item => item.zona === zonaFiltro);
+    }
+    
+    setFilteredResumen(filtered);
+  }, [searchTerm, resumen, zonaFiltro]);
 
   const handleImportExcel = async (e) => {
     e.preventDefault();
     if (!inventarioActivo) {
-      setError('No hay inventario activo');
+      setError('No hay inventario activo. Crea un inventario primero.');
       return;
     }
     if (!file) {
@@ -134,7 +149,7 @@ export default function ConteoInicialPage() {
 
   const handleSyncFromSqlServer = async () => {
     if (!inventarioActivo) {
-      setError('No hay inventario activo');
+      setError('No hay inventario activo. Crea un inventario primero.');
       return;
     }
 
@@ -176,24 +191,26 @@ export default function ConteoInicialPage() {
     }
   };
 
-  useEffect(() => {
-    if (filteredResumen.length > 0) {
-      const test = filteredResumen.slice(0, 5);
-      console.log('Primeros 5 productos:', test);
-      console.log('Suma total:', filteredResumen.reduce((s, i) => s + (i.total || 0), 0));
-    }
-  }, [filteredResumen]); const totalProductos = filteredResumen.length;
+  // Obtener zonas únicas para el filtro
+  const zonasUnicas = [...new Set(resumen.map(item => item.zona).filter(Boolean))];
+
+  const totalProductos = filteredResumen.length;
   const totalUnidades = filteredResumen.reduce((sum, item) => sum + (Number(item.total) || 0), 0);
   const totalBodega = filteredResumen.reduce((sum, item) => sum + (Number(item.cantidadBodega) || 0), 0);
   const totalExhibicion = filteredResumen.reduce((sum, item) => sum + (Number(item.cantidadExhibicion) || 0), 0);
 
-  console.log('Debug KPIs:', { totalProductos, totalUnidades, totalBodega, totalExhibicion });
-
-  if (loading) return <div className="card">Cargando...</div>;
+  if (loading) {
+    return (
+      <div className="card loading-card">
+        <div className="loading-spinner" />
+        <p>Cargando módulo de conteo inicial...</p>
+      </div>
+    );
+  }
 
   return (
     <div className="dashboard-container">
-      {/* Tarjetas de resumen */}
+      {/* Tarjetas de resumen - responsive */}
       <div className="kpi-grid">
         <div className="card kpi-card">
           <div className="kpi-icon"><Package size={24} /></div>
@@ -225,9 +242,17 @@ export default function ConteoInicialPage() {
         </div>
       </div>
 
-      {/* Importadores */}
-      <div className="grid-2">
-        <div className="card">
+      {/* Mensaje si no hay inventario activo */}
+      {!inventarioActivo && (
+        <div className="alert-warning">
+          <AlertCircle size={18} />
+          <span>No hay inventarios activos. Ve a la sección "Inventarios" y crea uno.</span>
+        </div>
+      )}
+
+      {/* Importadores - responsive */}
+      <div className="importadores-grid">
+        <div className="card importador-card">
           <h2 className="section-title"><FileSpreadsheet size={20} /> Importar desde Excel</h2>
           <form onSubmit={handleImportExcel}>
             <div className="form-group">
@@ -237,28 +262,29 @@ export default function ConteoInicialPage() {
                 type="file"
                 accept=".xlsx, .xls"
                 onChange={(e) => setFile(e.target.files?.[0] || null)}
+                disabled={!inventarioActivo}
               />
             </div>
-            <button className="btn btn-primary" type="submit" disabled={importing}>
+            <button className="btn btn-primary" type="submit" disabled={importing || !inventarioActivo}>
               {importing ? 'Importando...' : <><Upload size={16} /> Importar Excel</>}
             </button>
           </form>
         </div>
 
-        <div className="card">
+        <div className="card importador-card">
           <h2 className="section-title"><Server size={20} /> Descargar plantilla</h2>
           <p className="muted">
-            Descarga la plantilla con el formato correcto para importar inventario desde Melissa.
+            Descarga la plantilla con el formato correcto para importar inventario.
           </p>
           <button className="btn btn-outline" onClick={handleDescargarPlantilla}>
-            <Download size={16} /> Descargar plantilla Melissa
+            <Download size={16} /> Descargar plantilla
           </button>
         </div>
       </div>
 
       {/* Estado de SQL Server */}
       {sqlServerStatus && (
-        <div className={`alert-${sqlServerStatus.connected ? 'success' : 'warning'}`}>
+        <div className={`sql-status ${sqlServerStatus.connected ? 'connected' : 'disconnected'}`}>
           <Server size={18} />
           <span>
             SQL Server: {sqlServerStatus.connected ? 'Conectado' : 'Desconectado'}
@@ -266,7 +292,7 @@ export default function ConteoInicialPage() {
             {sqlServerStatus.error && ` - ${sqlServerStatus.error}`}
           </span>
           {!sqlServerStatus.connected && (
-            <button className="btn btn-outline ml-2" onClick={handleSyncFromSqlServer} disabled={syncing}>
+            <button className="btn btn-outline" onClick={handleSyncFromSqlServer} disabled={syncing || !inventarioActivo}>
               <RefreshCw size={14} className={syncing ? 'spin' : ''} />
               <span>Reintentar</span>
             </button>
@@ -274,58 +300,95 @@ export default function ConteoInicialPage() {
         </div>
       )}
 
-      {/* Buscador */}
-      <div className="card">
-        <div className="search-row">
-          <Search size={18} />
-          <input
-            type="text"
-            placeholder="Buscar por código o descripción..."
-            value={searchTerm}
-            onChange={(e) => setSearchTerm(e.target.value)}
-          />
-        </div>
-      </div>
-
-      {/* Tabla de productos */}
-      <div className="card">
-        <div className="list-header">
-          <h2 className="section-title"><Database size={20} /> Productos</h2>
-          <button className="btn btn-outline" onClick={() => window.location.href = `/api/v1/conteo-inicial/exportar?inventarioId=${inventarioActivo?.id}`}>
-            <Download size={16} /> Exportar Excel
+      {/* Buscador y filtros - responsive */}
+      <div className="card filtros-card">
+        <div className="filtros-header">
+          <div className="search-box">
+            <Search size={18} />
+            <input
+              type="text"
+              placeholder="Buscar por código o descripción..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              disabled={resumen.length === 0}
+            />
+          </div>
+          <button 
+            className="btn btn-outline filtros-toggle"
+            onClick={() => setShowFilters(!showFilters)}
+          >
+            <Filter size={16} />
+            <span>Filtros {zonaFiltro && <span className="filtro-activo">(1)</span>}</span>
           </button>
         </div>
 
-        {filteredResumen.length === 0 ? (
-          <p className="muted">No hay datos. Importa un archivo o sincroniza desde SQL Server.</p>
+        {showFilters && (
+          <div className="filtros-panel">
+            <div className="filtro-group">
+              <label>Filtrar por zona</label>
+              <select value={zonaFiltro} onChange={(e) => setZonaFiltro(e.target.value)}>
+                <option value="">Todas las zonas</option>
+                {zonasUnicas.map(zona => (
+                  <option key={zona} value={zona}>{zona}</option>
+                ))}
+              </select>
+            </div>
+            {zonaFiltro && (
+              <button className="btn btn-sm btn-outline" onClick={() => setZonaFiltro('')}>
+                <X size={14} /> Limpiar filtro
+              </button>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Tabla de productos - responsive con scroll */}
+      <div className="card tabla-card">
+        <div className="tabla-header">
+          <h2 className="section-title"><Database size={20} /> Productos</h2>
+          {inventarioActivo && resumen.length > 0 && (
+            <button className="btn btn-outline" onClick={() => window.location.href = `/api/v1/conteo-inicial/exportar?inventarioId=${inventarioActivo.id}`}>
+              <Download size={16} /> Exportar
+            </button>
+          )}
+        </div>
+
+        {resumen.length === 0 ? (
+          <div className="empty-state">
+            <Database size={48} className="text-muted" />
+            <p>No hay datos de conteo inicial.</p>
+            <p className="muted">Importa un archivo Excel o sincroniza desde SQL Server para comenzar.</p>
+          </div>
         ) : (
-          <div className="table-container">
-            <table className="data-table">
+          <div className="table-responsive-container">
+            <table className="data-table responsive-table">
               <thead>
                 <tr>
                   <th>Zona</th>
                   <th>SKU</th>
                   <th>Descripción</th>
-                  <th>Bodega</th>
-                  <th>Exhibición</th>
-                  <th>Total</th>
+                  <th className="text-center">Bodega</th>
+                  <th className="text-center">Exhibición</th>
+                  <th className="text-center">Total</th>
                   <th>Origen</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredResumen.map((item, idx) => (
                   <tr key={idx}>
-                    <td>{item.zona || 'N/A'}</td>
-                    <td><strong>{item.sku}</strong></td>
-                    <td>{item.descripcion || 'Sin descripción'}</td>
-                    <td className={item.cantidadBodega > 0 ? 'text-primary' : 'text-muted'}>
+                    <td data-label="Zona">{item.zona || 'N/A'}</td>
+                    <td data-label="SKU"><strong>{item.sku}</strong></td>
+                    <td data-label="Descripción">{item.descripcion || 'Sin descripción'}</td>
+                    <td data-label="Bodega" className={item.cantidadBodega > 0 ? 'text-primary' : 'text-muted'}>
                       {item.cantidadBodega?.toLocaleString() || 0}
                     </td>
-                    <td className={item.cantidadExhibicion > 0 ? 'text-primary' : 'text-muted'}>
+                    <td data-label="Exhibición" className={item.cantidadExhibicion > 0 ? 'text-primary' : 'text-muted'}>
                       {item.cantidadExhibicion?.toLocaleString() || 0}
                     </td>
-                    <td className="text-success"><strong>{item.total?.toLocaleString() || 0}</strong></td>
-                    <td>{item.origen || 'Manual'}</td>
+                    <td data-label="Total" className="text-success">
+                      <strong>{item.total?.toLocaleString() || 0}</strong>
+                    </td>
+                    <td data-label="Origen">{item.origen || 'Manual'}</td>
                   </tr>
                 ))}
               </tbody>

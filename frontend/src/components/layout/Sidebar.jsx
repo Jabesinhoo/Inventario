@@ -10,11 +10,12 @@ import {
   Layers3,
   ClipboardList,
   Eye,
-  UserCog
+  UserCog,
+  X
 } from 'lucide-react';
 import { useAuth } from '../../hooks/useAuth';
 
-export default function Sidebar() {
+export default function Sidebar({ isOpen = false, onClose = () => {} }) {
   const auth = useAuth();
 
   const rolRaw = auth?.user?.rol || auth?.user?.rol?.nombre || '';
@@ -32,7 +33,7 @@ export default function Sidebar() {
 
   // Items que ven ADMIN y SUPERVISOR
   const itemsComunes = [
-    { to: '/supervisor', label: 'Dashboard Supervisor', icon: Eye },  // ← AMBOS ven esto
+    { to: '/supervisor', label: 'Dashboard Supervisor', icon: Eye },
     { to: '/inventarios', label: 'Inventarios', icon: ClipboardList },
     { to: '/zonas', label: 'Zonas', icon: LayoutGrid },
     { to: '/grupos', label: 'Grupos', icon: Users },
@@ -47,11 +48,6 @@ export default function Sidebar() {
     { to: '/', label: 'Dashboard Admin', icon: BarChart3 }
   ];
 
-  // Items solo para SUPERVISOR (además de los comunes)
-  const itemsSupervisorAdicionales = [
-    // Supervisor no tiene dashboard admin adicional
-  ];
-
   // Items para CONTADOR
   const itemsContador = [
     { to: '/escaneo', label: 'Escaneo', icon: ScanLine },
@@ -61,10 +57,8 @@ export default function Sidebar() {
   let items = [];
   
   if (isAdmin) {
-    // Admin: itemsAdminAdicionales + itemsComunes + itemsAdminOnly
     items = [...itemsAdminAdicionales, ...itemsComunes, ...itemsAdminOnly];
   } else if (isSupervisor) {
-    // Supervisor: itemsComunes solamente
     items = [...itemsComunes];
   } else if (isContador) {
     items = itemsContador;
@@ -72,8 +66,19 @@ export default function Sidebar() {
     items = itemsContador;
   }
 
+  const handleLinkClick = () => {
+    if (window.innerWidth <= 768) {
+      onClose();
+    }
+  };
+
   return (
-    <aside className="sidebar">
+    <aside className={`sidebar ${isOpen ? 'sidebar-open' : ''}`}>
+      {/* Botón cerrar dentro del sidebar para móvil */}
+      <button className="sidebar-close-btn" onClick={onClose} aria-label="Cerrar menú">
+        <X size={20} />
+      </button>
+
       <div className="sidebar-brand">
         <div className="brand-title">Inventario App</div>
         <div className="brand-role">
@@ -92,6 +97,7 @@ export default function Sidebar() {
               className={({ isActive }) =>
                 `sidebar-link ${isActive ? 'active' : ''}`
               }
+              onClick={handleLinkClick}
             >
               <span className="sidebar-link-inner">
                 <Icon size={18} />

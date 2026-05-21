@@ -16,7 +16,9 @@ import {
   Edit2,
   Trash2,
   Search,
-  MapPin
+  MapPin,
+  ChevronDown,
+  ChevronUp
 } from 'lucide-react';
 import {
   getGrupos,
@@ -33,7 +35,6 @@ import { getInventarios } from '../../services/inventarios.service';
 import { getUsuarios } from '../../services/usuarios.service';
 import { getZonas } from '../../services/zonas.service';
 import { getRondaActivaDelGrupo } from '../../services/rondas.service';
-import api from '../../services/api';
 
 export default function GruposPage() {
   const [inventarios, setInventarios] = useState([]);
@@ -55,6 +56,7 @@ export default function GruposPage() {
   const [searchTerm, setSearchTerm] = useState('');
   const [searchLider, setSearchLider] = useState('');
   const [searchZona, setSearchZona] = useState('');
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const [form, setForm] = useState({
     inventarioId: '',
     nombre: '',
@@ -126,7 +128,6 @@ export default function GruposPage() {
         setLideresDisponibles(data);
         return;
       }
-
       const data = await getUsuarios();
       setLideresDisponibles(data);
     } catch (err) {
@@ -219,10 +220,12 @@ export default function GruposPage() {
       cargarLideresDisponibles();
     }
   }, [form.inventarioId]);
+
   useEffect(() => {
     setSearchLider('');
     setSearchZona('');
   }, [form.inventarioId, editing]);
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     setSaving(true);
@@ -281,8 +284,6 @@ export default function GruposPage() {
   };
 
   const miembrosDelGrupo = grupoSeleccionado?.miembros || [];
-  const lider = usuarios.find(u => u.id === grupoSeleccionado?.liderId);
-  const zonaAsignada = grupoSeleccionado?.zonaAsignada || null;
   const usuariosAsignadosEnInventario = new Set(
     grupos.flatMap(g => (g.miembros || []).map(u => u.id))
   );
@@ -291,7 +292,6 @@ export default function GruposPage() {
     u => !usuariosAsignadosEnInventario.has(u.id)
   ).length;
 
-  // Líderes ya ocupados en otros grupos del inventario actual
   const lideresOcupados = new Set(
     grupos
       .filter(g => !editing || g.id !== editing)
@@ -299,7 +299,6 @@ export default function GruposPage() {
       .filter(Boolean)
   );
 
-  // Zonas ya ocupadas en otros grupos del inventario actual
   const zonasOcupadas = new Set(
     grupos
       .filter(g => !editing || g.id !== editing)
@@ -307,7 +306,6 @@ export default function GruposPage() {
       .filter(Boolean)
   );
 
-  // Filtro de líderes con búsqueda
   const lideresFiltrados = lideresDisponibles.filter(user => {
     const texto = `${user.nombre || ''} ${user.email || ''}`.toLowerCase();
     const coincide = texto.includes(searchLider.toLowerCase());
@@ -317,7 +315,6 @@ export default function GruposPage() {
     );
   });
 
-  // Filtro de zonas con búsqueda
   const zonasFiltradas = zonas.filter(zona => {
     const texto = `${zona.nombre || ''} ${zona.codigo || ''}`.toLowerCase();
     const coincide = texto.includes(searchZona.toLowerCase());
@@ -327,7 +324,6 @@ export default function GruposPage() {
     );
   });
 
-  // Filtrar miembros disponibles por búsqueda
   const miembrosDisponiblesFiltrados = miembrosDisponibles.filter(user =>
     user.nombre?.toLowerCase().includes(searchTerm.toLowerCase()) ||
     user.email?.toLowerCase().includes(searchTerm.toLowerCase())
@@ -337,7 +333,7 @@ export default function GruposPage() {
 
   return (
     <div className="dashboard-container">
-      {/* Tarjetas de resumen */}
+      {/* Tarjetas de resumen - responsive */}
       <div className="kpi-grid">
         <div className="card kpi-card">
           <div className="kpi-icon"><Users size={24} /></div>
@@ -362,13 +358,15 @@ export default function GruposPage() {
         </div>
       </div>
 
-      <div className="grid-2">
+      <div className="grupos-layout">
         {/* Formulario de creación/edición */}
-        <div className="card">
-          <h2 className="section-title">
-            <Users size={20} />
-            <span>{editing ? 'Editar grupo' : 'Crear grupo'}</span>
-          </h2>
+        <div className="card formulario-card">
+          <div className="formulario-header">
+            <h2 className="section-title">
+              <Users size={20} />
+              <span>{editing ? 'Editar grupo' : 'Crear grupo'}</span>
+            </h2>
+          </div>
 
           <form onSubmit={handleSubmit}>
             <div className="form-group">
@@ -397,8 +395,7 @@ export default function GruposPage() {
 
             <div className="form-group">
               <label><Crown size={14} /> Líder del grupo</label>
-
-              <div className="search-usuarios" style={{ marginBottom: '8px' }}>
+              <div className="search-usuarios">
                 <Search size={16} />
                 <input
                   type="text"
@@ -407,7 +404,6 @@ export default function GruposPage() {
                   onChange={(e) => setSearchLider(e.target.value)}
                 />
               </div>
-
               <select
                 value={form.liderId}
                 onChange={(e) => setForm(prev => ({ ...prev, liderId: Number(e.target.value) || '' }))}
@@ -415,28 +411,11 @@ export default function GruposPage() {
                 <option value="">Selecciona un líder</option>
                 {lideresFiltrados.map(user => (
                   <option key={user.id} value={user.id}>
-                    {user.nombre} ({user.email}) - {
-                      user.rol === 'admin' || user.rol?.nombre === 'admin'
-                        ? 'Admin'
-                        : user.rol === 'supervisor' || user.rol?.nombre === 'supervisor'
-                          ? 'Supervisor'
-                          : 'Contador'
-                    }
+                    {user.nombre} ({user.email}) - {user.rol === 'admin' || user.rol?.nombre === 'admin' ? 'Admin' : user.rol === 'supervisor' || user.rol?.nombre === 'supervisor' ? 'Supervisor' : 'Contador'}
                   </option>
                 ))}
               </select>
-
-              {lideresFiltrados.length === 0 && (
-                <small className="text-muted">
-                  No hay líderes disponibles con ese filtro.
-                </small>
-              )}
-
-              {form.liderId && (
-                <small className="text-muted">
-                  El líder puede gestionar el grupo y ver estadísticas.
-                </small>
-              )}
+              {form.liderId && <small className="text-muted">El líder puede gestionar el grupo y ver estadísticas.</small>}
             </div>
 
             <div className="form-group">
@@ -468,8 +447,7 @@ export default function GruposPage() {
 
             <div className="form-group">
               <label><MapPin size={14} /> Zona asignada (opcional)</label>
-
-              <div className="search-usuarios" style={{ marginBottom: '8px' }}>
+              <div className="search-usuarios">
                 <Search size={16} />
                 <input
                   type="text"
@@ -478,7 +456,6 @@ export default function GruposPage() {
                   onChange={(e) => setSearchZona(e.target.value)}
                 />
               </div>
-
               <select
                 value={form.zonaId}
                 onChange={(e) => setForm(prev => ({ ...prev, zonaId: Number(e.target.value) || '' }))}
@@ -490,16 +467,7 @@ export default function GruposPage() {
                   </option>
                 ))}
               </select>
-
-              {zonasFiltradas.length === 0 && (
-                <small className="text-muted">
-                  No hay zonas disponibles con ese filtro.
-                </small>
-              )}
-
-              <small className="text-muted">
-                Puedes asignar la zona ahora o después en Asignaciones.
-              </small>
+              <small className="text-muted">Puedes asignar la zona ahora o después en Asignaciones.</small>
             </div>
 
             {message && <div className="alert-success">{message}</div>}
@@ -524,10 +492,10 @@ export default function GruposPage() {
         </div>
 
         {/* Lista de grupos */}
-        <div className="card">
+        <div className="card lista-card">
           <div className="list-header">
             <h2 className="section-title"><Users size={20} /><span>Grupos</span></h2>
-            <div className="form-group filter-group">
+            <div className="filtro-inventario">
               <label>Filtrar por inventario</label>
               <select value={inventarioFiltro} onChange={(e) => setInventarioFiltro(Number(e.target.value))}>
                 <option value="">Selecciona</option>
@@ -541,26 +509,28 @@ export default function GruposPage() {
           {grupos.length === 0 ? (
             <p className="muted">No hay grupos para este inventario.</p>
           ) : (
-            <div className="table-list">
+            <div className="grupos-list">
               {grupos.map(grupo => {
                 const liderGrupo = usuarios.find(u => u.id === grupo.liderId);
                 const miembros = grupo.miembros || [];
                 return (
                   <div
                     key={grupo.id}
-                    className={`list-row ${grupoSeleccionado?.id === grupo.id ? 'selected' : ''}`}
-                    style={{ borderLeftColor: grupo.color || '#3b82f6', borderLeftWidth: '4px' }}
+                    className={`grupo-card ${grupoSeleccionado?.id === grupo.id ? 'selected' : ''}`}
+                    style={{ borderLeftColor: grupo.color || '#3b82f6' }}
                     onClick={() => verDetalleGrupo(grupo)}
                   >
-                    <div className="grupo-info">
-                      <div className="grupo-header">
+                    <div className="grupo-card-info">
+                      <div className="grupo-card-header">
                         <span className="grupo-color" style={{ background: grupo.color || '#3b82f6' }} />
-                        <strong>{grupo.nombre}</strong>
-                        {liderGrupo && <span className="badge leader">👑 {liderGrupo.nombre}</span>}
+                        <strong className="grupo-nombre">{grupo.nombre}</strong>
+                      </div>
+                      <div className="grupo-card-meta">
+                        {liderGrupo && <span className="badge leader">Líder: {liderGrupo.nombre}</span>}
                         <span className="badge">{miembros.length} miembros</span>
                       </div>
                     </div>
-                    <div className="grupo-actions" onClick={(e) => e.stopPropagation()}>
+                    <div className="grupo-card-actions" onClick={(e) => e.stopPropagation()}>
                       <button className="icon-btn" onClick={() => handleEdit(grupo)}>
                         <Edit2 size={16} />
                       </button>
@@ -576,16 +546,13 @@ export default function GruposPage() {
         </div>
       </div>
 
-      {/* Detalle del grupo seleccionado */}
+      {/* Detalle del grupo seleccionado - Responsive */}
       {grupoSeleccionado && (
-        <div className="grupo-detalle">
-          <div className="card">
-            <div className="detail-header">
+        <div className="grupo-detalle-mobile">
+          <div className="card detalle-card">
+            <div className="detalle-header">
               <h2 className="section-title">
-                <div
-                  className="grupo-color-badge"
-                  style={{ background: grupoSeleccionado.color || '#3b82f6' }}
-                />
+                <div className="grupo-color-badge" style={{ background: grupoSeleccionado.color || '#3b82f6' }} />
                 <span>Detalle: {grupoSeleccionado.nombre}</span>
               </h2>
               <button className="icon-btn" onClick={() => setGrupoSeleccionado(null)}>
@@ -593,104 +560,69 @@ export default function GruposPage() {
               </button>
             </div>
 
-            {/* Estadísticas del grupo */}
-            <div className="grupo-stats-grid">
-              <div className="grupo-stat-card">
-                <div className="stat-icon">
-                  <Trophy size={24} />
-                </div>
-                <div className="stat-content">
-                  <div className="stat-label">Total escaneos</div>
-                  <div className="stat-value">{estadisticas?.total_escaneos || 0}</div>
+            {/* Estadísticas del grupo - responsive */}
+            <div className="estadisticas-grid">
+              <div className="estadistica-card">
+                <div className="estadistica-icon"><Trophy size={20} /></div>
+                <div className="estadistica-content">
+                  <div className="estadistica-label">Total escaneos</div>
+                  <div className="estadistica-value">{estadisticas?.total_escaneos || 0}</div>
                 </div>
               </div>
-
-              <div className="grupo-stat-card">
-                <div className="stat-icon">
-                  <Clock size={24} />
-                </div>
-                <div className="stat-content">
-                  <div className="stat-label">Tiempo activo</div>
-                  <div className="stat-value">{estadisticas?.tiempo_activo || '0h'}</div>
+              <div className="estadistica-card">
+                <div className="estadistica-icon"><Clock size={20} /></div>
+                <div className="estadistica-content">
+                  <div className="estadistica-label">Tiempo activo</div>
+                  <div className="estadistica-value">{estadisticas?.tiempo_activo || '0h'}</div>
                 </div>
               </div>
-              <div className="grupo-stat-card">
-                <div className="stat-icon warning">
-                  <AlertTriangle size={24} />
-                </div>
-                <div className="stat-content">
-                  <div className="stat-label">Diferencias</div>
-                  <div className="stat-value">{estadisticas?.no_reconocidos || 0}</div>
+              <div className="estadistica-card">
+                <div className="estadistica-icon warning"><AlertTriangle size={20} /></div>
+                <div className="estadistica-content">
+                  <div className="estadistica-label">Diferencias</div>
+                  <div className="estadistica-value">{estadisticas?.no_reconocidos || 0}</div>
                 </div>
               </div>
             </div>
 
             {/* Ronda activa */}
             {rondaActiva && (
-              <div className="ronda-activa-alert">
-                <Activity size={18} />
+              <div className="ronda-activa">
+                <Activity size={16} />
                 <span>Ronda activa: {rondaActiva.numeroRonda} - Zona: {rondaActiva.zona?.nombre}</span>
               </div>
             )}
-            {grupoSeleccionado?.zonaAsignada ? (
-              <div className="alert-info" style={{ marginBottom: '12px' }}>
-                <MapPin size={16} />
-                <span>
-                  Zona asignada: {grupoSeleccionado.zonaAsignada.nombre} ({grupoSeleccionado.zonaAsignada.codigo})
-                </span>
-              </div>
-            ) : (
-              <div className="alert-info" style={{ marginBottom: '12px' }}>
-                <MapPin size={16} />
-                <span>Este grupo todavía no tiene zona asignada.</span>
-              </div>
-            )}
-            <div className="zona-asignada">
-              <h3><MapPin size={16} /> Zona asignada</h3>
-              {zonaAsignada ? (
-                <div className="zona-info">
-                  <span className="zona-nombre">{zonaAsignada.nombre}</span>
-                  <span className="zona-codigo">({zonaAsignada.codigo})</span>
-                </div>
-              ) : (
-                <p className="muted">No hay zona asignada. Ve a Asignaciones para asignar una zona.</p>
-              )}
+
+            {/* Zona asignada */}
+            <div className="zona-info-card">
+              <MapPin size={16} />
+              <span>
+                {grupoSeleccionado?.zonaAsignada 
+                  ? `Zona asignada: ${grupoSeleccionado.zonaAsignada.nombre} (${grupoSeleccionado.zonaAsignada.codigo})`
+                  : 'Este grupo todavía no tiene zona asignada.'}
+              </span>
             </div>
 
+            {/* Miembros del grupo */}
             <div className="miembros-section">
               <h3>Miembros del grupo ({miembrosDelGrupo.length})</h3>
-              <div className="miembros-list">
+              <div className="miembros-list-responsive">
                 {miembrosDelGrupo.map(miembro => (
-                  <div key={miembro.id} className="miembro-item">
+                  <div key={miembro.id} className="miembro-card">
                     <div className="miembro-info">
                       <div className="miembro-nombre">
                         <strong>{miembro.nombre}</strong>
                         {miembro.id === grupoSeleccionado?.liderId && (
-                          <span className="lider-badge">
-                            <Crown size={10} /> Líder
-                          </span>
+                          <span className="lider-badge">Líder</span>
                         )}
                       </div>
-                      <div className="miembro-email">
-                        <span>{miembro.email}</span>
-                        <span className={`miembro-rol rol-${miembro.rol?.nombre === 'admin' ? 'admin' :
-                          miembro.rol?.nombre === 'supervisor' ? 'supervisor' : 'contador'
-                          }`}>
-                          {miembro.rol?.nombre || (miembro.rolId === 1 ? 'Admin' : miembro.rolId === 2 ? 'Supervisor' : 'Contador')}
-                        </span>
-                      </div>
+                      <div className="miembro-email">{miembro.email}</div>
+                      <div className="miembro-rol">{miembro.rol?.nombre || (miembro.rolId === 1 ? 'Admin' : miembro.rolId === 2 ? 'Supervisor' : 'Contador')}</div>
                     </div>
                     {miembro.id !== grupoSeleccionado?.liderId && (
-                      <button
-                        className="btn-remover"
-                        onClick={() => removerUsuario(miembro.id)}
-                        title="Remover del grupo"
-                      >
+                      <button className="btn-remover" onClick={() => removerUsuario(miembro.id)}>
                         <UserMinus size={16} />
                       </button>
-                    )}
-                    {miembro.id === grupoSeleccionado?.liderId && (
-                      <span className="lider-nota">No se puede remover al líder</span>
                     )}
                   </div>
                 ))}
@@ -704,13 +636,8 @@ export default function GruposPage() {
             </div>
 
             {/* Asignar nuevos miembros */}
-            <div className="asignar-section">
-              <h3>
-                <UserPlus size={18} />
-                Asignar usuario al grupo
-              </h3>
-
-              {/* Buscador de usuarios */}
+            <div className="asignar-section-responsive">
+              <h3><UserPlus size={18} /> Asignar usuario al grupo</h3>
               <div className="search-usuarios">
                 <Search size={16} />
                 <input
@@ -720,29 +647,16 @@ export default function GruposPage() {
                   onChange={(e) => setSearchTerm(e.target.value)}
                 />
               </div>
-
-              {miembrosDisponiblesFiltrados.length === 0 && miembrosDisponibles.length > 0 && (
-                <div className="alert-info">
-                  <span>No hay usuarios que coincidan con la búsqueda.</span>
-                </div>
-              )}
-
               {miembrosDisponibles.length === 0 && (
-                <div className="alert-info">
-                  <span>No hay usuarios disponibles para asignar. Todos los usuarios ya están en otros grupos o son líderes.</span>
-                </div>
+                <div className="alert-info">No hay usuarios disponibles para asignar.</div>
               )}
-
               {miembrosDisponiblesFiltrados.length > 0 && (
-                <div className="usuario-selector">
+                <div className="usuario-selector-responsive">
                   <select id="usuario-select" defaultValue="">
                     <option value="" disabled>Selecciona un usuario</option>
                     {miembrosDisponiblesFiltrados.map(user => (
                       <option key={user.id} value={user.id}>
-                        {user.nombre} ({user.email}) - {
-                          user.rol === 'admin' ? 'Admin' :
-                            user.rol === 'supervisor' ? 'Supervisor' : 'Contador'
-                        }
+                        {user.nombre} ({user.email})
                       </option>
                     ))}
                   </select>
