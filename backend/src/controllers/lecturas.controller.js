@@ -781,6 +781,9 @@ async function scanLecturaRonda(req, res, next) {
     next(error);
   }
 }
+
+
+
 // ==================== ANULAR LECTURA ====================
 
 async function anularLectura(req, res, next) {
@@ -1276,6 +1279,7 @@ console.log('📦 Exportando controlador de lecturas. Funciones:', {
   agregarLecturaManual: typeof agregarLecturaManual
 });
 
+
 module.exports = {
   scanLectura,
   scanLecturaRonda,
@@ -1285,5 +1289,5 @@ module.exports = {
   getEstadisticasGrupo,
   exportarResultadosGrupo,
   buildWherePendienteReconteo,
-  agregarLecturaManual
+  agregarLecturaManual  // ← Agregar esta línea
 };

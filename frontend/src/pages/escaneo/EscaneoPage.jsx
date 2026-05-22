@@ -19,7 +19,9 @@ import {
   Maximize2,
   Minimize2,
   Database,
-  GitCompareArrows
+  GitCompareArrows,
+  Edit3,
+  Plus
 } from 'lucide-react';
 import {
   scanLecturaRonda,
@@ -27,7 +29,8 @@ import {
   getResumenLecturas,
   getHistorialLecturas,
   getEstadisticasGrupo,
-  exportarResultadosGrupo
+  exportarResultadosGrupo,
+  agregarLecturaManual
 } from '../../services/lecturas.service';
 import {
   getMisRondasParaEscaneo,
@@ -79,6 +82,13 @@ export default function EscaneoPage() {
   const [showZoneWarning, setShowZoneWarning] = useState(false);
   const [zoneWarningInfo, setZoneWarningInfo] = useState(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  // Modal entrada manual
+  const [showManualModal, setShowManualModal] = useState(false);
+  const [manualSku, setManualSku] = useState('');
+  const [manualCantidad, setManualCantidad] = useState(1);
+  const [manualRepeticiones, setManualRepeticiones] = useState(1);
+  const [loadingManual, setLoadingManual] = useState(false);
 
   // Estado para inventario anterior (pareja)
   const [inventarioPareja, setInventarioPareja] = useState(null);
@@ -178,15 +188,15 @@ export default function EscaneoPage() {
 
     try {
       const pareja = await getParejaInventario(inventarioId);
-      
+
       if (pareja && pareja.inventarioParejaId) {
         setInventarioPareja(pareja);
-        
+
         const resumenData = await getResumenLecturas({
           inventarioId: pareja.inventarioParejaId,
           zonaId: zonaId || null
         });
-        
+
         setParejaResumen(resumenData || []);
       } else {
         setInventarioPareja(null);
@@ -283,6 +293,12 @@ export default function EscaneoPage() {
           extractArray(rawPendientesValue, ['pendientes']) ||
           [];
         pendientesRows = Array.isArray(pendientesRows) ? pendientesRows : [];
+
+        // Marcar recontados basado en resumen actual
+        pendientesRows = pendientesRows.map(p => ({
+          ...p,
+          recontado: resumen.some(r => r.sku === p.sku && r.cantidadTotal > 0)
+        }));
       }
 
       setResumen(resumenRows);
@@ -294,7 +310,7 @@ export default function EscaneoPage() {
     } finally {
       setSyncing(false);
     }
-  }, []);
+  }, [resumen]);
 
   // Cargar inventario pareja cuando cambia la ronda
   useEffect(() => {
@@ -323,19 +339,19 @@ export default function EscaneoPage() {
       setFlashMessage('No hay conexión a internet para sincronizar', 'warning');
       return;
     }
-    
+
     if (offlineSyncing) {
       console.log('Ya hay una sincronización en curso');
       return;
     }
-    
+
     setOfflineSyncing(true);
     try {
       const result = await syncAllPendingScans(api, (progress) => {
         console.log(`Sincronizando escaneos: ${progress.sincronizados}/${progress.total}`);
         loadPendingStatsOffline();
       });
-      
+
       if (result.sincronizados > 0) {
         setFlashMessage(`${result.sincronizados} escaneo(s) sincronizado(s) correctamente`, 'success');
         if (selectedRonda) {
@@ -361,10 +377,10 @@ export default function EscaneoPage() {
       setIsOnline(false);
       setFlashMessage('Sin conexión a internet. Los escaneos se guardarán localmente.', 'warning');
     };
-    
+
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
-    
+
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
@@ -432,6 +448,84 @@ export default function EscaneoPage() {
     }
   };
 
+  // Función para agregar producto manual
+  const handleAgregarManual = async () => {
+    const skuLimpio = manualSku.trim().toUpperCase();
+
+    if (!skuLimpio) {
+      setFlashMessage('Debes ingresar un SKU', 'error');
+      return;
+    }
+
+    if (!/^\d{5,6}$/.test(skuLimpio)) {
+      setFlashMessage('SKU inválido. Debe tener entre 5 y 6 dígitos numéricos.', 'warning');
+      return;
+    }
+
+    if (manualCantidad <= 0) {
+      setFlashMessage('La cantidad debe ser mayor a 0', 'error');
+      return;
+    }
+
+    if (manualRepeticiones <= 0 || manualRepeticiones > 100) {
+      setFlashMessage('Las repeticiones deben ser entre 1 y 100', 'error');
+      return;
+    }
+
+    if (!selectedRonda?.id) {
+      setFlashMessage('Debes seleccionar una ronda', 'error');
+      return;
+    }
+
+    if (selectedRonda.estado !== 'activa') {
+      setFlashMessage('La ronda debe estar activa para agregar productos', 'warning');
+      return;
+    }
+
+    if (!grupoAsignado?.id) {
+      setFlashMessage('Esta ronda no tiene un grupo asignado', 'error');
+      return;
+    }
+
+    setLoadingManual(true);
+
+    try {
+      const response = await agregarLecturaManual({
+        rondaId: selectedRonda.id,
+        grupoId: grupoAsignado.id,
+        sku: skuLimpio,
+        cantidad: manualCantidad * manualRepeticiones
+      });
+
+      if (response.ok) {
+        playBeep();
+        setFlashMessage(response.message || `Producto ${skuLimpio} agregado correctamente`, 'success');
+
+        setShowManualModal(false);
+        setManualSku('');
+        setManualCantidad(1);
+        setManualRepeticiones(1);
+
+        await loadRoundContext(selectedRonda);
+      } else {
+        setFlashMessage(response.message || 'Error al agregar producto', 'error');
+      }
+    } catch (err) {
+      console.error('Error en agregar manual:', err);
+
+      if (err.response?.status === 409 && err.response?.data?.code === 'PRODUCTO_EN_OTRA_ZONA') {
+        const errorData = err.response.data;
+        setShowZoneWarning(true);
+        setZoneWarningInfo(errorData.data);
+        setFlashMessage(errorData.message, 'error');
+      } else {
+        setFlashMessage(err.response?.data?.message || 'Error al agregar producto manualmente', 'error');
+      }
+    } finally {
+      setLoadingManual(false);
+    }
+  };
+
   // Escaneo con soporte offline y validación de inventario anterior
   const procesarEscaneo = useCallback(async (codigoLimpio) => {
     if (processingRef.current) return;
@@ -463,7 +557,7 @@ export default function EscaneoPage() {
         const message = backend?.message || raw?.message || 'Lectura registrada';
         const warning = Boolean(backend?.warning || raw?.warning);
         const warningData = payload?.warning || null;
-        const esReconteoOpcional = warning === true && !warningData; // Escaneo opcional en reconteo
+        const esReconteoOpcional = warning === true && !warningData;
 
         playBeep();
         setLastScan(payload);
@@ -471,7 +565,7 @@ export default function EscaneoPage() {
         // Validar si el SKU existe en el inventario anterior
         if (payload?.producto?.sku && inventarioPareja && parejaResumen.length > 0 && !esReconteoOpcional) {
           const existeEnInventarioAnterior = parejaResumen.some(item => item.sku === payload.producto.sku);
-          
+
           if (!existeEnInventarioAnterior) {
             setSkuWarningInfo({
               sku: payload.producto.sku,
@@ -489,7 +583,7 @@ export default function EscaneoPage() {
           setFlashMessage(message, warning ? 'info' : 'success');
         }
 
-        loadRoundContext(selectedRonda);
+        await loadRoundContext(selectedRonda);
       } catch (err) {
         await savePendingScan({
           rondaId: selectedRonda.id,
@@ -512,16 +606,16 @@ export default function EscaneoPage() {
       setFlashMessage('Sin conexión. Escaneo guardado localmente. Se sincronizará después.', 'warning');
       setLastScan({ producto: { sku: codigoLimpio, descripcion: 'Guardado local' }, acumuladoSku: 'pendiente' });
     }
-    
+
     processingRef.current = false;
   }, [selectedRonda, grupoAsignado, loadRoundContext, loadPendingStatsOffline, inventarioPareja, parejaResumen]);
 
   const handleCodigoChange = useCallback((e) => {
     const value = e.target.value;
     const numeros = value.replace(/[^0-9]/g, '').slice(0, 6);
-    
+
     setCodigo(numeros);
-    
+
     if (numeros.length === 5 || numeros.length === 6) {
       procesarEscaneo(numeros);
       setCodigo('');
@@ -542,7 +636,7 @@ export default function EscaneoPage() {
       await anularLectura(lecturaId);
       setHistory((prev) => prev.filter((l) => Number(l.id) !== Number(lecturaId)));
       setFlashMessage('Lectura anulada', 'success');
-      loadRoundContext(selectedRonda);
+      await loadRoundContext(selectedRonda);
     } catch (err) {
       setFlashMessage(err.response?.data?.message || 'Error', 'error');
     }
@@ -605,14 +699,14 @@ export default function EscaneoPage() {
 
       {/* Header móvil */}
       <div className="escaneo-mobile-header">
-        <button 
+        <button
           className="mobile-menu-btn-escaneo"
           onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
         >
           {mobileMenuOpen ? <X size={24} /> : <ScanLine size={24} />}
         </button>
         <h2 className="mobile-title">Escaneo</h2>
-        <button 
+        <button
           className="fullscreen-btn"
           onClick={() => setFullScreen(!fullScreen)}
         >
@@ -662,7 +756,7 @@ export default function EscaneoPage() {
           <div className="online-badge">
             <span>Online</span>
             {pendingCount > 0 && (
-              <button 
+              <button
                 className="sync-btn"
                 onClick={syncOfflineScans}
                 disabled={offlineSyncing}
@@ -786,6 +880,9 @@ export default function EscaneoPage() {
               <div className="list-header">
                 <h2 className="section-title"><ScanLine size={20} /><span>Escanear producto</span></h2>
                 <div className="scanner-actions">
+                  <button className="btn btn-outline" onClick={() => setShowManualModal(true)} disabled={!canScan}>
+                    <Edit3 size={16} /><span>Agregar Manual</span>
+                  </button>
                   {selectedRonda.estado === 'borrador' && (
                     <button className="btn btn-primary" onClick={() => handleRondaAction('iniciar')}>
                       <Play size={16} /><span>Iniciar</span>
@@ -806,13 +903,13 @@ export default function EscaneoPage() {
                   </button>
                 </div>
               </div>
-                  
+
               <form onSubmit={handleSubmit}>
                 <div className="scanner-input-row">
-                  <input 
-                    ref={inputRef} 
-                    type="text" 
-                    value={codigo} 
+                  <input
+                    ref={inputRef}
+                    type="text"
+                    value={codigo}
                     onChange={handleCodigoChange}
                     placeholder="Escanea el código"
                     autoComplete="off"
@@ -826,107 +923,108 @@ export default function EscaneoPage() {
                   </button>
                 </div>
               </form>
-                  
+              <div className="card inventario-anterior-card">
+                <div className="list-header">
+                  <div className="section-title-group">
+                    <h2 className="section-title">
+                      <Database size={20} />
+                      <span>Inventario anterior</span>
+                      {inventarioPareja && <span className="badge info">{inventarioPareja.nombre}</span>}
+                    </h2>
+                    {parejaResumen.length > 0 && (
+                      <span className="badge">{parejaResumen.length} registros</span>
+                    )}
+                  </div>
+                  <GitCompareArrows size={16} className="text-muted" />
+                </div>
+
+                {loadingPareja ? (
+                  <div className="loading-container" style={{ textAlign: 'center', padding: '20px' }}>
+                    <div className="loading-spinner-small" />
+                    <p className="muted">Cargando inventario anterior...</p>
+                  </div>
+                ) : parejaError ? (
+                  <div className="alert-warning">
+                    <AlertTriangle size={16} />
+                    <span>{parejaError}</span>
+                  </div>
+                ) : !inventarioPareja ? (
+                  <div className="empty-state-small">
+                    <Database size={32} className="text-muted" />
+                    <p className="muted">No hay inventario anterior asociado a este inventario</p>
+                  </div>
+                ) : parejaResumen.length === 0 ? (
+                  <div className="empty-state-small">
+                    <p className="muted">No hay registros en el inventario anterior para esta zona</p>
+                  </div>
+                ) : (
+                  <>
+                    <div
+                      className="table-responsive-container"
+                      style={{ maxHeight: '400px', overflowY: 'auto', overflowX: 'auto' }}
+                    >
+                      <table className="data-table pareja-table">
+                        <thead style={{ position: 'sticky', top: 0, backgroundColor: 'var(--surface)', zIndex: 10 }}>
+                          <tr>
+                            <th style={{ position: 'sticky', left: 0, backgroundColor: 'var(--surface)', zIndex: 11, minWidth: '100px' }}>SKU</th>
+                            <th style={{ minWidth: '200px' }}>Descripción</th>
+
+                            <th style={{ minWidth: '100px' }}>Estado</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {parejaResumen.map((item, index) => {
+                            const coincide = resumen.some(r => r.sku === item.sku);
+                            return (
+                              <tr key={`${item.sku}-${index}`} className={coincide ? 'row-success' : 'row-warning'}>
+                                <td data-label="SKU" style={{ position: 'sticky', left: 0, backgroundColor: 'inherit', zIndex: 5 }}>
+                                  <strong>{item.sku}</strong>
+                                </td>
+                                <td data-label="Descripción">{item.descripcionSnapshot || 'Sin descripción'}</td>
+                                <td data-label="Estado">
+                                  <span className={`status-badge ${coincide ? 'success' : 'warning'}`}>
+                                    {coincide ? 'Escaneado' : 'Pendiente'}
+                                  </span>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Resumen de escaneos vs inventario anterior */}
+                    <div className="pareja-resumen" style={{
+                      marginTop: '16px',
+                      padding: '12px',
+                      backgroundColor: 'var(--surface-soft)',
+                      borderRadius: '12px',
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      flexWrap: 'wrap',
+                      gap: '12px'
+                    }}>
+                      <div className="resumen-item">
+                        <span>Total inventario anterior:</span>
+                        <strong>{parejaResumen.length}</strong>
+                      </div>
+                      <div className="resumen-item">
+                        <span>Escaneados:</span>
+                        <strong className="text-success">{resumen.filter(r => parejaResumen.some(p => p.sku === r.sku)).length}</strong>
+                      </div>
+                      <div className="resumen-item">
+                        <span>Pendientes:</span>
+                        <strong className="text-warning">{parejaResumen.filter(p => !resumen.some(r => r.sku === p.sku)).length}</strong>
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
               <p className="scan-helper">
                 Códigos válidos: 5 o 6 dígitos numéricos
               </p>
-                  <div className="card inventario-anterior-card">
-            <div className="list-header">
-              <div className="section-title-group">
-                <h2 className="section-title">
-                  <Database size={20} />
-                  <span>Inventario anterior</span>
-                  {inventarioPareja && <span className="badge info">{inventarioPareja.nombre}</span>}
-                </h2>
-                {parejaResumen.length > 0 && (
-                  <span className="badge">{parejaResumen.length} registros</span>
-                )}
-              </div>
-              <GitCompareArrows size={16} className="text-muted" />
-            </div>
 
-            {loadingPareja ? (
-              <div className="loading-container" style={{ textAlign: 'center', padding: '20px' }}>
-                <div className="loading-spinner-small" />
-                <p className="muted">Cargando inventario anterior...</p>
-              </div>
-            ) : parejaError ? (
-              <div className="alert-warning">
-                <AlertTriangle size={16} />
-                <span>{parejaError}</span>
-              </div>
-            ) : !inventarioPareja ? (
-              <div className="empty-state-small">
-                <Database size={32} className="text-muted" />
-                <p className="muted">No hay inventario anterior asociado a este inventario</p>
-              </div>
-            ) : parejaResumen.length === 0 ? (
-              <div className="empty-state-small">
-                <p className="muted">No hay registros en el inventario anterior para esta zona</p>
-              </div>
-            ) : (
-              <>
-                <div 
-                  className="table-responsive-container" 
-                  style={{ maxHeight: '400px', overflowY: 'auto', overflowX: 'auto' }}
-                >
-                  <table className="data-table pareja-table">
-                    <thead style={{ position: 'sticky', top: 0, backgroundColor: 'var(--surface)', zIndex: 10 }}>
-                      <tr>
-                        <th style={{ position: 'sticky', left: 0, backgroundColor: 'var(--surface)', zIndex: 11, minWidth: '100px' }}>SKU</th>
-                        <th style={{ minWidth: '200px' }}>Descripción</th>
-                        <th style={{ minWidth: '100px' }}>Estado</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {parejaResumen.map((item, index) => {
-                        const coincide = resumen.some(r => r.sku === item.sku);
-                        return (
-                          <tr key={`${item.sku}-${index}`} className={coincide ? 'row-success' : 'row-warning'}>
-                            <td data-label="SKU" style={{ position: 'sticky', left: 0, backgroundColor: 'inherit', zIndex: 5 }}>
-                              <strong>{item.sku}</strong>
-                            </td>
-                            <td data-label="Descripción">{item.descripcionSnapshot || 'Sin descripción'}</td>
-                            <td data-label="Estado">
-                              <span className={`status-badge ${coincide ? 'success' : 'warning'}`}>
-                                {coincide ? 'Escaneado' : 'Pendiente'}
-                              </span>
-                            </td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-                
-                {/* Resumen de escaneos vs inventario anterior */}
-                <div className="pareja-resumen" style={{ 
-                  marginTop: '16px', 
-                  padding: '12px', 
-                  backgroundColor: 'var(--surface-soft)', 
-                  borderRadius: '12px',
-                  display: 'flex',
-                  justifyContent: 'space-between',
-                  alignItems: 'center',
-                  flexWrap: 'wrap',
-                  gap: '12px'
-                }}>
-                  <div className="resumen-item">
-                    <span>Total inventario anterior:</span>
-                    <strong>{parejaResumen.length}</strong>
-                  </div>
-                  <div className="resumen-item">
-                    <span>Escaneados:</span>
-                    <strong className="text-success">{resumen.filter(r => parejaResumen.some(p => p.sku === r.sku)).length}</strong>
-                  </div>
-                  <div className="resumen-item">
-                    <span>Pendientes:</span>
-                    <strong className="text-warning">{parejaResumen.filter(p => !resumen.some(r => r.sku === p.sku)).length}</strong>
-                  </div>
-                </div>
-              </>
-            )}
-          </div>
               {lastScan && (
                 <div className="last-scan-card">
                   <div className="last-scan-header"><CheckCircle size={18} className="text-success" /><span>Último escaneo</span></div>
@@ -938,7 +1036,7 @@ export default function EscaneoPage() {
                 </div>
               )}
             </div>
-              
+
             <div className="card round-summary-card">
               <h2 className="section-title"><Zap size={20} /><span>Estado de la ronda</span></h2>
               <div className="round-summary-grid">
@@ -954,9 +1052,7 @@ export default function EscaneoPage() {
                   <div className="pending-header">
                     <AlertTriangle size={16} />
                     <span>SKU pendientes de reconteo</span>
-                    <span className="badge">
-                      {pendientes.filter(p => p.recontado !== true).length} / {pendientes.length}
-                    </span>
+
                   </div>
                   {pendientes.length === 0 ? (
                     <div className="escaneo-empty">No hay pendientes</div>
@@ -989,7 +1085,10 @@ export default function EscaneoPage() {
                 </div>
               )}
             </div>
-          </div>          
+          </div>
+
+          {/* Tabla de inventario anterior (pareja) */}
+
 
           <div className="grid-2">
             <div className="card resumen-card">
@@ -1061,6 +1160,70 @@ export default function EscaneoPage() {
         </div>
       )}
 
+      {/* Modal para entrada manual */}
+      {showManualModal && (
+        <div className="modal-overlay" onClick={() => setShowManualModal(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3><Plus size={18} /> Agregar Producto Manualmente</h3>
+              <button className="icon-btn" onClick={() => setShowManualModal(false)}><X size={18} /></button>
+            </div>
+            <div className="modal-body">
+              <div className="form-group">
+                <label>Código SKU *</label>
+                <input
+                  type="text"
+                  value={manualSku}
+                  onChange={(e) => setManualSku(e.target.value.toUpperCase())}
+                  placeholder="Ej: 123456"
+                  autoFocus
+                  className="manual-sku-input"
+                />
+                <small>Ingresa el código numérico de 5 a 6 dígitos</small>
+              </div>
+              <div className="form-row">
+                <div className="form-group">
+                  <label>Cantidad por registro *</label>
+                  <input
+                    type="number"
+                    value={manualCantidad}
+                    onChange={(e) => setManualCantidad(parseInt(e.target.value) || 1)}
+                    min="1"
+                    max="999999"
+                    step="1"
+                  />
+                  <small>Unidades por cada registro</small>
+                </div>
+                <div className="form-group">
+                  <label>Número de repeticiones *</label>
+                  <input
+                    type="number"
+                    value={manualRepeticiones}
+                    onChange={(e) => setManualRepeticiones(parseInt(e.target.value) || 1)}
+                    min="1"
+                    max="100"
+                    step="1"
+                  />
+                  <small>¿Cuántas veces quieres agregar este producto? (1-100)</small>
+                </div>
+              </div>
+              <div className="manual-summary">
+                <p><strong>Resumen:</strong></p>
+                <p>• {manualRepeticiones} registro(s) de {manualSku || 'SKU'}</p>
+                <p>• {manualCantidad} unidad(es) por registro</p>
+                <p className="total-unidades">📦 Total de unidades: <strong>{manualRepeticiones * manualCantidad}</strong></p>
+              </div>
+            </div>
+            <div className="modal-actions">
+              <button className="btn btn-outline" onClick={() => setShowManualModal(false)}>Cancelar</button>
+              <button className="btn btn-primary" onClick={handleAgregarManual} disabled={loadingManual || !manualSku.trim()}>
+                {loadingManual ? 'Agregando...' : `Agregar (${manualRepeticiones} × ${manualCantidad})`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Modal de advertencia - SKU no encontrado en inventario anterior */}
       {showSkuWarning && skuWarningInfo && (
         <div className="modal-overlay" onClick={() => setShowSkuWarning(false)}>
@@ -1079,7 +1242,7 @@ export default function EscaneoPage() {
               <div className="alert-info" style={{ marginTop: '16px' }}>
                 <AlertTriangle size={16} />
                 <span>
-                  <strong>Recomendación:</strong> Verifica que el código sea correcto. 
+                  <strong>Recomendación:</strong> Verifica que el código sea correcto.
                   Si el producto es nuevo, puedes continuar con el escaneo.
                 </span>
               </div>
