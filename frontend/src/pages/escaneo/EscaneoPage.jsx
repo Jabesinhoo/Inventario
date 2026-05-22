@@ -21,7 +21,8 @@ import {
   Database,
   GitCompareArrows,
   Edit3,
-  Plus
+  Plus,
+  Edit2
 } from 'lucide-react';
 import {
   scanLecturaRonda,
@@ -90,6 +91,12 @@ export default function EscaneoPage() {
   const [manualRepeticiones, setManualRepeticiones] = useState(1);
   const [loadingManual, setLoadingManual] = useState(false);
 
+  // Modal editar cantidad
+  const [showEditModal, setShowEditModal] = useState(false);
+  const [editProducto, setEditProducto] = useState(null);
+  const [editCantidad, setEditCantidad] = useState(0);
+  const [loadingEdit, setLoadingEdit] = useState(false);
+
   // Estado para inventario anterior (pareja)
   const [inventarioPareja, setInventarioPareja] = useState(null);
   const [parejaResumen, setParejaResumen] = useState([]);
@@ -106,7 +113,8 @@ export default function EscaneoPage() {
   const [offlineSyncing, setOfflineSyncing] = useState(false);
 
   const auth = useAuth();
-  const rol = String(auth?.user?.rol || auth?.user?.rol?.nombre || '').toLowerCase();
+  const rawRol = auth?.user?.rol?.nombre || auth?.user?.rol || '';
+  const rol = String(rawRol).toLowerCase();
   const isContador = rol === 'contador';
   const [flash, setFlash] = useState({ type: '', text: '' });
 
@@ -151,29 +159,29 @@ export default function EscaneoPage() {
     return new Date(value).toLocaleTimeString();
   };
 
-  const unwrapData = (value) => {
+  const unwrapData = useCallback((value) => {
     if (value?.data?.data !== undefined) return value.data.data;
     if (value?.data !== undefined) return value.data;
     return value;
-  };
+  }, []);
 
-  const extractArray = (value, keys = []) => {
+  const extractArray = useCallback((value, keys = []) => {
     const unwrapped = unwrapData(value);
     if (Array.isArray(unwrapped)) return unwrapped;
     for (const key of keys) {
       if (Array.isArray(unwrapped?.[key])) return unwrapped[key];
     }
     return [];
-  };
+  }, [unwrapData]);
 
-  const extractObject = (value) => {
+  const extractObject = useCallback((value) => {
     const unwrapped = unwrapData(value);
     return unwrapped && typeof unwrapped === 'object' ? unwrapped : null;
-  };
+  }, [unwrapData]);
 
-  const onlyValidLecturas = (rows) => {
+  const onlyValidLecturas = useCallback((rows) => {
     return (rows || []).filter((item) => item?.estado !== 'anulada');
-  };
+  }, []);
 
   // Cargar inventario pareja y su resumen
   const loadInventarioPareja = useCallback(async (inventarioId, zonaId) => {
@@ -256,7 +264,7 @@ export default function EscaneoPage() {
       setRondas([]);
       setSelectedRondaId('');
     }
-  }, [setFlashMessage, rondaIdFromUrl]);
+  }, [setFlashMessage, rondaIdFromUrl, extractArray]);
 
   const loadRoundContext = useCallback(async (ronda) => {
     if (!ronda?.id) {
@@ -294,10 +302,9 @@ export default function EscaneoPage() {
           [];
         pendientesRows = Array.isArray(pendientesRows) ? pendientesRows : [];
 
-        // Marcar recontados basado en resumen actual
         pendientesRows = pendientesRows.map(p => ({
           ...p,
-          recontado: resumen.some(r => r.sku === p.sku && r.cantidadTotal > 0)
+          recontado: resumenRows.some(r => r.sku === p.sku && r.cantidadTotal > 0)
         }));
       }
 
@@ -310,7 +317,7 @@ export default function EscaneoPage() {
     } finally {
       setSyncing(false);
     }
-  }, [resumen]);
+  }, [extractArray, extractObject, onlyValidLecturas]);
 
   // Cargar inventario pareja cuando cambia la ronda
   useEffect(() => {
@@ -448,7 +455,54 @@ export default function EscaneoPage() {
     }
   };
 
-  // Función para agregar producto manual
+  const handleEliminarProducto = async (sku) => {
+    if (!selectedRonda?.id) {
+      setFlashMessage('No hay ronda seleccionada', 'error');
+      return;
+    }
+
+    if (!window.confirm(`¿Eliminar todas las lecturas del producto ${sku}? Esta acción no se puede deshacer.`)) {
+      return;
+    }
+
+    try {
+      await api.delete(`/lecturas/ronda/${selectedRonda.id}/sku/${sku}`);
+      setFlashMessage(`Producto ${sku} eliminado correctamente`, 'success');
+      await loadRoundContext(selectedRonda);
+    } catch (err) {
+      setFlashMessage(err.response?.data?.message || 'Error al eliminar producto', 'error');
+    }
+  };
+
+  const handleEditarProducto = async (producto) => {
+    setEditProducto(producto);
+    setEditCantidad(producto.cantidadTotal);
+    setShowEditModal(true);
+  };
+
+  const handleGuardarEdicion = async () => {
+    if (!selectedRonda?.id || !editProducto) return;
+
+    if (editCantidad < 0) {
+      setFlashMessage('La cantidad no puede ser negativa', 'error');
+      return;
+    }
+
+    setLoadingEdit(true);
+    try {
+      await api.put(`/lecturas/ronda/${selectedRonda.id}/sku/${editProducto.sku}`, {
+        nuevaCantidad: editCantidad
+      });
+      setFlashMessage(`Producto ${editProducto.sku} actualizado a ${editCantidad} unidades`, 'success');
+      setShowEditModal(false);
+      await loadRoundContext(selectedRonda);
+    } catch (err) {
+      setFlashMessage(err.response?.data?.message || 'Error al editar producto', 'error');
+    } finally {
+      setLoadingEdit(false);
+    }
+  };
+
   const handleAgregarManual = async () => {
     const skuLimpio = manualSku.trim().toUpperCase();
 
@@ -467,8 +521,8 @@ export default function EscaneoPage() {
       return;
     }
 
-    if (manualRepeticiones <= 0 || manualRepeticiones > 100) {
-      setFlashMessage('Las repeticiones deben ser entre 1 y 100', 'error');
+    if (manualRepeticiones <= 0 || manualRepeticiones > 10000) {
+      setFlashMessage('Las repeticiones deben ser entre 1 y 10000', 'error');
       return;
     }
 
@@ -499,7 +553,19 @@ export default function EscaneoPage() {
 
       if (response.ok) {
         playBeep();
-        setFlashMessage(response.message || `Producto ${skuLimpio} agregado correctamente`, 'success');
+        const descripcion = response.data?.producto?.descripcion || `Producto ${skuLimpio}`;
+        const message = response.message || `Producto ${skuLimpio} agregado correctamente`;
+
+        setFlashMessage(`${descripcion} - ${message}`, 'success');
+
+        setLastScan({
+          producto: {
+            sku: skuLimpio,
+            descripcion: descripcion,
+            source: response.data?.producto?.source || 'manual'
+          },
+          acumuladoSku: response.data?.acumuladoSku || manualCantidad * manualRepeticiones
+        });
 
         setShowManualModal(false);
         setManualSku('');
@@ -526,7 +592,6 @@ export default function EscaneoPage() {
     }
   };
 
-  // Escaneo con soporte offline y validación de inventario anterior
   const procesarEscaneo = useCallback(async (codigoLimpio) => {
     if (processingRef.current) return;
     if (!/^\d{5,6}$/.test(codigoLimpio)) return;
@@ -543,6 +608,8 @@ export default function EscaneoPage() {
       processingRef.current = false;
       return;
     }
+
+    setLoadingScan(true);
 
     if (checkOnline()) {
       try {
@@ -562,10 +629,8 @@ export default function EscaneoPage() {
         playBeep();
         setLastScan(payload);
 
-        // Validar si el SKU existe en el inventario anterior
         if (payload?.producto?.sku && inventarioPareja && parejaResumen.length > 0 && !esReconteoOpcional) {
           const existeEnInventarioAnterior = parejaResumen.some(item => item.sku === payload.producto.sku);
-
           if (!existeEnInventarioAnterior) {
             setSkuWarningInfo({
               sku: payload.producto.sku,
@@ -585,14 +650,21 @@ export default function EscaneoPage() {
 
         await loadRoundContext(selectedRonda);
       } catch (err) {
-        await savePendingScan({
-          rondaId: selectedRonda.id,
-          grupoId: grupoAsignado.id,
-          codigo: codigoLimpio,
-          fecha: new Date().toISOString()
-        });
-        await loadPendingStatsOffline();
-        setFlashMessage('Error en el servidor. Escaneo guardado localmente.', 'warning');
+        if (err.response?.status === 409 && err.response?.data?.code === 'PRODUCTO_EN_OTRA_ZONA') {
+          const errorData = err.response.data;
+          setShowZoneWarning(true);
+          setZoneWarningInfo(errorData.data);
+          setFlashMessage(errorData.message || 'Producto en otra zona', 'warning');
+        } else {
+          await savePendingScan({
+            rondaId: selectedRonda.id,
+            grupoId: grupoAsignado.id,
+            codigo: codigoLimpio,
+            fecha: new Date().toISOString()
+          });
+          await loadPendingStatsOffline();
+          setFlashMessage('Error en el servidor. Escaneo guardado localmente.', 'warning');
+        }
       }
     } else {
       await savePendingScan({
@@ -608,14 +680,13 @@ export default function EscaneoPage() {
     }
 
     processingRef.current = false;
+    setLoadingScan(false);
   }, [selectedRonda, grupoAsignado, loadRoundContext, loadPendingStatsOffline, inventarioPareja, parejaResumen]);
 
   const handleCodigoChange = useCallback((e) => {
     const value = e.target.value;
     const numeros = value.replace(/[^0-9]/g, '').slice(0, 6);
-
     setCodigo(numeros);
-
     if (numeros.length === 5 || numeros.length === 6) {
       procesarEscaneo(numeros);
       setCodigo('');
@@ -756,11 +827,7 @@ export default function EscaneoPage() {
           <div className="online-badge">
             <span>Online</span>
             {pendingCount > 0 && (
-              <button
-                className="sync-btn"
-                onClick={syncOfflineScans}
-                disabled={offlineSyncing}
-              >
+              <button className="sync-btn" onClick={syncOfflineScans} disabled={offlineSyncing}>
                 Sincronizar ({pendingCount})
               </button>
             )}
@@ -923,104 +990,7 @@ export default function EscaneoPage() {
                   </button>
                 </div>
               </form>
-              <div className="card inventario-anterior-card">
-                <div className="list-header">
-                  <div className="section-title-group">
-                    <h2 className="section-title">
-                      <Database size={20} />
-                      <span>Inventario anterior</span>
-                      {inventarioPareja && <span className="badge info">{inventarioPareja.nombre}</span>}
-                    </h2>
-                    {parejaResumen.length > 0 && (
-                      <span className="badge">{parejaResumen.length} registros</span>
-                    )}
-                  </div>
-                  <GitCompareArrows size={16} className="text-muted" />
-                </div>
 
-                {loadingPareja ? (
-                  <div className="loading-container" style={{ textAlign: 'center', padding: '20px' }}>
-                    <div className="loading-spinner-small" />
-                    <p className="muted">Cargando inventario anterior...</p>
-                  </div>
-                ) : parejaError ? (
-                  <div className="alert-warning">
-                    <AlertTriangle size={16} />
-                    <span>{parejaError}</span>
-                  </div>
-                ) : !inventarioPareja ? (
-                  <div className="empty-state-small">
-                    <Database size={32} className="text-muted" />
-                    <p className="muted">No hay inventario anterior asociado a este inventario</p>
-                  </div>
-                ) : parejaResumen.length === 0 ? (
-                  <div className="empty-state-small">
-                    <p className="muted">No hay registros en el inventario anterior para esta zona</p>
-                  </div>
-                ) : (
-                  <>
-                    <div
-                      className="table-responsive-container"
-                      style={{ maxHeight: '400px', overflowY: 'auto', overflowX: 'auto' }}
-                    >
-                      <table className="data-table pareja-table">
-                        <thead style={{ position: 'sticky', top: 0, backgroundColor: 'var(--surface)', zIndex: 10 }}>
-                          <tr>
-                            <th style={{ position: 'sticky', left: 0, backgroundColor: 'var(--surface)', zIndex: 11, minWidth: '100px' }}>SKU</th>
-                            <th style={{ minWidth: '200px' }}>Descripción</th>
-
-                            <th style={{ minWidth: '100px' }}>Estado</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {parejaResumen.map((item, index) => {
-                            const coincide = resumen.some(r => r.sku === item.sku);
-                            return (
-                              <tr key={`${item.sku}-${index}`} className={coincide ? 'row-success' : 'row-warning'}>
-                                <td data-label="SKU" style={{ position: 'sticky', left: 0, backgroundColor: 'inherit', zIndex: 5 }}>
-                                  <strong>{item.sku}</strong>
-                                </td>
-                                <td data-label="Descripción">{item.descripcionSnapshot || 'Sin descripción'}</td>
-                                <td data-label="Estado">
-                                  <span className={`status-badge ${coincide ? 'success' : 'warning'}`}>
-                                    {coincide ? 'Escaneado' : 'Pendiente'}
-                                  </span>
-                                </td>
-                              </tr>
-                            );
-                          })}
-                        </tbody>
-                      </table>
-                    </div>
-
-                    {/* Resumen de escaneos vs inventario anterior */}
-                    <div className="pareja-resumen" style={{
-                      marginTop: '16px',
-                      padding: '12px',
-                      backgroundColor: 'var(--surface-soft)',
-                      borderRadius: '12px',
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      alignItems: 'center',
-                      flexWrap: 'wrap',
-                      gap: '12px'
-                    }}>
-                      <div className="resumen-item">
-                        <span>Total inventario anterior:</span>
-                        <strong>{parejaResumen.length}</strong>
-                      </div>
-                      <div className="resumen-item">
-                        <span>Escaneados:</span>
-                        <strong className="text-success">{resumen.filter(r => parejaResumen.some(p => p.sku === r.sku)).length}</strong>
-                      </div>
-                      <div className="resumen-item">
-                        <span>Pendientes:</span>
-                        <strong className="text-warning">{parejaResumen.filter(p => !resumen.some(r => r.sku === p.sku)).length}</strong>
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
               <p className="scan-helper">
                 Códigos válidos: 5 o 6 dígitos numéricos
               </p>
@@ -1052,7 +1022,6 @@ export default function EscaneoPage() {
                   <div className="pending-header">
                     <AlertTriangle size={16} />
                     <span>SKU pendientes de reconteo</span>
-
                   </div>
                   {pendientes.length === 0 ? (
                     <div className="escaneo-empty">No hay pendientes</div>
@@ -1088,70 +1057,186 @@ export default function EscaneoPage() {
           </div>
 
           {/* Tabla de inventario anterior (pareja) */}
-
-
-          <div className="grid-2">
-            <div className="card resumen-card">
-              <div className="list-header">
-                <h2 className="section-title"><Boxes size={20} /><span>Resumen por producto</span></h2>
+          <div className="card inventario-anterior-card">
+            <div className="list-header">
+              <div className="section-title-group">
+                <h2 className="section-title">
+                  <Database size={20} />
+                  <span>Inventario anterior</span>
+                  {inventarioPareja && <span className="badge info">{inventarioPareja.nombre}</span>}
+                </h2>
+                {parejaResumen.length > 0 && (
+                  <span className="badge">{parejaResumen.length} registros</span>
+                )}
               </div>
-              {resumen.length === 0 ? (
-                <div className="escaneo-empty">No hay escaneos</div>
-              ) : (
-                <div className="table-responsive-container">
-                  <table className="data-table resumen-table">
-                    <thead>
+              <GitCompareArrows size={16} className="text-muted" />
+            </div>
+
+            {loadingPareja ? (
+              <div className="loading-container" style={{ textAlign: 'center', padding: '20px' }}>
+                <div className="loading-spinner-small" />
+                <p className="muted">Cargando inventario anterior...</p>
+              </div>
+            ) : parejaError ? (
+              <div className="alert-warning">
+                <AlertTriangle size={16} />
+                <span>{parejaError}</span>
+              </div>
+            ) : !inventarioPareja ? (
+              <div className="empty-state-small">
+                <Database size={32} className="text-muted" />
+                <p className="muted">No hay inventario anterior asociado a este inventario</p>
+              </div>
+            ) : parejaResumen.length === 0 ? (
+              <div className="empty-state-small">
+                <p className="muted">No hay registros en el inventario anterior para esta zona</p>
+              </div>
+            ) : (
+              <>
+                <div
+                  className="table-responsive-container"
+                  style={{ maxHeight: '400px', overflowY: 'auto', overflowX: 'auto' }}
+                >
+                  <table className="data-table pareja-table">
+                    <thead style={{ position: 'sticky', top: 0, backgroundColor: 'var(--surface)', zIndex: 10 }}>
                       <tr>
-                        <th>SKU</th>
-                        <th>Descripción</th>
-                        <th>Cantidad</th>
+                        <th style={{ position: 'sticky', left: 0, backgroundColor: 'var(--surface)', zIndex: 11, minWidth: '100px' }}>SKU</th>
+                        <th style={{ minWidth: '200px' }}>Descripción</th>
+                        <th style={{ minWidth: '100px' }}>Estado</th>
                       </tr>
                     </thead>
                     <tbody>
-                      {resumen.slice(0, 15).map((item, index) => (
-                        <tr key={`${item.sku || 'sku'}-${index}`}>
-                          <td data-label="SKU"><strong>{item.sku}</strong></td>
-                          <td data-label="Descripción">{item.descripcionSnapshot || 'Sin descripción'}</td>
-                          <td data-label="Cantidad" className="text-center">{item.cantidadTotal}</td>
-                        </tr>
-                      ))}
-                      {resumen.length > 15 && (
-                        <tr className="more-items">
-                          <td colSpan="3" className="text-center">+{resumen.length - 15} productos más</td>
-                        </tr>
-                      )}
+                      {parejaResumen.map((item, index) => {
+                        const coincide = resumen.some(r => r.sku === item.sku);
+                        return (
+                          <tr key={`${item.sku}-${index}`} className={coincide ? 'row-success' : 'row-warning'}>
+                            <td data-label="SKU" style={{ position: 'sticky', left: 0, backgroundColor: 'inherit', zIndex: 5 }}>
+                              <strong>{item.sku}</strong>
+                            </td>
+                            <td data-label="Descripción">{item.descripcionSnapshot || 'Sin descripción'}</td>
+                            <td data-label="Estado">
+                              <span className={`status-badge ${coincide ? 'success' : 'warning'}`}>
+                                {coincide ? 'Escaneado' : 'Pendiente'}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
-              )}
-            </div>
 
-            <div className="card historial-card">
-              <div className="list-header">
-                <h2 className="section-title"><History size={20} /><span>Historial reciente</span></h2>
-              </div>
-              {history.length === 0 ? (
-                <div className="escaneo-empty">No hay lecturas</div>
-              ) : (
-                <div className="history-list">
-                  {history.slice(0, 15).map((lectura) => (
-                    <div key={lectura.id} className={`history-item ${lectura.estado === 'anulada' ? 'anulada' : ''}`}>
-                      <div className="history-main">
-                        <strong>{lectura.codigoLeido}</strong>
-                        <p>{lectura.sku || 'No reconocido'}</p>
-                      </div>
-                      <div className="history-meta">
-                        <span className="tag-muted">{formatOnlyTime(lectura.fechaHora)}</span>
-                        <span className={`status-chip mini ${lectura.estado}`}>{lectura.estado === 'valida' ? 'OK' : 'NO'}</span>
-                        {lectura.estado !== 'anulada' && (
-                          <button className="icon-btn" onClick={() => handleAnularLectura(lectura.id)} title="Anular"><Trash2 size={14} /></button>
-                        )}
-                      </div>
-                    </div>
-                  ))}
+                <div className="pareja-resumen" style={{
+                  marginTop: '16px',
+                  padding: '12px',
+                  backgroundColor: 'var(--surface-soft)',
+                  borderRadius: '12px',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: '12px'
+                }}>
+                  <div className="resumen-item">
+                    <span>Total inventario anterior:</span>
+                    <strong>{parejaResumen.length}</strong>
+                  </div>
+                  <div className="resumen-item">
+                    <span>Escaneados:</span>
+                    <strong className="text-success">{resumen.filter(r => parejaResumen.some(p => p.sku === r.sku)).length}</strong>
+                  </div>
+                  <div className="resumen-item">
+                    <span>Pendientes:</span>
+                    <strong className="text-warning">{parejaResumen.filter(p => !resumen.some(r => r.sku === p.sku)).length}</strong>
+                  </div>
                 </div>
-              )}
+              </>
+            )}
+          </div>
+
+          {/* Resumen por producto con botones de editar y eliminar */}
+          <div className="card resumen-card">
+            <div className="list-header">
+              <h2 className="section-title"><Boxes size={20} /><span>Resumen por producto</span></h2>
             </div>
+            {resumen.length === 0 ? (
+              <div className="escaneo-empty">No hay escaneos</div>
+            ) : (
+              <div className="table-responsive-container">
+                <table className="data-table resumen-table">
+                  <thead>
+                    <tr>
+                      <th>SKU</th>
+                      <th>Descripción</th>
+                      <th>Cantidad</th>
+                      <th>Acciones</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {resumen.slice(0, 15).map((item, index) => (
+                      <tr key={`${item.sku || 'sku'}-${index}`}>
+                        <td data-label="SKU"><strong>{item.sku}</strong></td>
+                        <td data-label="Descripción">{item.descripcionSnapshot || 'Sin descripción'}</td>
+                        <td data-label="Cantidad" className="text-center">{item.cantidadTotal}</td>
+                        <td data-label="Acciones" className="text-center">
+                          <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
+                            <button
+                              className="icon-btn"
+                              onClick={() => handleEditarProducto(item)}
+                              title="Editar cantidad"
+                              style={{ color: 'var(--primary)' }}
+                            >
+                              <Edit2 size={16} />
+                            </button>
+                            <button
+                              className="icon-btn danger"
+                              onClick={() => handleEliminarProducto(item.sku)}
+                              title="Eliminar producto"
+                              style={{ color: 'var(--danger)' }}
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                    {resumen.length > 15 && (
+                      <tr className="more-items">
+                        <td colSpan="4" className="text-center">+{resumen.length - 15} productos más</td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+
+          {/* Historial de lecturas */}
+          <div className="card historial-card">
+            <div className="list-header">
+              <h2 className="section-title"><History size={20} /><span>Historial reciente</span></h2>
+            </div>
+            {history.length === 0 ? (
+              <div className="escaneo-empty">No hay lecturas</div>
+            ) : (
+              <div className="history-list">
+                {history.slice(0, 15).map((lectura) => (
+                  <div key={lectura.id} className={`history-item ${lectura.estado === 'anulada' ? 'anulada' : ''}`}>
+                    <div className="history-main">
+                      <strong>{lectura.codigoLeido}</strong>
+                      <p>{lectura.sku || 'No reconocido'}</p>
+                    </div>
+                    <div className="history-meta">
+                      <span className="tag-muted">{formatOnlyTime(lectura.fechaHora)}</span>
+                      <span className={`status-chip mini ${lectura.estado}`}>{lectura.estado === 'valida' ? 'OK' : 'NO'}</span>
+                      {lectura.estado !== 'anulada' && (
+                        <button className="icon-btn" onClick={() => handleAnularLectura(lectura.id)} title="Anular"><Trash2 size={14} /></button>
+                      )}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </>
       ) : (
@@ -1201,23 +1286,71 @@ export default function EscaneoPage() {
                     value={manualRepeticiones}
                     onChange={(e) => setManualRepeticiones(parseInt(e.target.value) || 1)}
                     min="1"
-                    max="100"
+                    max="10000"
                     step="1"
                   />
-                  <small>¿Cuántas veces quieres agregar este producto? (1-100)</small>
+                  <small>¿Cuántas veces quieres agregar este producto? (1-10000)</small>
                 </div>
               </div>
               <div className="manual-summary">
                 <p><strong>Resumen:</strong></p>
                 <p>• {manualRepeticiones} registro(s) de {manualSku || 'SKU'}</p>
                 <p>• {manualCantidad} unidad(es) por registro</p>
-                <p className="total-unidades">📦 Total de unidades: <strong>{manualRepeticiones * manualCantidad}</strong></p>
+                <p className="total-unidades"> Total de unidades: <strong>{manualRepeticiones * manualCantidad}</strong></p>
               </div>
             </div>
             <div className="modal-actions">
               <button className="btn btn-outline" onClick={() => setShowManualModal(false)}>Cancelar</button>
               <button className="btn btn-primary" onClick={handleAgregarManual} disabled={loadingManual || !manualSku.trim()}>
                 {loadingManual ? 'Agregando...' : `Agregar (${manualRepeticiones} × ${manualCantidad})`}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal para editar cantidad */}
+      {showEditModal && editProducto && (
+        <div className="modal-overlay" onClick={() => setShowEditModal(false)}>
+          <div className="modal" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3><Edit2 size={18} /> Editar cantidad</h3>
+              <button className="icon-btn" onClick={() => setShowEditModal(false)}><X size={18} /></button>
+            </div>
+            <div className="modal-body">
+              <div className="form-group">
+                <label>Producto</label>
+                <input value={editProducto.sku} disabled />
+              </div>
+              <div className="form-group">
+                <label>Descripción</label>
+                <input value={editProducto.descripcionSnapshot || 'Sin descripción'} disabled />
+              </div>
+              <div className="form-group">
+                <label>Cantidad actual</label>
+                <input value={editProducto.cantidadTotal} disabled />
+              </div>
+              <div className="form-group">
+                <label>Nueva cantidad</label>
+                <input
+                  type="number"
+                  value={editCantidad}
+                  onChange={(e) => setEditCantidad(parseInt(e.target.value) || 0)}
+                  min="0"
+                  autoFocus
+                />
+              </div>
+              <div className="alert-info" style={{ marginTop: '16px' }}>
+                <AlertTriangle size={16} />
+                <span>
+                  <strong>Nota:</strong> Este cambio afectará las diferencias del inventario.
+                </span>
+              </div>
+            </div>
+            <div className="modal-actions">
+              <button className="btn btn-outline" onClick={() => setShowEditModal(false)}>Cancelar</button>
+              <button className="btn btn-primary" onClick={handleGuardarEdicion} disabled={loadingEdit}>
+                {loadingEdit ? 'Guardando...' : 'Guardar cambios'}
               </button>
             </div>
           </div>

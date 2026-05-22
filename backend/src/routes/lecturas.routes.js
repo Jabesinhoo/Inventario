@@ -12,5 +12,6 @@ router.get('/historial', authMiddleware, injectGrupoId, lecturasController.getHi
 router.get('/estadisticas-grupo', authMiddleware, injectGrupoId, lecturasController.getEstadisticasGrupo);
 router.get('/exportar-grupo', authMiddleware, injectGrupoId, lecturasController.exportarResultadosGrupo);
 router.post('/manual', authMiddleware, lecturasController.agregarLecturaManual);  // ← Verifica que existe
-
+router.delete('/ronda/:rondaId/sku/:sku', authMiddleware, lecturasController.eliminarLecturaPorSku);
+router.put('/ronda/:rondaId/sku/:sku', authMiddleware, lecturasController.editarCantidadProducto);
 module.exports = router;

@@ -131,9 +131,10 @@ async function calcularTotalReconteo(rondaId, sku, transaction) {
   return Number(total || 0);
 }
 
-// ==================== VALIDACIÓN DE PRODUCTO EN OTRA ZONA ====================
+
 async function validarProductoEnOtraZona(inventarioId, sku, zonaIdActual, grupoIdActual, transaction) {
-  const resultado = await sequelize.query(
+  // Esta es una implementación básica, ajústala según tu lógica
+  const result = await sequelize.query(
     `
     SELECT 
       l."zonaId",
@@ -162,9 +163,9 @@ async function validarProductoEnOtraZona(inventarioId, sku, zonaIdActual, grupoI
     }
   );
 
-  if (!resultado || resultado.length === 0) return null;
+  if (!result || result.length === 0) return null;
 
-  const row = resultado[0];
+  const row = result[0];
   return {
     zonaId: row.zonaId,
     zonaNombre: row.zonaNombre,
@@ -763,9 +764,9 @@ async function scanLecturaRonda(req, res, next) {
     let mensaje = 'Lectura registrada correctamente';
     if (esReconteo) {
       if (esEscaneoOpcional) {
-        mensaje = `ℹ️ Producto ${skuFinal} escaneado (opcional). No estaba en la lista de pendientes.`;
+        mensaje = ` Producto ${skuFinal} escaneado (opcional). No estaba en la lista de pendientes.`;
       } else {
-        mensaje = `✅ Reconteo registrado. Total para SKU ${skuFinal}: ${cantidadTotalReconteo}`;
+        mensaje = ` Reconteo registrado. Total para SKU ${skuFinal}: ${cantidadTotalReconteo}`;
       }
     }
 
@@ -978,17 +979,19 @@ async function getResumenLecturas(req, res, next) {
 
     const whereClause = conditions.join(' AND ');
 
+    // 🔥 MODIFICADO: Unir con conteo_inicial_detalle para obtener la descripción real
     const resumen = await sequelize.query(
       `
-      SELECT
+      SELECT 
         l.sku,
-        MAX(l."descripcionSnapshot") AS "descripcionSnapshot",
+        COALESCE(c."descripcionSnapshot", MAX(l."descripcionSnapshot")) AS "descripcionSnapshot",
         COALESCE(SUM(l.cantidad), 0)::int AS "cantidadTotal"
       FROM lecturas l
       LEFT JOIN rondas_conteo r ON r.id = l."rondaId"
+      LEFT JOIN conteo_inicial_detalle c ON c.sku = l.sku AND c."inventarioId" = l."inventarioId"
       WHERE ${whereClause}
         AND l.sku IS NOT NULL
-      GROUP BY l.sku
+      GROUP BY l.sku, c."descripcionSnapshot"
       ORDER BY "cantidadTotal" DESC
       `,
       { replacements, type: QueryTypes.SELECT }
@@ -999,6 +1002,116 @@ async function getResumenLecturas(req, res, next) {
     next(error);
   }
 }
+
+async function eliminarLecturaPorSku(req, res, next) {
+  const transaction = await sequelize.transaction();
+
+  try {
+    const { rondaId, sku } = req.params;
+
+    if (!rondaId || !sku) {
+      return res.status(400).json({
+        ok: false,
+        message: 'rondaId y sku son requeridos'
+      });
+    }
+
+    // Verificar permisos
+    if (!req.canViewAllGroups && req.grupoId) {
+      const lectura = await Lectura.findOne({
+        where: { rondaId, sku, estado: 'valida' },
+        transaction
+      });
+
+      if (lectura && lectura.grupoId !== req.grupoId) {
+        await transaction.rollback();
+        return res.status(403).json({
+          ok: false,
+          message: 'No tienes permiso para eliminar lecturas de otro grupo'
+        });
+      }
+    }
+
+    // Eliminar todas las lecturas de ese SKU en la ronda
+    const eliminadas = await Lectura.destroy({
+      where: {
+        rondaId,
+        sku,
+        estado: 'valida'
+      },
+      transaction
+    });
+
+    // Actualizar total de escaneos de la ronda
+    const totalEscaneosRonda = await Lectura.sum('cantidad', {
+      where: {
+        rondaId,
+        estado: 'valida'
+      },
+      transaction
+    });
+
+    await RondaConteo.update(
+      { totalEscaneos: Number(totalEscaneosRonda || 0) },
+      { where: { id: rondaId }, transaction }
+    );
+
+    // Si es reconteo, actualizar la discrepancia
+    const ronda = await RondaConteo.findByPk(rondaId, { transaction });
+    if (ronda && ronda.tipoRonda === 'reconteo') {
+      const nuevaCantidad = await Lectura.sum('cantidad', {
+        where: { rondaId, sku, estado: 'valida' },
+        transaction
+      });
+
+      const discrepancia = await DiscrepanciaConteo.findOne({
+        where: {
+          inventarioId: ronda.inventarioId,
+          sku,
+          zonaId: ronda.zonaId || null,
+          rondaReconteoId: ronda.id
+        },
+        transaction
+      });
+
+      if (discrepancia) {
+        const nuevaDiferencia = Math.abs(
+          Number(discrepancia.cantidadBase || 0) - Number(nuevaCantidad || 0)
+        );
+
+        let nuevoEstado = 'pendiente_reconteo';
+        if (nuevaCantidad > 0) {
+          nuevoEstado = nuevaDiferencia === 0 ? 'resuelta' : 'reconteo_en_proceso';
+        }
+
+        await discrepancia.update({
+          cantidadRecontada: nuevaCantidad || 0,
+          cantidadUltima: nuevaCantidad || 0,
+          diferencia: nuevaDiferencia,
+          estado: nuevoEstado,
+          cantidadFinal: nuevaDiferencia === 0 ? nuevaCantidad : null,
+          cerradoEn: nuevaDiferencia === 0 ? new Date() : null
+        }, { transaction });
+      }
+    }
+
+    await transaction.commit();
+
+    res.json({
+      ok: true,
+      message: `Se eliminaron ${eliminadas} lectura(s) del producto ${sku}`,
+      data: { eliminadas, sku }
+    });
+
+  } catch (error) {
+    if (transaction && !transaction.finished) {
+      await transaction.rollback();
+    }
+    console.error('❌ Error en eliminarLecturaPorSku:', error);
+    next(error);
+  }
+}
+
 
 async function getHistorialLecturas(req, res, next) {
   try {
@@ -1139,21 +1252,27 @@ async function agregarLecturaManual(req, res, next) {
 
     console.log('🔥 agregarLecturaManual - Datos:', { rondaId, sku, cantidad, grupoId, usuarioId });
 
-    // Validaciones
+    // Validaciones básicas
     if (!rondaId || !sku || !cantidad || cantidad <= 0) {
       await transaction.rollback();
       return res.status(400).json({ ok: false, message: 'rondaId, sku y cantidad > 0 son requeridos' });
     }
 
-    // Verificar ronda
+    // Validar cantidad máxima (100,000 unidades)
+    if (cantidad > 100000) {
+      await transaction.rollback();
+      return res.status(400).json({ ok: false, message: 'La cantidad total no puede superar las 100,000 unidades' });
+    }
+
+    // Verificar que la ronda existe y está activa
     const ronda = await RondaConteo.findByPk(rondaId, {
-      include: [{ model: Zona, as: 'zona' }],
+      include: [{ model: Zona, as: 'zona', attributes: ['id', 'nombre'] }],
       transaction
     });
 
     if (!ronda) {
       await transaction.rollback();
-      return res.status(404).json({ ok: false, message: 'Ronda no encontrada' });
+      return res.status(404).json({ ok: false, message: 'Ronda de conteo no encontrada' });
     }
 
     if (ronda.estado !== 'activa') {
@@ -1161,7 +1280,7 @@ async function agregarLecturaManual(req, res, next) {
       return res.status(400).json({ ok: false, message: 'La ronda no está activa' });
     }
 
-    // Obtener grupo
+    // Obtener el grupo del usuario si no se proporcionó
     let grupoIdFinal = grupoId;
     if (!grupoIdFinal) {
       const grupoUsuario = await sequelize.query(
@@ -1175,7 +1294,7 @@ async function agregarLecturaManual(req, res, next) {
       grupoIdFinal = grupoUsuario[0].grupoId;
     }
 
-    // Verificar asignación
+    // Verificar asignación a la ronda
     const asignacionRonda = await AsignacionRonda.findOne({
       where: { rondaId: ronda.id, grupoId: grupoIdFinal },
       transaction
@@ -1186,66 +1305,140 @@ async function agregarLecturaManual(req, res, next) {
       return res.status(403).json({ ok: false, message: 'Tu grupo no está asignado a esta ronda' });
     }
 
-    // Buscar producto
-    let productoInfo = await ConteoInicialDetalle.findOne({
-      where: { inventarioId: ronda.inventarioId, sku },
+    // BUSCAR PRODUCTO para obtener su descripción real
+    let productoInfo = null;
+    let lecturaPrevia = null;
+    let descripcionSnapshot = 'Sin descripción';
+    let fuenteDescripcion = 'manual';
+
+    // 1. Buscar en conteo_inicial_detalle (inventario cargado)
+    productoInfo = await ConteoInicialDetalle.findOne({
+      where: { 
+        inventarioId: ronda.inventarioId, 
+        sku: sku 
+      },
+      attributes: ['descripcionSnapshot'],
       transaction
     });
 
-    let descripcionSnapshot = 'Sin descripción';
-    if (!productoInfo) {
-      console.log(`⚠️ SKU ${sku} no encontrado en conteo_inicial_detalle, buscando en lecturas...`);
-
-      const lecturaPrevia = await Lectura.findOne({
+    if (productoInfo && productoInfo.descripcionSnapshot) {
+      descripcionSnapshot = productoInfo.descripcionSnapshot;
+      fuenteDescripcion = 'conteo_inicial';
+      console.log(`✅ SKU ${sku} encontrado en conteo_inicial: ${descripcionSnapshot}`);
+    } else {
+      // 2. Buscar en lecturas previas del mismo inventario
+      lecturaPrevia = await Lectura.findOne({
         where: {
           inventarioId: ronda.inventarioId,
-          sku,
+          sku: sku,
           estado: 'valida'
         },
+        attributes: ['descripcionSnapshot'],
         order: [['fechaHora', 'DESC']],
         transaction
       });
 
-      if (lecturaPrevia) {
-        descripcionSnapshot = lecturaPrevia.descripcionSnapshot || 'Sin descripción';
-        console.log(`✅ SKU ${sku} encontrado en lecturas previas`);
+      if (lecturaPrevia && lecturaPrevia.descripcionSnapshot) {
+        descripcionSnapshot = lecturaPrevia.descripcionSnapshot;
+        fuenteDescripcion = 'lecturas_previas';
+        console.log(`✅ SKU ${sku} encontrado en lecturas previas: ${descripcionSnapshot}`);
       } else {
+        // 3. No existe en ningún lado, usar descripción genérica
         descripcionSnapshot = `Producto ${sku} (agregado manualmente)`;
-        console.log(`🆕 SKU ${sku} nuevo, descripción genérica`);
+        fuenteDescripcion = 'manual';
+        console.log(`🆕 SKU ${sku} no encontrado, descripción genérica: ${descripcionSnapshot}`);
       }
-    } else {
-      descripcionSnapshot = productoInfo.descripcionSnapshot || 'Sin descripción';
     }
 
     const grupo = await Grupo.findByPk(grupoIdFinal, { transaction });
 
-    // 🔥 CREAR LECTURA - AHORA CON conteoTipo
+    // Crear la lectura
     const lectura = await Lectura.create({
       rondaId: ronda.id,
       inventarioId: ronda.inventarioId,
-      conteoTipo: ronda.numeroRonda,  // ← CAMPO AGREGADO (usa el número de ronda)
+      conteoTipo: ronda.numeroRonda,
       usuarioId,
       grupoId: grupoIdFinal,
       zonaId: grupo?.zonaId || ronda.zonaId,
-      sku,
-      cantidad,
+      sku: sku,
+      cantidad: cantidad,
       estado: 'valida',
       esManual: true,
       codigoLeido: sku,
-      descripcionSnapshot
+      descripcionSnapshot: descripcionSnapshot
     }, { transaction });
 
     console.log('✅ Lectura manual creada:', lectura.id);
 
-    // Calcular total acumulado
+    // Calcular total acumulado del SKU en esta ronda
     const totalAcumulado = await Lectura.sum('cantidad', {
-      where: { rondaId: ronda.id, sku, estado: 'valida' },
+      where: {
+        rondaId: ronda.id,
+        sku: sku,
+        estado: 'valida'
+      },
       transaction
     });
 
+    // Si es ronda de reconteo, actualizar la discrepancia
+    let discrepanciaActualizada = false;
+    if (ronda.tipoRonda === 'reconteo') {
+      let discrepancia = await DiscrepanciaConteo.findOne({
+        where: {
+          inventarioId: ronda.inventarioId,
+          sku: sku,
+          zonaId: ronda.zonaId || null
+        },
+        transaction
+      });
+
+      if (discrepancia) {
+        if (!discrepancia.rondaReconteoId) {
+          await discrepancia.update({ rondaReconteoId: ronda.id }, { transaction });
+        }
+
+        if (discrepancia.rondaReconteoId === ronda.id) {
+          const nuevaCantidadRecontada = totalAcumulado;
+          const diferenciaRestante = (discrepancia.cantidadBase || 0) - nuevaCantidadRecontada;
+
+          let nuevoEstado = discrepancia.estado;
+          let cantidadFinal = null;
+          let criterioCierre = null;
+
+          if (nuevaCantidadRecontada === (discrepancia.cantidadBase || 0)) {
+            nuevoEstado = 'resuelta';
+            cantidadFinal = nuevaCantidadRecontada;
+            criterioCierre = `reconteo_completado_ronda_${ronda.numeroRonda}`;
+          } else if (nuevaCantidadRecontada > (discrepancia.cantidadBase || 0)) {
+            nuevoEstado = 'resuelta_con_exceso';
+            cantidadFinal = nuevaCantidadRecontada;
+            criterioCierre = `reconteo_exceso_ronda_${ronda.numeroRonda}`;
+          } else if (nuevaCantidadRecontada > 0) {
+            nuevoEstado = 'reconteo_en_proceso';
+          }
+
+          await discrepancia.update({
+            cantidadRecontada: nuevaCantidadRecontada,
+            cantidadUltima: nuevaCantidadRecontada,
+            estado: nuevoEstado,
+            reconteoCount: (discrepancia.reconteoCount || 0) + 1,
+            diferencia: Math.abs(diferenciaRestante),
+            cantidadFinal: cantidadFinal || discrepancia.cantidadFinal,
+            criterioCierre: criterioCierre || discrepancia.criterioCierre,
+            cerradoEn: (nuevoEstado === 'resuelta' || nuevoEstado === 'resuelta_con_exceso') ? new Date() : null
+          }, { transaction });
+
+          discrepanciaActualizada = true;
+        }
+      }
+    }
+
     // Actualizar total de escaneos de la ronda
     const totalEscaneosRonda = await Lectura.sum('cantidad', {
-      where: { rondaId: ronda.id, estado: 'valida' },
+      where: {
+        rondaId: ronda.id,
+        estado: 'valida'
+      },
       transaction
     });
 
@@ -1254,21 +1447,211 @@ async function agregarLecturaManual(req, res, next) {
       updatedAt: new Date()
     }, { transaction });
 
+    // Commit de la transacción
     await transaction.commit();
 
-    res.json({
+    // Contar pendientes restantes (después del commit)
+    let totalPendientes = 0;
+    if (ronda.tipoRonda === 'reconteo') {
+      totalPendientes = await DiscrepanciaConteo.count({
+        where: {
+          inventarioId: ronda.inventarioId,
+          zonaId: ronda.zonaId || null,
+          rondaReconteoId: ronda.id,
+          estado: { [Op.in]: ['pendiente_reconteo', 'reconteo_en_proceso'] }
+        }
+      });
+    }
+
+    // Preparar mensaje según la fuente de la descripción
+    let mensaje = '';
+    if (fuenteDescripcion === 'conteo_inicial') {
+      mensaje = `✅ ${descripcionSnapshot} - Agregado correctamente. Total acumulado: ${totalAcumulado} unidades.`;
+    } else if (fuenteDescripcion === 'lecturas_previas') {
+      mensaje = `📋 ${descripcionSnapshot} - Producto agregado (existía en escaneos previos). Total: ${totalAcumulado} unidades.`;
+    } else {
+      mensaje = `🆕 Producto ${sku} agregado manualmente. Total acumulado: ${totalAcumulado} unidades.`;
+    }
+
+    return res.status(201).json({
       ok: true,
-      message: `✅ Producto ${sku} agregado correctamente. Total acumulado: ${totalAcumulado} unidades.`,
+      message: mensaje,
       data: {
-        lectura: { id: lectura.id, sku, cantidad: lectura.cantidad },
-        producto: { sku, descripcion: descripcionSnapshot },
-        acumuladoSku: totalAcumulado
+        lectura: {
+          id: lectura.id,
+          sku: sku,
+          cantidad: cantidad,
+          esManual: true
+        },
+        producto: {
+          sku: sku,
+          descripcion: descripcionSnapshot,
+          fuente: fuenteDescripcion
+        },
+        acumuladoSku: totalAcumulado,
+        totalPendientes: totalPendientes,
+        esReconteo: ronda.tipoRonda === 'reconteo',
+        discrepanciaActualizada: discrepanciaActualizada
       }
     });
 
   } catch (error) {
-    await transaction.rollback();
+    // Solo hacer rollback si la transacción no ha sido finalizada
+    if (transaction && !transaction.finished) {
+      await transaction.rollback();
+    }
     console.error('❌ Error en agregarLecturaManual:', error);
+    next(error);
+  }
+}
+
+async function editarCantidadProducto(req, res, next) {
+  const transaction = await sequelize.transaction();
+
+  try {
+    const { rondaId, sku } = req.params;
+    const { nuevaCantidad } = req.body;
+
+    if (!rondaId || !sku) {
+      return res.status(400).json({
+        ok: false,
+        message: 'rondaId y sku son requeridos'
+      });
+    }
+
+    if (nuevaCantidad === undefined || nuevaCantidad < 0) {
+      return res.status(400).json({
+        ok: false,
+        message: 'nuevaCantidad debe ser un número mayor o igual a 0'
+      });
+    }
+
+    // Verificar permisos
+    if (!req.canViewAllGroups && req.grupoId) {
+      const lectura = await Lectura.findOne({
+        where: { rondaId, sku, estado: 'valida' },
+        transaction
+      });
+
+      if (lectura && lectura.grupoId !== req.grupoId) {
+        await transaction.rollback();
+        return res.status(403).json({
+          ok: false,
+          message: 'No tienes permiso para editar lecturas de otro grupo'
+        });
+      }
+    }
+
+    // Obtener la cantidad actual total del SKU
+    const cantidadActual = await Lectura.sum('cantidad', {
+      where: {
+        rondaId,
+        sku,
+        estado: 'valida'
+      },
+      transaction
+    });
+
+    const diferencia = nuevaCantidad - (cantidadActual || 0);
+
+    if (diferencia === 0) {
+      await transaction.commit();
+      return res.json({
+        ok: true,
+        message: 'La cantidad no ha cambiado',
+        data: { sku, cantidadActual, nuevaCantidad }
+      });
+    }
+
+    // Crear una nueva lectura con la diferencia (positiva o negativa)
+    if (diferencia !== 0) {
+      await Lectura.create({
+        rondaId,
+        inventarioId: (await RondaConteo.findByPk(rondaId, { transaction })).inventarioId,
+        conteoTipo: (await RondaConteo.findByPk(rondaId, { transaction })).numeroRonda,
+        zonaId: (await Lectura.findOne({ where: { rondaId, sku }, transaction }))?.zonaId || null,
+        grupoId: (await Lectura.findOne({ where: { rondaId, sku }, transaction }))?.grupoId || null,
+        usuarioId: req.user.id,
+        sku,
+        cantidad: diferencia,
+        estado: 'valida',
+        esManual: true,
+        codigoLeido: sku,
+        descripcionSnapshot: (await Lectura.findOne({ where: { rondaId, sku }, transaction }))?.descripcionSnapshot || 'Cantidad ajustada'
+      }, { transaction });
+    }
+
+    // Actualizar total de escaneos de la ronda
+    const totalEscaneosRonda = await Lectura.sum('cantidad', {
+      where: {
+        rondaId,
+        estado: 'valida'
+      },
+      transaction
+    });
+
+    await RondaConteo.update(
+      { totalEscaneos: Number(totalEscaneosRonda || 0) },
+      { where: { id: rondaId }, transaction }
+    );
+
+    // Si es reconteo, actualizar la discrepancia
+    const ronda = await RondaConteo.findByPk(rondaId, { transaction });
+    if (ronda && ronda.tipoRonda === 'reconteo') {
+      const nuevaCantidadTotal = await Lectura.sum('cantidad', {
+        where: { rondaId, sku, estado: 'valida' },
+        transaction
+      });
+
+      const discrepancia = await DiscrepanciaConteo.findOne({
+        where: {
+          inventarioId: ronda.inventarioId,
+          sku,
+          zonaId: ronda.zonaId || null,
+          rondaReconteoId: ronda.id
+        },
+        transaction
+      });
+
+      if (discrepancia) {
+        const nuevaDiferencia = Math.abs(
+          Number(discrepancia.cantidadBase || 0) - Number(nuevaCantidadTotal || 0)
+        );
+
+        let nuevoEstado = 'pendiente_reconteo';
+        if (nuevaCantidadTotal > 0) {
+          nuevoEstado = nuevaDiferencia === 0 ? 'resuelta' : 'reconteo_en_proceso';
+        }
+
+        await discrepancia.update({
+          cantidadRecontada: nuevaCantidadTotal || 0,
+          cantidadUltima: nuevaCantidadTotal || 0,
+          diferencia: nuevaDiferencia,
+          estado: nuevoEstado,
+          cantidadFinal: nuevaDiferencia === 0 ? nuevaCantidadTotal : null,
+          cerradoEn: nuevaDiferencia === 0 ? new Date() : null
+        }, { transaction });
+      }
+    }
+
+    await transaction.commit();
+
+    res.json({
+      ok: true,
+      message: `Cantidad del producto ${sku} actualizada de ${cantidadActual || 0} a ${nuevaCantidad}`,
+      data: {
+        sku,
+        cantidadAnterior: cantidadActual || 0,
+        cantidadNueva: nuevaCantidad,
+        diferencia
+      }
+    });
+
+  } catch (error) {
+    if (transaction && !transaction.finished) {
+      await transaction.rollback();
+    }
+    console.error('❌ Error en editarCantidadProducto:', error);
     next(error);
   }
 }
@@ -1289,5 +1672,7 @@ module.exports = {
   getEstadisticasGrupo,
   exportarResultadosGrupo,
   buildWherePendienteReconteo,
-  agregarLecturaManual  // ← Agregar esta línea
+  agregarLecturaManual,
+  eliminarLecturaPorSku,
+  editarCantidadProducto
 };
