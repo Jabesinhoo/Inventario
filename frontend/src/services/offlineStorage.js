@@ -1,6 +1,6 @@
 // src/services/offlineStorage.js
 const DB_NAME = 'inventario_offline';
-const DB_VERSION = 7;
+const DB_VERSION = 8;
 
 let db = null;
 let dbInitPromise = null;
@@ -29,7 +29,7 @@ async function ensureDB() {
       const db = event.target.result;
       console.log('[Offline] Creando stores...');
       
-      // Store para escaneos pendientes
+      // Store para escaneos pendientes y peticiones en general
       if (!db.objectStoreNames.contains('pending_scans')) {
         const scansStore = db.createObjectStore('pending_scans', { 
           keyPath: 'id', 
@@ -37,6 +37,7 @@ async function ensureDB() {
         });
         scansStore.createIndex('sincronizado', 'sincronizado');
         scansStore.createIndex('created_at', 'created_at');
+        scansStore.createIndex('tipo', 'tipo');
         console.log('[Offline] Store pending_scans creado');
       }
       
@@ -61,6 +62,7 @@ export async function savePendingScan(scanData) {
     
     const pendingScan = {
       ...scanData,
+      tipo: 'scan',
       created_at: Date.now(),
       sincronizado: false,
       intentos: 0
@@ -93,7 +95,7 @@ export async function getPendingScans() {
       const request = store.getAll();
       request.onsuccess = () => {
         const all = request.result || [];
-        const pendientes = all.filter(scan => !scan.sincronizado);
+        const pendientes = all.filter(item => !item.sincronizado && item.tipo === 'scan');
         console.log('[Offline] Escaneos pendientes:', pendientes.length);
         resolve(pendientes);
       };
@@ -134,25 +136,6 @@ export async function markScanAsSynced(scanId) {
   }
 }
 
-async function isStillPending(scanId) {
-  try {
-    const database = await ensureDB();
-    const transaction = database.transaction(['pending_scans'], 'readonly');
-    const store = transaction.objectStore('pending_scans');
-    
-    return new Promise((resolve) => {
-      const request = store.get(scanId);
-      request.onsuccess = () => {
-        const scan = request.result;
-        resolve(scan && !scan.sincronizado);
-      };
-      request.onerror = () => resolve(false);
-    });
-  } catch (error) {
-    return false;
-  }
-}
-
 export async function syncAllPendingScans(api, onProgress) {
   if (isSyncing) {
     console.log('[Offline] Ya hay una sincronización en curso');
@@ -167,13 +150,6 @@ export async function syncAllPendingScans(api, onProgress) {
   console.log('[Offline] Sincronizando', pendientes.length, 'escaneos');
   
   for (const scan of pendientes) {
-    const stillPending = await isStillPending(scan.id);
-    if (!stillPending) {
-      console.log('[Offline] Escaneo ya no está pendiente:', scan.id);
-      sincronizados++;
-      continue;
-    }
-    
     try {
       const response = await api.post('/lecturas/scan-ronda', {
         rondaId: scan.rondaId,
@@ -199,7 +175,7 @@ export async function syncAllPendingScans(api, onProgress) {
     }
   }
   
-  console.log(`[Offline] Sincronización: ${sincronizados} ok, ${errores} errores`);
+  console.log(`[Offline] Sincronización escaneos: ${sincronizados} ok, ${errores} errores`);
   isSyncing = false;
   return { sincronizados, errores, total: pendientes.length };
 }
@@ -207,6 +183,142 @@ export async function syncAllPendingScans(api, onProgress) {
 export async function getPendingStats() {
   const pendientes = await getPendingScans();
   return { total: pendientes.length };
+}
+
+// ==================== PETICIONES PENDIENTES GENERALES (para inventarios, zonas, grupos) ====================
+
+export async function savePendingRequest(tipo, url, data, method) {
+  try {
+    const database = await ensureDB();
+    const transaction = database.transaction(['pending_scans'], 'readwrite');
+    const store = transaction.objectStore('pending_scans');
+    
+    const pending = {
+      tipo,
+      url,
+      data,
+      method,
+      created_at: Date.now(),
+      sincronizado: false,
+      intentos: 0
+    };
+    
+    return new Promise((resolve) => {
+      const request = store.add(pending);
+      request.onsuccess = () => {
+        console.log(`[Offline] ${tipo} guardado en cola, id:`, request.result);
+        resolve(request.result);
+      };
+      request.onerror = () => {
+        console.error(`[Offline] Error guardando ${tipo}:`, request.error);
+        resolve(null);
+      };
+    });
+  } catch (error) {
+    console.error('[Offline] Error en savePendingRequest:', error);
+    return null;
+  }
+}
+
+export async function getPendingRequests(tipo = null) {
+  try {
+    const database = await ensureDB();
+    const transaction = database.transaction(['pending_scans'], 'readonly');
+    const store = transaction.objectStore('pending_scans');
+    
+    return new Promise((resolve) => {
+      const request = store.getAll();
+      request.onsuccess = () => {
+        let result = request.result || [];
+        result = result.filter(item => !item.sincronizado);
+        if (tipo) {
+          result = result.filter(r => r.tipo === tipo);
+        }
+        console.log(`[Offline] Peticiones pendientes${tipo ? ` de tipo ${tipo}` : ''}:`, result.length);
+        resolve(result);
+      };
+      request.onerror = () => {
+        console.error('[Offline] Error obteniendo peticiones:', request.error);
+        resolve([]);
+      };
+    });
+  } catch (error) {
+    console.error('[Offline] Error en getPendingRequests:', error);
+    return [];
+  }
+}
+
+export async function markAsSynced(id) {
+  try {
+    const database = await ensureDB();
+    const transaction = database.transaction(['pending_scans'], 'readwrite');
+    const store = transaction.objectStore('pending_scans');
+    
+    return new Promise((resolve) => {
+      const getRequest = store.get(id);
+      getRequest.onsuccess = () => {
+        const item = getRequest.result;
+        if (item && !item.sincronizado) {
+          item.sincronizado = true;
+          item.sincronizado_en = Date.now();
+          store.put(item);
+          console.log(`[Offline] Item ${id} marcado como sincronizado`);
+        }
+        resolve(true);
+      };
+      getRequest.onerror = () => resolve(false);
+    });
+  } catch (error) {
+    console.error('[Offline] Error en markAsSynced:', error);
+    return false;
+  }
+}
+
+export async function syncAllPendingRequests(api, onProgress) {
+  const pendientes = await getPendingRequests();
+  let sincronizados = 0;
+  let errores = 0;
+  
+  console.log('[Offline] Sincronizando', pendientes.length, 'peticiones generales');
+  
+  for (const req of pendientes) {
+    try {
+      let response;
+      const token = localStorage.getItem('inventario_token');
+      const options = {
+        method: req.method,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': token ? `Bearer ${token}` : ''
+        }
+      };
+      
+      if (req.data && (req.method === 'POST' || req.method === 'PUT')) {
+        options.body = JSON.stringify(req.data);
+      }
+      
+      response = await fetch(req.url, options);
+      
+      if (response.ok) {
+        await markAsSynced(req.id);
+        sincronizados++;
+        console.log(`[Offline] ✅ ${req.tipo} sincronizado: ${req.url}`);
+      } else {
+        errores++;
+        console.warn(`[Offline] ❌ Error ${response.status} en ${req.tipo}`);
+      }
+    } catch (error) {
+      errores++;
+      console.error(`[Offline] ❌ Error en sync ${req.tipo}:`, error.message);
+    }
+    
+    if (onProgress) {
+      onProgress({ sincronizados, errores, total: pendientes.length });
+    }
+  }
+  
+  console.log(`[Offline] Sincronización general: ${sincronizados} ok, ${errores} errores`);
+  return { sincronizados, errores, total: pendientes.length };
 }
 
 // ==================== CACHÉ DE INVENTARIOS ====================

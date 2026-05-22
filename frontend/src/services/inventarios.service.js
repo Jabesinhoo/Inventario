@@ -1,6 +1,8 @@
+// src/services/inventarios.service.js
 import api from './api';
-import { getCachedInventarios, cacheInventarios, isOnline } from './offlineStorage';
+import { getCachedInventarios, cacheInventarios, isOnline, savePendingRequest, getPendingRequests, markAsSynced } from './offlineStorage';
 
+// Obtener inventarios (con caché offline)
 export async function getInventarios(forceRefresh = false) {
   // Si estamos offline y no se fuerza refresco, usar caché
   if (!isOnline() && !forceRefresh) {
@@ -15,18 +17,21 @@ export async function getInventarios(forceRefresh = false) {
     const response = await api.get('/inventarios');
     const data = response.data.data || [];
     
-    // Guardar en caché
+    // Guardar en caché para uso offline
     await cacheInventarios(data);
-    console.log('[Online] Inventarios actualizados');
+    console.log('[Online] Inventarios actualizados en caché');
     
     return data;
   } catch (error) {
     console.error('Error al obtener inventarios:', error);
+    
+    // Si falla la petición, intentar usar caché como respaldo
     const cached = await getCachedInventarios();
     if (cached && cached.length > 0) {
-      console.log('[Respaldo] Usando caché');
+      console.log('[Respaldo] Usando caché de inventarios por error');
       return cached;
     }
+    
     throw error;
   }
 }
@@ -38,16 +43,17 @@ export async function createInventario(payload) {
     const pendingId = await savePendingRequest('inventario', '/inventarios', payload, 'POST');
     console.log(`[Offline] Inventario guardado en cola. ID local: ${pendingId}`);
     
-    // Optimistic update: agregar a caché local temporalmente
+    // Crear un objeto temporal para mostrar en la UI
     const tempInventario = {
       ...payload,
       id: `temp_${Date.now()}`,
       esTemporal: true,
-      createdAt: new Date().toISOString()
+      pendingSync: true
     };
     
-    const currentCache = await getCachedList(CACHE_KEY);
-    await cacheList(CACHE_KEY, [tempInventario, ...currentCache]);
+    // Actualizar caché local para mostrar el nuevo inventario
+    const currentCache = await getCachedInventarios();
+    await cacheInventarios([tempInventario, ...currentCache]);
     
     return { 
       ok: true, 
@@ -62,10 +68,10 @@ export async function createInventario(payload) {
     const newInventario = response.data.data;
     
     // Actualizar caché con el nuevo inventario
-    const currentCache = await getCachedList(CACHE_KEY);
-    await cacheList(CACHE_KEY, [newInventario, ...currentCache.filter(i => !i.esTemporal)]);
+    const currentCache = await getCachedInventarios();
+    await cacheInventarios([newInventario, ...currentCache.filter(i => !i.esTemporal)]);
     
-    return { ok: true, offline: false, data: newInventario };
+    return newInventario;
   } catch (error) {
     console.error('Error al crear inventario:', error);
     
@@ -76,18 +82,14 @@ export async function createInventario(payload) {
       const tempInventario = {
         ...payload,
         id: `temp_${Date.now()}`,
-        esTemporal: true
+        esTemporal: true,
+        pendingSync: true
       };
       
-      const currentCache = await getCachedList(CACHE_KEY);
-      await cacheList(CACHE_KEY, [tempInventario, ...currentCache]);
+      const currentCache = await getCachedInventarios();
+      await cacheInventarios([tempInventario, ...currentCache]);
       
-      return { 
-        ok: true, 
-        offline: true, 
-        data: tempInventario,
-        message: 'Inventario guardado localmente. Se sincronizará después.'
-      };
+      return tempInventario;
     }
     
     throw error;
@@ -99,12 +101,12 @@ export async function updateInventario(id, payload) {
   if (!isOnline()) {
     await savePendingRequest('inventario', `/inventarios/${id}`, payload, 'PUT');
     
-    // Optimistic update: actualizar caché local
-    const currentCache = await getCachedList(CACHE_KEY);
+    // Actualizar caché local
+    const currentCache = await getCachedInventarios();
     const updatedCache = currentCache.map(item => 
-      item.id === id ? { ...item, ...payload, esTemporal: true, pendienteActualizar: true } : item
+      item.id === id ? { ...item, ...payload, pendingSync: true } : item
     );
-    await cacheList(CACHE_KEY, updatedCache);
+    await cacheInventarios(updatedCache);
     
     return { 
       ok: true, 
@@ -119,31 +121,26 @@ export async function updateInventario(id, payload) {
     const updatedInventario = response.data.data;
     
     // Actualizar caché
-    const currentCache = await getCachedList(CACHE_KEY);
+    const currentCache = await getCachedInventarios();
     const updatedCache = currentCache.map(item => 
       item.id === id ? updatedInventario : item
     );
-    await cacheList(CACHE_KEY, updatedCache);
+    await cacheInventarios(updatedCache);
     
-    return { ok: true, offline: false, data: updatedInventario };
+    return updatedInventario;
   } catch (error) {
     console.error('Error al actualizar inventario:', error);
     
     if (!isOnline() || error.message?.includes('Network')) {
       await savePendingRequest('inventario', `/inventarios/${id}`, payload, 'PUT');
       
-      const currentCache = await getCachedList(CACHE_KEY);
+      const currentCache = await getCachedInventarios();
       const updatedCache = currentCache.map(item => 
-        item.id === id ? { ...item, ...payload, pendienteActualizar: true } : item
+        item.id === id ? { ...item, ...payload, pendingSync: true } : item
       );
-      await cacheList(CACHE_KEY, updatedCache);
+      await cacheInventarios(updatedCache);
       
-      return { 
-        ok: true, 
-        offline: true, 
-        data: { id, ...payload },
-        message: 'Actualización guardada localmente.'
-      };
+      return { id, ...payload };
     }
     
     throw error;
@@ -155,10 +152,10 @@ export async function deleteInventario(id) {
   if (!isOnline()) {
     await savePendingRequest('inventario', `/inventarios/${id}`, null, 'DELETE');
     
-    // Optimistic update: eliminar de caché local
-    const currentCache = await getCachedList(CACHE_KEY);
+    // Actualizar caché local
+    const currentCache = await getCachedInventarios();
     const updatedCache = currentCache.filter(item => item.id !== id);
-    await cacheList(CACHE_KEY, updatedCache);
+    await cacheInventarios(updatedCache);
     
     return { 
       ok: true, 
@@ -171,9 +168,9 @@ export async function deleteInventario(id) {
     const response = await api.delete(`/inventarios/${id}`);
     
     // Actualizar caché
-    const currentCache = await getCachedList(CACHE_KEY);
+    const currentCache = await getCachedInventarios();
     const updatedCache = currentCache.filter(item => item.id !== id);
-    await cacheList(CACHE_KEY, updatedCache);
+    await cacheInventarios(updatedCache);
     
     return response.data;
   } catch (error) {
@@ -182,22 +179,18 @@ export async function deleteInventario(id) {
     if (!isOnline() || error.message?.includes('Network')) {
       await savePendingRequest('inventario', `/inventarios/${id}`, null, 'DELETE');
       
-      const currentCache = await getCachedList(CACHE_KEY);
+      const currentCache = await getCachedInventarios();
       const updatedCache = currentCache.filter(item => item.id !== id);
-      await cacheList(CACHE_KEY, updatedCache);
+      await cacheInventarios(updatedCache);
       
-      return { 
-        ok: true, 
-        offline: true, 
-        message: 'Eliminación guardada localmente.'
-      };
+      return { ok: true, offline: true };
     }
     
     throw error;
   }
 }
 
-// Sincronizar inventarios pendientes (llamado automáticamente cuando vuelve internet)
+// Sincronizar inventarios pendientes
 export async function syncPendingInventarios() {
   const pendientes = await getPendingRequests('inventario');
   let sincronizados = 0;
@@ -214,19 +207,9 @@ export async function syncPendingInventarios() {
         response = await api.delete(req.url);
       }
       
-      if (response?.data?.ok) {
+      if (response?.data?.ok !== false) {
         await markAsSynced(req.id);
         sincronizados++;
-        
-        // Actualizar caché después de sincronizar
-        if (req.method !== 'DELETE') {
-          const freshData = await api.get('/inventarios');
-          await cacheList(CACHE_KEY, freshData.data.data || []);
-        } else {
-          // Para DELETE, solo refrescar caché
-          const freshData = await api.get('/inventarios');
-          await cacheList(CACHE_KEY, freshData.data.data || []);
-        }
       } else {
         errores++;
       }
@@ -236,11 +219,15 @@ export async function syncPendingInventarios() {
     }
   }
   
+  // Refrescar caché después de sincronizar
+  if (sincronizados > 0 && isOnline()) {
+    try {
+      const freshData = await api.get('/inventarios');
+      await cacheInventarios(freshData.data.data || []);
+    } catch (error) {
+      console.error('Error refrescando caché después de sincronizar:', error);
+    }
+  }
+  
   return { sincronizados, errores, total: pendientes.length };
-}
-
-// Limpiar caché de inventarios (útil para forzar refresco)
-export async function clearInventariosCache() {
-  await cacheList(CACHE_KEY, []);
-  console.log('[Cache] Inventarios cache limpiado');
 }
