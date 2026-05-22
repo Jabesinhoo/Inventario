@@ -4404,3 +4404,102 @@ input[type="number"]::-webkit-outer-spin-button {
   opacity: 0.6;
   cursor: not-allowed;
 }
+
+/* Scroll para tabla de inventario anterior */
+.inventario-anterior-card .table-responsive-container {
+  scrollbar-width: thin;
+}
+
+.inventario-anterior-card .table-responsive-container::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.inventario-anterior-card .table-responsive-container::-webkit-scrollbar-track {
+  background: var(--surface-soft);
+  border-radius: 3px;
+}
+
+.inventario-anterior-card .table-responsive-container::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+
+.inventario-anterior-card .table-responsive-container::-webkit-scrollbar-thumb:hover {
+  background: var(--primary);
+}
+
+/* Ajustes para sticky header en modo oscuro */
+:root[data-theme='dark'] .pareja-table thead th,
+:root[data-theme='dark'] .pareja-table td:first-child {
+  background-color: var(--surface);
+}
+
+/* Mensaje informativo */
+.alert-info {
+  background: var(--primary-light);
+  color: var(--primary);
+  padding: 12px 16px;
+  border-radius: 10px;
+  margin-top: 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.scan-helper.info {
+  margin-top: 12px;
+  padding: 8px 12px;
+  background: var(--primary-light);
+  border-radius: 8px;
+  color: var(--primary);
+  font-size: 12px;
+}
+
+.pending-item.recontado {
+  opacity: 0.7;
+  background: var(--success-light);
+}
+
+.pending-item.recontado .badge.success {
+  background: var(--success);
+  color: white;
+}
+
+/* Mensaje informativo */
+.alert-info {
+  background: var(--info-bg, #dbeafe);
+  color: var(--info-text, #1e40af);
+  padding: 12px 16px;
+  border-radius: 10px;
+  margin-top: 16px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.scan-helper.info {
+  margin-top: 12px;
+  padding: 8px 12px;
+  background: var(--primary-light);
+  border-radius: 8px;
+  color: var(--primary);
+  font-size: 12px;
+}
+
+.pending-item.recontado {
+  opacity: 0.7;
+  background: var(--success-light);
+}
+
+.pending-item.recontado .badge.success {
+  background: var(--success);
+  color: white;
+}
+
+.section-title-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}

@@ -35,7 +35,6 @@ export async function exportarResultadosGrupo(params = {}) {
   return response.data;
 }
 
-
 export async function agregarLecturaManual(params) {
   const response = await api.post('/lecturas/manual', {
     rondaId: params.rondaId,

@@ -513,11 +513,12 @@ async function scanLecturaRonda(req, res, next) {
 
     let pendiente = null;
     let esReconteo = false;
-    let warningData = null;  // ← Variable para la advertencia
+    let esEscaneoOpcional = false;
 
     if (ronda.tipoRonda === 'reconteo') {
       esReconteo = true;
 
+      // Buscar discrepancia pendiente
       pendiente = await DiscrepanciaConteo.findOne({
         where: {
           inventarioId: ronda.inventarioId,
@@ -545,7 +546,12 @@ async function scanLecturaRonda(req, res, next) {
         }
       }
 
-      if (pendiente) {
+      // Si NO hay pendiente, es un escaneo opcional (no obligatorio)
+      if (!pendiente) {
+        esEscaneoOpcional = true;
+        console.log(`⚠️ SKU ${skuFinal} no está en lista de pendientes, se permite escaneo opcional`);
+      } else {
+        // Actualizar estado del pendiente
         if (pendiente.estado === 'pendiente_reconteo' || pendiente.estado === 'pendiente') {
           await pendiente.update(
             {
@@ -559,15 +565,8 @@ async function scanLecturaRonda(req, res, next) {
       }
     }
 
-    // 🔥 VALIDACIÓN DE PRODUCTO EN OTRA ZONA (SOLO PARA RONDAS COMPLETAS)
-    // 🔥 VALIDACIÓN DE PRODUCTO EN OTRA ZONA (SOLO PARA RONDAS COMPLETAS)
+    // VALIDACIÓN DE PRODUCTO EN OTRA ZONA (SOLO PARA RONDAS COMPLETAS)
     if (ronda.tipoRonda !== 'reconteo') {
-      console.log('🔍 Validando producto en otra zona...');
-      console.log('   - inventarioId:', ronda.inventarioId);
-      console.log('   - sku:', skuFinal);
-      console.log('   - zona actual:', ronda.zonaId);
-      console.log('   - grupo actual:', grupo.id);
-
       const otraZonaData = await validarProductoEnOtraZona(
         ronda.inventarioId,
         skuFinal,
@@ -576,11 +575,7 @@ async function scanLecturaRonda(req, res, next) {
         transaction
       );
 
-      console.log('📊 otraZonaData:', JSON.stringify(otraZonaData, null, 2));
-
       if (otraZonaData && otraZonaData.cantidadTotalEnOtraZona > 0) {
-        console.log('⚠️ PRODUCTO DETECTADO EN OTRA ZONA!');
-
         const cantidadActualEnEstaZona = await Lectura.sum('cantidad', {
           where: {
             rondaId: ronda.id,
@@ -594,60 +589,48 @@ async function scanLecturaRonda(req, res, next) {
         const nuevaCantidad = (cantidadActualEnEstaZona || 0) + 1;
         const cantidadEnOtraZona = otraZonaData.cantidadTotalEnOtraZona;
 
-        console.log('   - Cantidad en esta zona (nueva):', nuevaCantidad);
-        console.log('   - Cantidad en otra zona:', cantidadEnOtraZona);
-
         if (cantidadEnOtraZona > nuevaCantidad) {
-          console.log('🚨 BLOQUEANDO ESCANEO - Guardando en warning_logs');
+          await sequelize.query(
+            `
+            INSERT INTO warning_logs (
+              tipo, ronda_id, sku,
+              zona_actual_id, zona_actual_nombre,
+              grupo_actual_id, grupo_actual_nombre, cantidad_actual,
+              zona_otra_id, zona_otra_nombre,
+              grupo_otro_id, grupo_otro_nombre, cantidad_otra_zona,
+              usuario_id, usuario_nombre, creado_en
+            ) VALUES (
+              :tipo, :rondaId, :sku,
+              :zonaActualId, :zonaActualNombre,
+              :grupoActualId, :grupoActualNombre, :cantidadActual,
+              :zonaOtraId, :zonaOtraNombre,
+              :grupoOtroId, :grupoOtroNombre, :cantidadOtraZona,
+              :usuarioId, :usuarioNombre, NOW()
+            )
+            `,
+            {
+              replacements: {
+                tipo: 'producto_en_otra_zona',
+                rondaId: ronda.id,
+                sku: skuFinal,
+                zonaActualId: ronda.zonaId,
+                zonaActualNombre: ronda.zona?.nombre || 'N/A',
+                grupoActualId: grupo.id,
+                grupoActualNombre: grupo.nombre,
+                cantidadActual: nuevaCantidad,
+                zonaOtraId: otraZonaData.zonaId,
+                zonaOtraNombre: otraZonaData.zonaNombre,
+                grupoOtroId: otraZonaData.grupoId,
+                grupoOtroNombre: otraZonaData.grupoNombre,
+                cantidadOtraZona: cantidadEnOtraZona,
+                usuarioId: req.user.id,
+                usuarioNombre: req.user.nombre || 'N/A'
+              },
+              type: QueryTypes.INSERT,
+              transaction
+            }
+          );
 
-          // Registrar en warning_logs
-          try {
-            await sequelize.query(
-              `
-          INSERT INTO warning_logs (
-            tipo, ronda_id, sku,
-            zona_actual_id, zona_actual_nombre,
-            grupo_actual_id, grupo_actual_nombre, cantidad_actual,
-            zona_otra_id, zona_otra_nombre,
-            grupo_otro_id, grupo_otro_nombre, cantidad_otra_zona,
-            usuario_id, usuario_nombre, creado_en
-          ) VALUES (
-            :tipo, :rondaId, :sku,
-            :zonaActualId, :zonaActualNombre,
-            :grupoActualId, :grupoActualNombre, :cantidadActual,
-            :zonaOtraId, :zonaOtraNombre,
-            :grupoOtroId, :grupoOtroNombre, :cantidadOtraZona,
-            :usuarioId, :usuarioNombre, NOW()
-          )
-          `,
-              {
-                replacements: {
-                  tipo: 'producto_en_otra_zona',
-                  rondaId: ronda.id,
-                  sku: skuFinal,
-                  zonaActualId: ronda.zonaId,
-                  zonaActualNombre: ronda.zona?.nombre || 'N/A',
-                  grupoActualId: grupo.id,
-                  grupoActualNombre: grupo.nombre,
-                  cantidadActual: nuevaCantidad,
-                  zonaOtraId: otraZonaData.zonaId,
-                  zonaOtraNombre: otraZonaData.zonaNombre,
-                  grupoOtroId: otraZonaData.grupoId,
-                  grupoOtroNombre: otraZonaData.grupoNombre,
-                  cantidadOtraZona: cantidadEnOtraZona,
-                  usuarioId: req.user.id,
-                  usuarioNombre: req.user.nombre || 'N/A'
-                },
-                type: QueryTypes.INSERT,
-                transaction
-              }
-            );
-            console.log('✅ Warning log guardado exitosamente');
-          } catch (err) {
-            console.error('❌ Error guardando warning log:', err.message);
-          }
-
-          // Bloquear el escaneo
           await transaction.rollback();
           return res.status(409).json({
             ok: false,
@@ -668,11 +651,10 @@ async function scanLecturaRonda(req, res, next) {
             }
           });
         }
-      } else {
-        console.log('✅ Producto no detectado en otra zona, escaneo permitido');
       }
     }
 
+    // Crear la lectura
     const lectura = await Lectura.create(
       {
         inventarioId: ronda.inventarioId,
@@ -777,21 +759,20 @@ async function scanLecturaRonda(req, res, next) {
       };
     }
 
-    // 🔥 Agregar la advertencia a la respuesta si existe
-    if (warningData) {
-      responseData.warning = warningData;
+    // Mensaje personalizado para escaneo opcional en reconteo
+    let mensaje = 'Lectura registrada correctamente';
+    if (esReconteo) {
+      if (esEscaneoOpcional) {
+        mensaje = `ℹ️ Producto ${skuFinal} escaneado (opcional). No estaba en la lista de pendientes.`;
+      } else {
+        mensaje = `✅ Reconteo registrado. Total para SKU ${skuFinal}: ${cantidadTotalReconteo}`;
+      }
     }
-
-    const mensaje = esReconteo
-      ? `Reconteo registrado. Total para SKU ${skuFinal}: ${cantidadTotalReconteo}`
-      : warningData
-        ? `⚠️ ADVERTENCIA: ${warningData.message}`
-        : 'Lectura registrada correctamente';
 
     return res.status(201).json({
       ok: true,
       message: mensaje,
-      warning: !!warningData,
+      warning: esEscaneoOpcional,
       data: responseData
     });
   } catch (error) {

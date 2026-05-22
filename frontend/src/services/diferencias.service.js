@@ -56,3 +56,28 @@ export async function generarRondaReconteoDesdeComparacion(data) {
   const response = await api.post('/diferencias/reconteo', payload);
   return response.data.data;
 }
+
+export async function getParejaInventario(inventarioId) {
+  const response = await api.get('/diferencias/parejas', {
+    params: { inventarioId }
+  });
+  const parejas = response.data.data || [];
+  const pareja = parejas.find(p => 
+    p.inventarioBaseId === inventarioId || 
+    p.inventarioComparadoId === inventarioId
+  );
+  
+  if (!pareja) return null;
+  
+  const esBase = pareja.inventarioBaseId === inventarioId;
+  const inventarioPareja = esBase ? pareja.inventarioComparado : pareja.inventarioBase;
+  
+  return {
+    id: pareja.id,
+    inventarioParejaId: inventarioPareja?.id,
+    nombre: inventarioPareja?.nombre,
+    fecha: inventarioPareja?.fecha,
+    estado: pareja.estado,
+    esBase
+  };
+}

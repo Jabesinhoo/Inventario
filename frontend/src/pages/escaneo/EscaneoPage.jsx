@@ -17,7 +17,9 @@ import {
   Layers3,
   X,
   Maximize2,
-  Minimize2
+  Minimize2,
+  Database,
+  GitCompareArrows
 } from 'lucide-react';
 import {
   scanLecturaRonda,
@@ -35,13 +37,13 @@ import {
   getPendientesRonda
 } from '../../services/rondas.service';
 import { getInventarios } from '../../services/inventarios.service';
+import { getParejaInventario } from '../../services/diferencias.service';
 import api from '../../services/api';
 import {
   savePendingScan,
   getPendingStats,
   syncAllPendingScans,
-  isOnline as checkOnline,
-  clearAllOfflineData
+  isOnline as checkOnline
 } from '../../services/offlineStorage';
 
 export default function EscaneoPage() {
@@ -77,6 +79,16 @@ export default function EscaneoPage() {
   const [showZoneWarning, setShowZoneWarning] = useState(false);
   const [zoneWarningInfo, setZoneWarningInfo] = useState(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+
+  // Estado para inventario anterior (pareja)
+  const [inventarioPareja, setInventarioPareja] = useState(null);
+  const [parejaResumen, setParejaResumen] = useState([]);
+  const [loadingPareja, setLoadingPareja] = useState(false);
+  const [parejaError, setParejaError] = useState(null);
+
+  // Estado para alerta de SKU no encontrado
+  const [showSkuWarning, setShowSkuWarning] = useState(false);
+  const [skuWarningInfo, setSkuWarningInfo] = useState(null);
 
   // Offline state
   const [isOnline, setIsOnline] = useState(checkOnline());
@@ -152,6 +164,43 @@ export default function EscaneoPage() {
   const onlyValidLecturas = (rows) => {
     return (rows || []).filter((item) => item?.estado !== 'anulada');
   };
+
+  // Cargar inventario pareja y su resumen
+  const loadInventarioPareja = useCallback(async (inventarioId, zonaId) => {
+    if (!inventarioId) {
+      setInventarioPareja(null);
+      setParejaResumen([]);
+      return;
+    }
+
+    setLoadingPareja(true);
+    setParejaError(null);
+
+    try {
+      const pareja = await getParejaInventario(inventarioId);
+      
+      if (pareja && pareja.inventarioParejaId) {
+        setInventarioPareja(pareja);
+        
+        const resumenData = await getResumenLecturas({
+          inventarioId: pareja.inventarioParejaId,
+          zonaId: zonaId || null
+        });
+        
+        setParejaResumen(resumenData || []);
+      } else {
+        setInventarioPareja(null);
+        setParejaResumen([]);
+      }
+    } catch (error) {
+      console.error('Error cargando inventario pareja:', error);
+      setParejaError('No se pudo cargar el inventario anterior');
+      setInventarioPareja(null);
+      setParejaResumen([]);
+    } finally {
+      setLoadingPareja(false);
+    }
+  }, []);
 
   async function loadInventariosData() {
     try {
@@ -246,6 +295,16 @@ export default function EscaneoPage() {
       setSyncing(false);
     }
   }, []);
+
+  // Cargar inventario pareja cuando cambia la ronda
+  useEffect(() => {
+    if (selectedRonda?.inventarioId && selectedRonda?.zonaId) {
+      loadInventarioPareja(selectedRonda.inventarioId, selectedRonda.zonaId);
+    } else {
+      setInventarioPareja(null);
+      setParejaResumen([]);
+    }
+  }, [selectedRonda, loadInventarioPareja]);
 
   // Offline: cargar pendientes
   const loadPendingStatsOffline = useCallback(async () => {
@@ -373,7 +432,7 @@ export default function EscaneoPage() {
     }
   };
 
-  // Escaneo con soporte offline - SIN DUPLICADOS
+  // Escaneo con soporte offline y validación de inventario anterior
   const procesarEscaneo = useCallback(async (codigoLimpio) => {
     if (processingRef.current) return;
     if (!/^\d{5,6}$/.test(codigoLimpio)) return;
@@ -391,7 +450,6 @@ export default function EscaneoPage() {
       return;
     }
 
-    // Si hay internet, enviar al servidor directamente
     if (checkOnline()) {
       try {
         const raw = await scanLecturaRonda({
@@ -405,21 +463,34 @@ export default function EscaneoPage() {
         const message = backend?.message || raw?.message || 'Lectura registrada';
         const warning = Boolean(backend?.warning || raw?.warning);
         const warningData = payload?.warning || null;
+        const esReconteoOpcional = warning === true && !warningData; // Escaneo opcional en reconteo
 
         playBeep();
         setLastScan(payload);
+
+        // Validar si el SKU existe en el inventario anterior
+        if (payload?.producto?.sku && inventarioPareja && parejaResumen.length > 0 && !esReconteoOpcional) {
+          const existeEnInventarioAnterior = parejaResumen.some(item => item.sku === payload.producto.sku);
+          
+          if (!existeEnInventarioAnterior) {
+            setSkuWarningInfo({
+              sku: payload.producto.sku,
+              descripcion: payload.producto.descripcion || 'Sin descripción'
+            });
+            setShowSkuWarning(true);
+          }
+        }
 
         if (warningData?.type === 'producto_en_otra_zona') {
           setShowZoneWarning(true);
           setZoneWarningInfo(warningData);
           setFlashMessage(warningData.message, 'warning');
         } else {
-          setFlashMessage(message, warning ? 'warning' : 'success');
+          setFlashMessage(message, warning ? 'info' : 'success');
         }
 
         loadRoundContext(selectedRonda);
       } catch (err) {
-        // Si falla el envío (servidor caído), guardar offline
         await savePendingScan({
           rondaId: selectedRonda.id,
           grupoId: grupoAsignado.id,
@@ -430,7 +501,6 @@ export default function EscaneoPage() {
         setFlashMessage('Error en el servidor. Escaneo guardado localmente.', 'warning');
       }
     } else {
-      // Sin internet, guardar offline directamente
       await savePendingScan({
         rondaId: selectedRonda.id,
         grupoId: grupoAsignado.id,
@@ -444,7 +514,7 @@ export default function EscaneoPage() {
     }
     
     processingRef.current = false;
-  }, [selectedRonda, grupoAsignado, loadRoundContext, loadPendingStatsOffline]);
+  }, [selectedRonda, grupoAsignado, loadRoundContext, loadPendingStatsOffline, inventarioPareja, parejaResumen]);
 
   const handleCodigoChange = useCallback((e) => {
     const value = e.target.value;
@@ -586,6 +656,29 @@ export default function EscaneoPage() {
         </button>
       </div>
 
+      {/* Barra de conexión */}
+      <div className="connection-status-bar">
+        {isOnline ? (
+          <div className="online-badge">
+            <span>Online</span>
+            {pendingCount > 0 && (
+              <button 
+                className="sync-btn"
+                onClick={syncOfflineScans}
+                disabled={offlineSyncing}
+              >
+                Sincronizar ({pendingCount})
+              </button>
+            )}
+          </div>
+        ) : (
+          <div className="offline-badge">
+            <span>Offline - Escaneos guardados localmente</span>
+            {pendingCount > 0 && <span className="pending-count">({pendingCount} pendientes)</span>}
+          </div>
+        )}
+      </div>
+
       {/* Toolbar desktop */}
       <div className="card filters-card escaneo-toolbar desktop-only">
         <div className="filters-header">
@@ -657,7 +750,7 @@ export default function EscaneoPage() {
       )}
 
       {flash.text && (
-        <div className={`alert-${flash.type === 'error' ? 'error' : flash.type === 'warning' ? 'warning' : 'success'}`}>
+        <div className={`alert-${flash.type === 'error' ? 'error' : flash.type === 'warning' ? 'warning' : flash.type === 'info' ? 'info' : 'success'}`}>
           {flash.text}
         </div>
       )}
@@ -713,7 +806,7 @@ export default function EscaneoPage() {
                   </button>
                 </div>
               </div>
-
+                  
               <form onSubmit={handleSubmit}>
                 <div className="scanner-input-row">
                   <input 
@@ -733,11 +826,107 @@ export default function EscaneoPage() {
                   </button>
                 </div>
               </form>
-
+                  
               <p className="scan-helper">
                 Códigos válidos: 5 o 6 dígitos numéricos
               </p>
+                  <div className="card inventario-anterior-card">
+            <div className="list-header">
+              <div className="section-title-group">
+                <h2 className="section-title">
+                  <Database size={20} />
+                  <span>Inventario anterior</span>
+                  {inventarioPareja && <span className="badge info">{inventarioPareja.nombre}</span>}
+                </h2>
+                {parejaResumen.length > 0 && (
+                  <span className="badge">{parejaResumen.length} registros</span>
+                )}
+              </div>
+              <GitCompareArrows size={16} className="text-muted" />
+            </div>
 
+            {loadingPareja ? (
+              <div className="loading-container" style={{ textAlign: 'center', padding: '20px' }}>
+                <div className="loading-spinner-small" />
+                <p className="muted">Cargando inventario anterior...</p>
+              </div>
+            ) : parejaError ? (
+              <div className="alert-warning">
+                <AlertTriangle size={16} />
+                <span>{parejaError}</span>
+              </div>
+            ) : !inventarioPareja ? (
+              <div className="empty-state-small">
+                <Database size={32} className="text-muted" />
+                <p className="muted">No hay inventario anterior asociado a este inventario</p>
+              </div>
+            ) : parejaResumen.length === 0 ? (
+              <div className="empty-state-small">
+                <p className="muted">No hay registros en el inventario anterior para esta zona</p>
+              </div>
+            ) : (
+              <>
+                <div 
+                  className="table-responsive-container" 
+                  style={{ maxHeight: '400px', overflowY: 'auto', overflowX: 'auto' }}
+                >
+                  <table className="data-table pareja-table">
+                    <thead style={{ position: 'sticky', top: 0, backgroundColor: 'var(--surface)', zIndex: 10 }}>
+                      <tr>
+                        <th style={{ position: 'sticky', left: 0, backgroundColor: 'var(--surface)', zIndex: 11, minWidth: '100px' }}>SKU</th>
+                        <th style={{ minWidth: '200px' }}>Descripción</th>
+                        <th style={{ minWidth: '100px' }}>Estado</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {parejaResumen.map((item, index) => {
+                        const coincide = resumen.some(r => r.sku === item.sku);
+                        return (
+                          <tr key={`${item.sku}-${index}`} className={coincide ? 'row-success' : 'row-warning'}>
+                            <td data-label="SKU" style={{ position: 'sticky', left: 0, backgroundColor: 'inherit', zIndex: 5 }}>
+                              <strong>{item.sku}</strong>
+                            </td>
+                            <td data-label="Descripción">{item.descripcionSnapshot || 'Sin descripción'}</td>
+                            <td data-label="Estado">
+                              <span className={`status-badge ${coincide ? 'success' : 'warning'}`}>
+                                {coincide ? 'Escaneado' : 'Pendiente'}
+                              </span>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+                
+                {/* Resumen de escaneos vs inventario anterior */}
+                <div className="pareja-resumen" style={{ 
+                  marginTop: '16px', 
+                  padding: '12px', 
+                  backgroundColor: 'var(--surface-soft)', 
+                  borderRadius: '12px',
+                  display: 'flex',
+                  justifyContent: 'space-between',
+                  alignItems: 'center',
+                  flexWrap: 'wrap',
+                  gap: '12px'
+                }}>
+                  <div className="resumen-item">
+                    <span>Total inventario anterior:</span>
+                    <strong>{parejaResumen.length}</strong>
+                  </div>
+                  <div className="resumen-item">
+                    <span>Escaneados:</span>
+                    <strong className="text-success">{resumen.filter(r => parejaResumen.some(p => p.sku === r.sku)).length}</strong>
+                  </div>
+                  <div className="resumen-item">
+                    <span>Pendientes:</span>
+                    <strong className="text-warning">{parejaResumen.filter(p => !resumen.some(r => r.sku === p.sku)).length}</strong>
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
               {lastScan && (
                 <div className="last-scan-card">
                   <div className="last-scan-header"><CheckCircle size={18} className="text-success" /><span>Último escaneo</span></div>
@@ -749,7 +938,7 @@ export default function EscaneoPage() {
                 </div>
               )}
             </div>
-
+              
             <div className="card round-summary-card">
               <h2 className="section-title"><Zap size={20} /><span>Estado de la ronda</span></h2>
               <div className="round-summary-grid">
@@ -762,25 +951,45 @@ export default function EscaneoPage() {
 
               {isReconteo && (
                 <div className="pending-panel">
-                  <div className="pending-header"><AlertTriangle size={16} /><span>SKU pendientes ({pendientes.length})</span></div>
+                  <div className="pending-header">
+                    <AlertTriangle size={16} />
+                    <span>SKU pendientes de reconteo</span>
+                    <span className="badge">
+                      {pendientes.filter(p => p.recontado !== true).length} / {pendientes.length}
+                    </span>
+                  </div>
                   {pendientes.length === 0 ? (
                     <div className="escaneo-empty">No hay pendientes</div>
                   ) : (
-                    <div className="pending-list">
-                      {pendientes.slice(0, 10).map((item) => (
-                        <div key={`${item.sku}-${item.id}`} className="pending-item">
-                          <div><strong>{item.sku}</strong><p className="pending-sku-desc">{item.descripcionSnapshot || 'Sin descripción'}</p></div>
-                        </div>
-                      ))}
-                      {pendientes.length > 10 && (
-                        <div className="pending-more">+{pendientes.length - 10} más</div>
-                      )}
-                    </div>
+                    <>
+                      <div className="pending-list">
+                        {pendientes.slice(0, 10).map((item) => (
+                          <div key={`${item.sku}-${item.id}`} className={`pending-item ${item.recontado ? 'recontado' : ''}`}>
+                            <div>
+                              <strong>{item.sku}</strong>
+                              <p className="pending-sku-desc">{item.descripcionSnapshot || 'Sin descripción'}</p>
+                            </div>
+                            {item.recontado ? (
+                              <span className="badge success">Recontado</span>
+                            ) : (
+                              <span className="badge warning">Pendiente</span>
+                            )}
+                          </div>
+                        ))}
+                        {pendientes.length > 10 && (
+                          <div className="pending-more">+{pendientes.length - 10} más</div>
+                        )}
+                      </div>
+                      <p className="scan-helper info">
+                        Puedes escanear cualquier producto, no solo los pendientes.
+                        Los productos fuera de la lista se registrarán igual.
+                      </p>
+                    </>
                   )}
                 </div>
               )}
             </div>
-          </div>
+          </div>          
 
           <div className="grid-2">
             <div className="card resumen-card">
@@ -852,7 +1061,37 @@ export default function EscaneoPage() {
         </div>
       )}
 
-      {/* Modal de advertencia */}
+      {/* Modal de advertencia - SKU no encontrado en inventario anterior */}
+      {showSkuWarning && skuWarningInfo && (
+        <div className="modal-overlay" onClick={() => setShowSkuWarning(false)}>
+          <div className="modal modal-warning" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3><AlertTriangle size={20} color="#f59e0b" /><span>Producto no registrado</span></h3>
+              <button className="icon-btn" onClick={() => setShowSkuWarning(false)}><X size={18} /></button>
+            </div>
+            <div className="modal-body">
+              <p className="warning-text">
+                El producto <strong>{skuWarningInfo.sku}</strong> no existe en el inventario anterior.
+              </p>
+              <p className="warning-text">
+                Descripción: {skuWarningInfo.descripcion || 'Sin descripción'}
+              </p>
+              <div className="alert-info" style={{ marginTop: '16px' }}>
+                <AlertTriangle size={16} />
+                <span>
+                  <strong>Recomendación:</strong> Verifica que el código sea correcto. 
+                  Si el producto es nuevo, puedes continuar con el escaneo.
+                </span>
+              </div>
+            </div>
+            <div className="modal-actions">
+              <button className="btn btn-primary" onClick={() => setShowSkuWarning(false)}>Continuar</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de advertencia - Producto en otra zona */}
       {showZoneWarning && zoneWarningInfo && (
         <div className="modal-overlay" onClick={() => setShowZoneWarning(false)}>
           <div className="modal modal-warning" onClick={(e) => e.stopPropagation()}>
