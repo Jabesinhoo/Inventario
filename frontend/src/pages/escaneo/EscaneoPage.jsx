@@ -49,6 +49,9 @@ import {
   syncAllPendingScans,
   isOnline as checkOnline
 } from '../../services/offlineStorage';
+import ModalErrorLectura from '../../pages/escaneo/ModalErrorLectura';
+import { useRobustScanner } from '../../hooks/useRobustScanner';
+import alertaSound from '../../sound/alerta.mp3';
 
 export default function EscaneoPage() {
   const [searchParams] = useSearchParams();
@@ -56,10 +59,9 @@ export default function EscaneoPage() {
   const inventarioIdFromUrl = Number(searchParams.get('inventarioId') || 0);
   const rondaIdFromUrl = Number(searchParams.get('rondaId') || 0);
 
-  const lastSentRef = useRef({ code: '', at: 0 });
   const inputRef = useRef(null);
   const audioRef = useRef(null);
-  const processingRef = useRef(false);
+  const errorAudioRef = useRef(null);
 
   const [inventarios, setInventarios] = useState([]);
   const [selectedInventario, setSelectedInventario] = useState('');
@@ -75,7 +77,6 @@ export default function EscaneoPage() {
   const [lastScan, setLastScan] = useState(null);
 
   const [bootLoading, setBootLoading] = useState(true);
-  const [loadingScan, setLoadingScan] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [fullScreen, setFullScreen] = useState(false);
@@ -91,12 +92,6 @@ export default function EscaneoPage() {
   const [manualRepeticiones, setManualRepeticiones] = useState(1);
   const [loadingManual, setLoadingManual] = useState(false);
 
-  // Modal editar cantidad
-  const [showEditModal, setShowEditModal] = useState(false);
-  const [editProducto, setEditProducto] = useState(null);
-  const [editCantidad, setEditCantidad] = useState(0);
-  const [loadingEdit, setLoadingEdit] = useState(false);
-
   // Estado para inventario anterior (pareja)
   const [inventarioPareja, setInventarioPareja] = useState(null);
   const [parejaResumen, setParejaResumen] = useState([]);
@@ -107,14 +102,21 @@ export default function EscaneoPage() {
   const [showSkuWarning, setShowSkuWarning] = useState(false);
   const [skuWarningInfo, setSkuWarningInfo] = useState(null);
 
+  // Estados para modal de error de lectura
+  const [showErrorModal, setShowErrorModal] = useState(false);
+  const [errorInfo, setErrorInfo] = useState({
+    codigoRechazado: '',
+    ultimoExitoso: '',
+    motivo: ''
+  });
+
   // Offline state
   const [isOnline, setIsOnline] = useState(checkOnline());
   const [pendingCount, setPendingCount] = useState(0);
   const [offlineSyncing, setOfflineSyncing] = useState(false);
 
   const auth = useAuth();
-  const rawRol = auth?.user?.rol?.nombre || auth?.user?.rol || '';
-  const rol = String(rawRol).toLowerCase();
+  const rol = String(auth?.user?.rol || auth?.user?.rol?.nombre || '').toLowerCase();
   const isContador = rol === 'contador';
   const [flash, setFlash] = useState({ type: '', text: '' });
 
@@ -135,6 +137,42 @@ export default function EscaneoPage() {
     audioRef.current.currentTime = 0;
     audioRef.current.play().catch(() => { });
   };
+
+  const playErrorBeep = () => {
+    if (!errorAudioRef.current) return;
+    errorAudioRef.current.currentTime = 0;
+    errorAudioRef.current.play().catch((err) => {
+      console.log('Error reproduciendo sonido de alerta:', err);
+    });
+  };
+
+  // Desbloquear audio después de la primera interacción
+  useEffect(() => {
+    const unlockAudio = () => {
+      if (errorAudioRef.current) {
+        errorAudioRef.current.play().then(() => {
+          errorAudioRef.current.pause();
+          errorAudioRef.current.currentTime = 0;
+        }).catch(() => {});
+      }
+      if (audioRef.current) {
+        audioRef.current.play().then(() => {
+          audioRef.current.pause();
+          audioRef.current.currentTime = 0;
+        }).catch(() => {});
+      }
+      document.removeEventListener('click', unlockAudio);
+      document.removeEventListener('keydown', unlockAudio);
+    };
+    
+    document.addEventListener('click', unlockAudio);
+    document.addEventListener('keydown', unlockAudio);
+    
+    return () => {
+      document.removeEventListener('click', unlockAudio);
+      document.removeEventListener('keydown', unlockAudio);
+    };
+  }, []);
 
   const selectedRonda = useMemo(() => {
     return rondas.find((item) => Number(item.id) === Number(selectedRondaId)) || null;
@@ -159,29 +197,29 @@ export default function EscaneoPage() {
     return new Date(value).toLocaleTimeString();
   };
 
-  const unwrapData = useCallback((value) => {
+  const unwrapData = (value) => {
     if (value?.data?.data !== undefined) return value.data.data;
     if (value?.data !== undefined) return value.data;
     return value;
-  }, []);
+  };
 
-  const extractArray = useCallback((value, keys = []) => {
+  const extractArray = (value, keys = []) => {
     const unwrapped = unwrapData(value);
     if (Array.isArray(unwrapped)) return unwrapped;
     for (const key of keys) {
       if (Array.isArray(unwrapped?.[key])) return unwrapped[key];
     }
     return [];
-  }, [unwrapData]);
+  };
 
-  const extractObject = useCallback((value) => {
+  const extractObject = (value) => {
     const unwrapped = unwrapData(value);
     return unwrapped && typeof unwrapped === 'object' ? unwrapped : null;
-  }, [unwrapData]);
+  };
 
-  const onlyValidLecturas = useCallback((rows) => {
+  const onlyValidLecturas = (rows) => {
     return (rows || []).filter((item) => item?.estado !== 'anulada');
-  }, []);
+  };
 
   // Cargar inventario pareja y su resumen
   const loadInventarioPareja = useCallback(async (inventarioId, zonaId) => {
@@ -196,15 +234,15 @@ export default function EscaneoPage() {
 
     try {
       const pareja = await getParejaInventario(inventarioId);
-
+      
       if (pareja && pareja.inventarioParejaId) {
         setInventarioPareja(pareja);
-
+        
         const resumenData = await getResumenLecturas({
           inventarioId: pareja.inventarioParejaId,
           zonaId: zonaId || null
         });
-
+        
         setParejaResumen(resumenData || []);
       } else {
         setInventarioPareja(null);
@@ -264,7 +302,7 @@ export default function EscaneoPage() {
       setRondas([]);
       setSelectedRondaId('');
     }
-  }, [setFlashMessage, rondaIdFromUrl, extractArray]);
+  }, [setFlashMessage, rondaIdFromUrl]);
 
   const loadRoundContext = useCallback(async (ronda) => {
     if (!ronda?.id) {
@@ -301,7 +339,7 @@ export default function EscaneoPage() {
           extractArray(rawPendientesValue, ['pendientes']) ||
           [];
         pendientesRows = Array.isArray(pendientesRows) ? pendientesRows : [];
-
+        
         pendientesRows = pendientesRows.map(p => ({
           ...p,
           recontado: resumenRows.some(r => r.sku === p.sku && r.cantidadTotal > 0)
@@ -317,7 +355,89 @@ export default function EscaneoPage() {
     } finally {
       setSyncing(false);
     }
-  }, [extractArray, extractObject, onlyValidLecturas]);
+  }, []);
+
+  // Handler para escaneos exitosos
+  const handleValidScan = useCallback(async (codigoLimpio) => {
+    if (!selectedRonda?.id || selectedRonda.estado !== 'activa' || !grupoAsignado?.id) {
+      throw new Error('ronda_inactiva');
+    }
+
+    if (checkOnline()) {
+      const raw = await scanLecturaRonda({
+        rondaId: selectedRonda.id,
+        grupoId: grupoAsignado.id,
+        codigo: codigoLimpio
+      });
+
+      const backend = raw?.ok !== undefined ? raw : raw?.data?.ok !== undefined ? raw.data : null;
+      const payload = backend?.data || raw?.data || raw || null;
+      const message = backend?.message || raw?.message || 'Lectura registrada';
+      const warning = Boolean(backend?.warning || raw?.warning);
+      const warningData = payload?.warning || null;
+      const esReconteoOpcional = warning === true && !warningData;
+
+      playBeep();
+      setLastScan(payload);
+
+      if (payload?.producto?.sku && inventarioPareja && parejaResumen.length > 0 && !esReconteoOpcional) {
+        const existeEnInventarioAnterior = parejaResumen.some(item => item.sku === payload.producto.sku);
+        if (!existeEnInventarioAnterior) {
+          setSkuWarningInfo({
+            sku: payload.producto.sku,
+            descripcion: payload.producto.descripcion || 'Sin descripción'
+          });
+          setShowSkuWarning(true);
+        }
+      }
+
+      if (warningData?.type === 'producto_en_otra_zona') {
+        setShowZoneWarning(true);
+        setZoneWarningInfo(warningData);
+        setFlashMessage(warningData.message, 'warning');
+        throw new Error('producto_en_otra_zona');
+      } else {
+        setFlashMessage(message, warning ? 'info' : 'success');
+      }
+
+      await loadRoundContext(selectedRonda);
+      return payload;
+    } else {
+      await savePendingScan({
+        rondaId: selectedRonda.id,
+        grupoId: grupoAsignado.id,
+        codigo: codigoLimpio,
+        fecha: new Date().toISOString()
+      });
+      await loadPendingStatsOffline();
+      playBeep();
+      setFlashMessage('Sin conexión. Escaneo guardado localmente.', 'warning');
+      setLastScan({ producto: { sku: codigoLimpio, descripcion: 'Guardado local' }, acumuladoSku: 'pendiente' });
+      return { offline: true };
+    }
+  }, [selectedRonda, grupoAsignado, loadRoundContext, inventarioPareja, parejaResumen]);
+
+  // Handler para escaneos inválidos
+  const handleInvalidScan = useCallback((codigo, motivo, ultimoExitoso) => {
+    playErrorBeep();
+    
+    setErrorInfo({
+      codigoRechazado: codigo,
+      ultimoExitoso: ultimoExitoso || lastScan?.producto?.sku || null,
+      motivo: motivo
+    });
+    setShowErrorModal(true);
+    setCodigo('');
+  }, [lastScan]);
+
+  // Hook de escaneo robusto
+  const { addCode, processing: scannerProcessing, resetScanner } = useRobustScanner({
+    onValidScan: handleValidScan,
+    onInvalidScan: handleInvalidScan,
+    minDelay: 150,
+    maxQueueSize: 10,
+    debounceTime: 50
+  });
 
   // Cargar inventario pareja cuando cambia la ronda
   useEffect(() => {
@@ -346,19 +466,19 @@ export default function EscaneoPage() {
       setFlashMessage('No hay conexión a internet para sincronizar', 'warning');
       return;
     }
-
+    
     if (offlineSyncing) {
       console.log('Ya hay una sincronización en curso');
       return;
     }
-
+    
     setOfflineSyncing(true);
     try {
       const result = await syncAllPendingScans(api, (progress) => {
         console.log(`Sincronizando escaneos: ${progress.sincronizados}/${progress.total}`);
         loadPendingStatsOffline();
       });
-
+      
       if (result.sincronizados > 0) {
         setFlashMessage(`${result.sincronizados} escaneo(s) sincronizado(s) correctamente`, 'success');
         if (selectedRonda) {
@@ -384,10 +504,10 @@ export default function EscaneoPage() {
       setIsOnline(false);
       setFlashMessage('Sin conexión a internet. Los escaneos se guardarán localmente.', 'warning');
     };
-
+    
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
-
+    
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
@@ -421,10 +541,14 @@ export default function EscaneoPage() {
   }, [selectedRonda, loadRoundContext]);
 
   useEffect(() => {
+    resetScanner();
+  }, [selectedRondaId, resetScanner]);
+
+  useEffect(() => {
     if (!bootLoading && canScan) {
       inputRef.current?.focus();
     }
-  }, [bootLoading, canScan, loadingScan]);
+  }, [bootLoading, canScan, scannerProcessing]);
 
   useEffect(() => {
     setMobileMenuOpen(false);
@@ -455,57 +579,10 @@ export default function EscaneoPage() {
     }
   };
 
-  const handleEliminarProducto = async (sku) => {
-    if (!selectedRonda?.id) {
-      setFlashMessage('No hay ronda seleccionada', 'error');
-      return;
-    }
-
-    if (!window.confirm(`¿Eliminar todas las lecturas del producto ${sku}? Esta acción no se puede deshacer.`)) {
-      return;
-    }
-
-    try {
-      await api.delete(`/lecturas/ronda/${selectedRonda.id}/sku/${sku}`);
-      setFlashMessage(`Producto ${sku} eliminado correctamente`, 'success');
-      await loadRoundContext(selectedRonda);
-    } catch (err) {
-      setFlashMessage(err.response?.data?.message || 'Error al eliminar producto', 'error');
-    }
-  };
-
-  const handleEditarProducto = async (producto) => {
-    setEditProducto(producto);
-    setEditCantidad(producto.cantidadTotal);
-    setShowEditModal(true);
-  };
-
-  const handleGuardarEdicion = async () => {
-    if (!selectedRonda?.id || !editProducto) return;
-
-    if (editCantidad < 0) {
-      setFlashMessage('La cantidad no puede ser negativa', 'error');
-      return;
-    }
-
-    setLoadingEdit(true);
-    try {
-      await api.put(`/lecturas/ronda/${selectedRonda.id}/sku/${editProducto.sku}`, {
-        nuevaCantidad: editCantidad
-      });
-      setFlashMessage(`Producto ${editProducto.sku} actualizado a ${editCantidad} unidades`, 'success');
-      setShowEditModal(false);
-      await loadRoundContext(selectedRonda);
-    } catch (err) {
-      setFlashMessage(err.response?.data?.message || 'Error al editar producto', 'error');
-    } finally {
-      setLoadingEdit(false);
-    }
-  };
-
+  // Función para agregar producto manual
   const handleAgregarManual = async () => {
     const skuLimpio = manualSku.trim().toUpperCase();
-
+    
     if (!skuLimpio) {
       setFlashMessage('Debes ingresar un SKU', 'error');
       return;
@@ -521,8 +598,8 @@ export default function EscaneoPage() {
       return;
     }
 
-    if (manualRepeticiones <= 0 || manualRepeticiones > 10000) {
-      setFlashMessage('Las repeticiones deben ser entre 1 y 10000', 'error');
+    if (manualRepeticiones <= 0 || manualRepeticiones > 100) {
+      setFlashMessage('Las repeticiones deben ser entre 1 y 100', 'error');
       return;
     }
 
@@ -553,32 +630,20 @@ export default function EscaneoPage() {
 
       if (response.ok) {
         playBeep();
-        const descripcion = response.data?.producto?.descripcion || `Producto ${skuLimpio}`;
-        const message = response.message || `Producto ${skuLimpio} agregado correctamente`;
-
-        setFlashMessage(`${descripcion} - ${message}`, 'success');
-
-        setLastScan({
-          producto: {
-            sku: skuLimpio,
-            descripcion: descripcion,
-            source: response.data?.producto?.source || 'manual'
-          },
-          acumuladoSku: response.data?.acumuladoSku || manualCantidad * manualRepeticiones
-        });
-
+        setFlashMessage(response.message || `Producto ${skuLimpio} agregado correctamente`, 'success');
+        
         setShowManualModal(false);
         setManualSku('');
         setManualCantidad(1);
         setManualRepeticiones(1);
-
+        
         await loadRoundContext(selectedRonda);
       } else {
         setFlashMessage(response.message || 'Error al agregar producto', 'error');
       }
     } catch (err) {
       console.error('Error en agregar manual:', err);
-
+      
       if (err.response?.status === 409 && err.response?.data?.code === 'PRODUCTO_EN_OTRA_ZONA') {
         const errorData = err.response.data;
         setShowZoneWarning(true);
@@ -592,114 +657,25 @@ export default function EscaneoPage() {
     }
   };
 
-  const procesarEscaneo = useCallback(async (codigoLimpio) => {
-    if (processingRef.current) return;
-    if (!/^\d{5,6}$/.test(codigoLimpio)) return;
-
-    const now = Date.now();
-    if (lastSentRef.current.code === codigoLimpio && now - lastSentRef.current.at < 300) {
-      return;
-    }
-
-    lastSentRef.current = { code: codigoLimpio, at: now };
-    processingRef.current = true;
-
-    if (!selectedRonda?.id || selectedRonda.estado !== 'activa' || !grupoAsignado?.id) {
-      processingRef.current = false;
-      return;
-    }
-
-    setLoadingScan(true);
-
-    if (checkOnline()) {
-      try {
-        const raw = await scanLecturaRonda({
-          rondaId: selectedRonda.id,
-          grupoId: grupoAsignado.id,
-          codigo: codigoLimpio
-        });
-
-        const backend = raw?.ok !== undefined ? raw : raw?.data?.ok !== undefined ? raw.data : null;
-        const payload = backend?.data || raw?.data || raw || null;
-        const message = backend?.message || raw?.message || 'Lectura registrada';
-        const warning = Boolean(backend?.warning || raw?.warning);
-        const warningData = payload?.warning || null;
-        const esReconteoOpcional = warning === true && !warningData;
-
-        playBeep();
-        setLastScan(payload);
-
-        if (payload?.producto?.sku && inventarioPareja && parejaResumen.length > 0 && !esReconteoOpcional) {
-          const existeEnInventarioAnterior = parejaResumen.some(item => item.sku === payload.producto.sku);
-          if (!existeEnInventarioAnterior) {
-            setSkuWarningInfo({
-              sku: payload.producto.sku,
-              descripcion: payload.producto.descripcion || 'Sin descripción'
-            });
-            setShowSkuWarning(true);
-          }
-        }
-
-        if (warningData?.type === 'producto_en_otra_zona') {
-          setShowZoneWarning(true);
-          setZoneWarningInfo(warningData);
-          setFlashMessage(warningData.message, 'warning');
-        } else {
-          setFlashMessage(message, warning ? 'info' : 'success');
-        }
-
-        await loadRoundContext(selectedRonda);
-      } catch (err) {
-        if (err.response?.status === 409 && err.response?.data?.code === 'PRODUCTO_EN_OTRA_ZONA') {
-          const errorData = err.response.data;
-          setShowZoneWarning(true);
-          setZoneWarningInfo(errorData.data);
-          setFlashMessage(errorData.message || 'Producto en otra zona', 'warning');
-        } else {
-          await savePendingScan({
-            rondaId: selectedRonda.id,
-            grupoId: grupoAsignado.id,
-            codigo: codigoLimpio,
-            fecha: new Date().toISOString()
-          });
-          await loadPendingStatsOffline();
-          setFlashMessage('Error en el servidor. Escaneo guardado localmente.', 'warning');
-        }
-      }
-    } else {
-      await savePendingScan({
-        rondaId: selectedRonda.id,
-        grupoId: grupoAsignado.id,
-        codigo: codigoLimpio,
-        fecha: new Date().toISOString()
-      });
-      await loadPendingStatsOffline();
-      playBeep();
-      setFlashMessage('Sin conexión. Escaneo guardado localmente. Se sincronizará después.', 'warning');
-      setLastScan({ producto: { sku: codigoLimpio, descripcion: 'Guardado local' }, acumuladoSku: 'pendiente' });
-    }
-
-    processingRef.current = false;
-    setLoadingScan(false);
-  }, [selectedRonda, grupoAsignado, loadRoundContext, loadPendingStatsOffline, inventarioPareja, parejaResumen]);
-
   const handleCodigoChange = useCallback((e) => {
     const value = e.target.value;
     const numeros = value.replace(/[^0-9]/g, '').slice(0, 6);
+    
     setCodigo(numeros);
+    
     if (numeros.length === 5 || numeros.length === 6) {
-      procesarEscaneo(numeros);
+      addCode(numeros);
       setCodigo('');
     }
-  }, [procesarEscaneo]);
+  }, [addCode]);
 
   const handleSubmit = useCallback((e) => {
     e.preventDefault();
     if (codigo.length === 5 || codigo.length === 6) {
-      procesarEscaneo(codigo);
+      addCode(codigo);
       setCodigo('');
     }
-  }, [codigo, procesarEscaneo]);
+  }, [codigo, addCode]);
 
   const handleAnularLectura = async (lecturaId) => {
     if (!window.confirm('¿Anular esta lectura?')) return;
@@ -755,6 +731,15 @@ export default function EscaneoPage() {
     }
   };
 
+  const handleEditarProducto = (item) => {
+    setFlashMessage(`Funcionalidad en desarrollo para editar ${item.sku}`, 'info');
+  };
+
+  const handleEliminarProducto = async (sku) => {
+    if (!window.confirm(`¿Eliminar todas las lecturas del producto ${sku}?`)) return;
+    setFlashMessage(`Funcionalidad en desarrollo para eliminar ${sku}`, 'info');
+  };
+
   if (bootLoading) {
     return (
       <div className="card loading-card">
@@ -767,17 +752,17 @@ export default function EscaneoPage() {
   return (
     <div className={`dashboard-container escaneo-page ${fullScreen ? 'fullscreen-mode' : ''}`}>
       <audio ref={audioRef} src="/beep.mp3" preload="auto" />
+      <audio ref={errorAudioRef} src={alertaSound} preload="auto" />
 
-      {/* Header móvil */}
       <div className="escaneo-mobile-header">
-        <button
+        <button 
           className="mobile-menu-btn-escaneo"
           onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
         >
           {mobileMenuOpen ? <X size={24} /> : <ScanLine size={24} />}
         </button>
         <h2 className="mobile-title">Escaneo</h2>
-        <button
+        <button 
           className="fullscreen-btn"
           onClick={() => setFullScreen(!fullScreen)}
         >
@@ -785,7 +770,6 @@ export default function EscaneoPage() {
         </button>
       </div>
 
-      {/* Panel móvil */}
       <div className={`escaneo-mobile-panel ${mobileMenuOpen ? 'open' : ''}`}>
         <div className="form-group">
           <label>Inventario</label>
@@ -821,13 +805,16 @@ export default function EscaneoPage() {
         </button>
       </div>
 
-      {/* Barra de conexión */}
       <div className="connection-status-bar">
         {isOnline ? (
           <div className="online-badge">
             <span>Online</span>
             {pendingCount > 0 && (
-              <button className="sync-btn" onClick={syncOfflineScans} disabled={offlineSyncing}>
+              <button 
+                className="sync-btn"
+                onClick={syncOfflineScans}
+                disabled={offlineSyncing}
+              >
                 Sincronizar ({pendingCount})
               </button>
             )}
@@ -840,7 +827,6 @@ export default function EscaneoPage() {
         )}
       </div>
 
-      {/* Toolbar desktop */}
       <div className="card filters-card escaneo-toolbar desktop-only">
         <div className="filters-header">
           <div className="filters-form">
@@ -888,7 +874,6 @@ export default function EscaneoPage() {
         </div>
       </div>
 
-      {/* Información de la ronda */}
       {selectedRonda && (
         <div className="escaneo-meta-grid">
           <div className="escaneo-meta-item">
@@ -972,27 +957,28 @@ export default function EscaneoPage() {
               </div>
 
               <form onSubmit={handleSubmit}>
-                <div className="scanner-input-row">
-                  <input
-                    ref={inputRef}
-                    type="text"
-                    value={codigo}
+                <div className={`scanner-input-row ${scannerProcessing ? 'processing' : ''}`}>
+                  <input 
+                    ref={inputRef} 
+                    type="text" 
+                    value={codigo} 
                     onChange={handleCodigoChange}
                     placeholder="Escanea el código"
                     autoComplete="off"
                     autoCorrect="off"
                     autoCapitalize="off"
                     spellCheck="false"
-                    disabled={!canScan}
+                    disabled={!canScan || scannerProcessing}
                   />
-                  <button className="btn btn-primary" type="submit" disabled={!canScan}>
-                    {loadingScan ? '...' : 'Escanear'}
+                  <button className="btn btn-primary" type="submit" disabled={!canScan || scannerProcessing}>
+                    {scannerProcessing ? '...' : 'Escanear'}
                   </button>
                 </div>
               </form>
 
               <p className="scan-helper">
                 Códigos válidos: 5 o 6 dígitos numéricos
+                {scannerProcessing && <span className="processing-indicator"> Procesando...</span>}
               </p>
 
               {lastScan && (
@@ -1022,6 +1008,9 @@ export default function EscaneoPage() {
                   <div className="pending-header">
                     <AlertTriangle size={16} />
                     <span>SKU pendientes de reconteo</span>
+                    <span className="badge">
+                      {pendientes.filter(p => !p.recontado).length} / {pendientes.length}
+                    </span>
                   </div>
                   {pendientes.length === 0 ? (
                     <div className="escaneo-empty">No hay pendientes</div>
@@ -1056,7 +1045,6 @@ export default function EscaneoPage() {
             </div>
           </div>
 
-          {/* Tabla de inventario anterior (pareja) */}
           <div className="card inventario-anterior-card">
             <div className="list-header">
               <div className="section-title-group">
@@ -1093,8 +1081,8 @@ export default function EscaneoPage() {
               </div>
             ) : (
               <>
-                <div
-                  className="table-responsive-container"
+                <div 
+                  className="table-responsive-container" 
                   style={{ maxHeight: '400px', overflowY: 'auto', overflowX: 'auto' }}
                 >
                   <table className="data-table pareja-table">
@@ -1102,6 +1090,7 @@ export default function EscaneoPage() {
                       <tr>
                         <th style={{ position: 'sticky', left: 0, backgroundColor: 'var(--surface)', zIndex: 11, minWidth: '100px' }}>SKU</th>
                         <th style={{ minWidth: '200px' }}>Descripción</th>
+                        <th style={{ minWidth: '80px' }}>Cantidad</th>
                         <th style={{ minWidth: '100px' }}>Estado</th>
                       </tr>
                     </thead>
@@ -1114,6 +1103,7 @@ export default function EscaneoPage() {
                               <strong>{item.sku}</strong>
                             </td>
                             <td data-label="Descripción">{item.descripcionSnapshot || 'Sin descripción'}</td>
+                            <td data-label="Cantidad" className="text-center">{item.cantidadTotal || 0}</td>
                             <td data-label="Estado">
                               <span className={`status-badge ${coincide ? 'success' : 'warning'}`}>
                                 {coincide ? 'Escaneado' : 'Pendiente'}
@@ -1125,11 +1115,11 @@ export default function EscaneoPage() {
                     </tbody>
                   </table>
                 </div>
-
-                <div className="pareja-resumen" style={{
-                  marginTop: '16px',
-                  padding: '12px',
-                  backgroundColor: 'var(--surface-soft)',
+                
+                <div className="pareja-resumen" style={{ 
+                  marginTop: '16px', 
+                  padding: '12px', 
+                  backgroundColor: 'var(--surface-soft)', 
                   borderRadius: '12px',
                   display: 'flex',
                   justifyContent: 'space-between',
@@ -1154,89 +1144,89 @@ export default function EscaneoPage() {
             )}
           </div>
 
-          {/* Resumen por producto con botones de editar y eliminar */}
-          <div className="card resumen-card">
-            <div className="list-header">
-              <h2 className="section-title"><Boxes size={20} /><span>Resumen por producto</span></h2>
-            </div>
-            {resumen.length === 0 ? (
-              <div className="escaneo-empty">No hay escaneos</div>
-            ) : (
-              <div className="table-responsive-container">
-                <table className="data-table resumen-table">
-                  <thead>
-                    <tr>
-                      <th>SKU</th>
-                      <th>Descripción</th>
-                      <th>Cantidad</th>
-                      <th>Acciones</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {resumen.slice(0, 15).map((item, index) => (
-                      <tr key={`${item.sku || 'sku'}-${index}`}>
-                        <td data-label="SKU"><strong>{item.sku}</strong></td>
-                        <td data-label="Descripción">{item.descripcionSnapshot || 'Sin descripción'}</td>
-                        <td data-label="Cantidad" className="text-center">{item.cantidadTotal}</td>
-                        <td data-label="Acciones" className="text-center">
-                          <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
-                            <button
-                              className="icon-btn"
-                              onClick={() => handleEditarProducto(item)}
-                              title="Editar cantidad"
-                              style={{ color: 'var(--primary)' }}
-                            >
-                              <Edit2 size={16} />
-                            </button>
-                            <button
-                              className="icon-btn danger"
-                              onClick={() => handleEliminarProducto(item.sku)}
-                              title="Eliminar producto"
-                              style={{ color: 'var(--danger)' }}
-                            >
-                              <Trash2 size={16} />
-                            </button>
-                          </div>
-                        </td>
-                      </tr>
-                    ))}
-                    {resumen.length > 15 && (
-                      <tr className="more-items">
-                        <td colSpan="4" className="text-center">+{resumen.length - 15} productos más</td>
-                      </tr>
-                    )}
-                  </tbody>
-                </table>
+          <div className="grid-2">
+            <div className="card resumen-card">
+              <div className="list-header">
+                <h2 className="section-title"><Boxes size={20} /><span>Resumen por producto</span></h2>
               </div>
-            )}
-          </div>
-
-          {/* Historial de lecturas */}
-          <div className="card historial-card">
-            <div className="list-header">
-              <h2 className="section-title"><History size={20} /><span>Historial reciente</span></h2>
-            </div>
-            {history.length === 0 ? (
-              <div className="escaneo-empty">No hay lecturas</div>
-            ) : (
-              <div className="history-list">
-                {history.slice(0, 15).map((lectura) => (
-                  <div key={lectura.id} className={`history-item ${lectura.estado === 'anulada' ? 'anulada' : ''}`}>
-                    <div className="history-main">
-                      <strong>{lectura.codigoLeido}</strong>
-                      <p>{lectura.sku || 'No reconocido'}</p>
-                    </div>
-                    <div className="history-meta">
-                      <span className="tag-muted">{formatOnlyTime(lectura.fechaHora)}</span>
-                      <span className={`status-chip mini ${lectura.estado}`}>{lectura.estado === 'valida' ? 'OK' : 'NO'}</span>
-                      {lectura.estado !== 'anulada' && (
-                        <button className="icon-btn" onClick={() => handleAnularLectura(lectura.id)} title="Anular"><Trash2 size={14} /></button>
+              {resumen.length === 0 ? (
+                <div className="escaneo-empty">No hay escaneos</div>
+              ) : (
+                <div className="table-responsive-container">
+                  <table className="data-table resumen-table">
+                    <thead>
+                      <tr>
+                        <th>SKU</th>
+                        <th>Descripción</th>
+                        <th>Cantidad</th>
+                        <th>Acciones</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {resumen.slice(0, 15).map((item, index) => (
+                        <tr key={`${item.sku || 'sku'}-${index}`}>
+                          <td data-label="SKU"><strong>{item.sku}</strong></td>
+                          <td data-label="Descripción">{item.descripcionSnapshot || 'Sin descripción'}</td>
+                          <td data-label="Cantidad" className="text-center">{item.cantidadTotal}</td>
+                          <td data-label="Acciones" className="text-center">
+                            <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
+                              <button
+                                className="icon-btn"
+                                onClick={() => handleEditarProducto(item)}
+                                title="Editar cantidad"
+                                style={{ color: 'var(--primary)' }}
+                              >
+                                <Edit2 size={16} />
+                              </button>
+                              <button
+                                className="icon-btn danger"
+                                onClick={() => handleEliminarProducto(item.sku)}
+                                title="Eliminar producto"
+                                style={{ color: 'var(--danger)' }}
+                              >
+                                <Trash2 size={16} />
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                      {resumen.length > 15 && (
+                        <tr className="more-items">
+                          <td colSpan="4" className="text-center">+{resumen.length - 15} productos más</td>
+                        </tr>
                       )}
-                    </div>
-                  </div>
-                ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+
+            <div className="card historial-card">
+              <div className="list-header">
+                <h2 className="section-title"><History size={20} /><span>Historial reciente</span></h2>
               </div>
-            )}
+              {history.length === 0 ? (
+                <div className="escaneo-empty">No hay lecturas</div>
+              ) : (
+                <div className="history-list">
+                  {history.slice(0, 15).map((lectura) => (
+                    <div key={lectura.id} className={`history-item ${lectura.estado === 'anulada' ? 'anulada' : ''}`}>
+                      <div className="history-main">
+                        <strong>{lectura.codigoLeido}</strong>
+                        <p>{lectura.sku || 'No reconocido'}</p>
+                      </div>
+                      <div className="history-meta">
+                        <span className="tag-muted">{formatOnlyTime(lectura.fechaHora)}</span>
+                        <span className={`status-chip mini ${lectura.estado}`}>{lectura.estado === 'valida' ? 'OK' : 'NO'}</span>
+                        {lectura.estado !== 'anulada' && (
+                          <button className="icon-btn" onClick={() => handleAnularLectura(lectura.id)} title="Anular"><Trash2 size={14} /></button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
           </div>
         </>
       ) : (
@@ -1245,7 +1235,6 @@ export default function EscaneoPage() {
         </div>
       )}
 
-      {/* Modal para entrada manual */}
       {showManualModal && (
         <div className="modal-overlay" onClick={() => setShowManualModal(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
@@ -1286,17 +1275,17 @@ export default function EscaneoPage() {
                     value={manualRepeticiones}
                     onChange={(e) => setManualRepeticiones(parseInt(e.target.value) || 1)}
                     min="1"
-                    max="10000"
+                    max="100"
                     step="1"
                   />
-                  <small>¿Cuántas veces quieres agregar este producto? (1-10000)</small>
+                  <small>¿Cuántas veces quieres agregar este producto? (1-100)</small>
                 </div>
               </div>
               <div className="manual-summary">
                 <p><strong>Resumen:</strong></p>
                 <p>• {manualRepeticiones} registro(s) de {manualSku || 'SKU'}</p>
                 <p>• {manualCantidad} unidad(es) por registro</p>
-                <p className="total-unidades"> Total de unidades: <strong>{manualRepeticiones * manualCantidad}</strong></p>
+                <p className="total-unidades">📦 Total de unidades: <strong>{manualRepeticiones * manualCantidad}</strong></p>
               </div>
             </div>
             <div className="modal-actions">
@@ -1309,55 +1298,14 @@ export default function EscaneoPage() {
         </div>
       )}
 
-      {/* Modal para editar cantidad */}
-      {showEditModal && editProducto && (
-        <div className="modal-overlay" onClick={() => setShowEditModal(false)}>
-          <div className="modal" onClick={(e) => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3><Edit2 size={18} /> Editar cantidad</h3>
-              <button className="icon-btn" onClick={() => setShowEditModal(false)}><X size={18} /></button>
-            </div>
-            <div className="modal-body">
-              <div className="form-group">
-                <label>Producto</label>
-                <input value={editProducto.sku} disabled />
-              </div>
-              <div className="form-group">
-                <label>Descripción</label>
-                <input value={editProducto.descripcionSnapshot || 'Sin descripción'} disabled />
-              </div>
-              <div className="form-group">
-                <label>Cantidad actual</label>
-                <input value={editProducto.cantidadTotal} disabled />
-              </div>
-              <div className="form-group">
-                <label>Nueva cantidad</label>
-                <input
-                  type="number"
-                  value={editCantidad}
-                  onChange={(e) => setEditCantidad(parseInt(e.target.value) || 0)}
-                  min="0"
-                  autoFocus
-                />
-              </div>
-              <div className="alert-info" style={{ marginTop: '16px' }}>
-                <AlertTriangle size={16} />
-                <span>
-                  <strong>Nota:</strong> Este cambio afectará las diferencias del inventario.
-                </span>
-              </div>
-            </div>
-            <div className="modal-actions">
-              <button className="btn btn-outline" onClick={() => setShowEditModal(false)}>Cancelar</button>
-              <button className="btn btn-primary" onClick={handleGuardarEdicion} disabled={loadingEdit}>
-                {loadingEdit ? 'Guardando...' : 'Guardar cambios'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <ModalErrorLectura
+        isOpen={showErrorModal}
+        onClose={() => setShowErrorModal(false)}
+        codigoRechazado={errorInfo.codigoRechazado}
+        ultimoCodigoExitoso={errorInfo.ultimoExitoso}
+        motivo={errorInfo.motivo}
+      />
 
-      {/* Modal de advertencia - SKU no encontrado en inventario anterior */}
       {showSkuWarning && skuWarningInfo && (
         <div className="modal-overlay" onClick={() => setShowSkuWarning(false)}>
           <div className="modal modal-warning" onClick={(e) => e.stopPropagation()}>
@@ -1375,7 +1323,7 @@ export default function EscaneoPage() {
               <div className="alert-info" style={{ marginTop: '16px' }}>
                 <AlertTriangle size={16} />
                 <span>
-                  <strong>Recomendación:</strong> Verifica que el código sea correcto.
+                  <strong>Recomendación:</strong> Verifica que el código sea correcto. 
                   Si el producto es nuevo, puedes continuar con el escaneo.
                 </span>
               </div>
@@ -1387,7 +1335,6 @@ export default function EscaneoPage() {
         </div>
       )}
 
-      {/* Modal de advertencia - Producto en otra zona */}
       {showZoneWarning && zoneWarningInfo && (
         <div className="modal-overlay" onClick={() => setShowZoneWarning(false)}>
           <div className="modal modal-warning" onClick={(e) => e.stopPropagation()}>
