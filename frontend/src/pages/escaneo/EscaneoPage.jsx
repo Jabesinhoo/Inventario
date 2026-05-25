@@ -153,21 +153,21 @@ export default function EscaneoPage() {
         errorAudioRef.current.play().then(() => {
           errorAudioRef.current.pause();
           errorAudioRef.current.currentTime = 0;
-        }).catch(() => {});
+        }).catch(() => { });
       }
       if (audioRef.current) {
         audioRef.current.play().then(() => {
           audioRef.current.pause();
           audioRef.current.currentTime = 0;
-        }).catch(() => {});
+        }).catch(() => { });
       }
       document.removeEventListener('click', unlockAudio);
       document.removeEventListener('keydown', unlockAudio);
     };
-    
+
     document.addEventListener('click', unlockAudio);
     document.addEventListener('keydown', unlockAudio);
-    
+
     return () => {
       document.removeEventListener('click', unlockAudio);
       document.removeEventListener('keydown', unlockAudio);
@@ -234,15 +234,15 @@ export default function EscaneoPage() {
 
     try {
       const pareja = await getParejaInventario(inventarioId);
-      
+
       if (pareja && pareja.inventarioParejaId) {
         setInventarioPareja(pareja);
-        
+
         const resumenData = await getResumenLecturas({
           inventarioId: pareja.inventarioParejaId,
           zonaId: zonaId || null
         });
-        
+
         setParejaResumen(resumenData || []);
       } else {
         setInventarioPareja(null);
@@ -339,7 +339,7 @@ export default function EscaneoPage() {
           extractArray(rawPendientesValue, ['pendientes']) ||
           [];
         pendientesRows = Array.isArray(pendientesRows) ? pendientesRows : [];
-        
+
         pendientesRows = pendientesRows.map(p => ({
           ...p,
           recontado: resumenRows.some(r => r.sku === p.sku && r.cantidadTotal > 0)
@@ -358,69 +358,69 @@ export default function EscaneoPage() {
   }, []);
 
   // Handler para escaneos exitosos
+  // Reemplaza el handleValidScan actual con esto (VERSIÓN SIMPLIFICADA PARA PRUEBAS)
   const handleValidScan = useCallback(async (codigoLimpio) => {
-    if (!selectedRonda?.id || selectedRonda.estado !== 'activa' || !grupoAsignado?.id) {
+    console.log('🔍 Escaneando código:', codigoLimpio);
+
+    if (!selectedRonda?.id) {
+      console.error('No hay ronda seleccionada');
       throw new Error('ronda_inactiva');
     }
 
+    if (selectedRonda.estado !== 'activa') {
+      console.error('Ronda no activa:', selectedRonda.estado);
+      throw new Error('ronda_inactiva');
+    }
+
+    if (!grupoAsignado?.id) {
+      console.error('No hay grupo asignado');
+      throw new Error('ronda_inactiva');
+    }
+
+    // PRUEBA: Simular escaneo exitoso sin llamar al backend
+    // Comenta esto cuando quieras probar con el backend real
+    playBeep();
+    setLastScan({
+      producto: {
+        sku: codigoLimpio,
+        descripcion: 'Producto de prueba'
+      },
+      acumuladoSku: 1
+    });
+    setFlashMessage(`Escaneo exitoso: ${codigoLimpio}`, 'success');
+
+    // Simular actualización del resumen
+    const nuevoResumen = [...resumen];
+    const existente = nuevoResumen.find(r => r.sku === codigoLimpio);
+    if (existente) {
+      existente.cantidadTotal = (existente.cantidadTotal || 0) + 1;
+    } else {
+      nuevoResumen.push({
+        sku: codigoLimpio,
+        descripcionSnapshot: 'Producto de prueba',
+        cantidadTotal: 1
+      });
+    }
+    setResumen(nuevoResumen);
+
+    return { success: true };
+
+    /* CÓDIGO ORIGINAL - Descomenta cuando funcione la prueba
     if (checkOnline()) {
       const raw = await scanLecturaRonda({
         rondaId: selectedRonda.id,
         grupoId: grupoAsignado.id,
         codigo: codigoLimpio
       });
-
-      const backend = raw?.ok !== undefined ? raw : raw?.data?.ok !== undefined ? raw.data : null;
-      const payload = backend?.data || raw?.data || raw || null;
-      const message = backend?.message || raw?.message || 'Lectura registrada';
-      const warning = Boolean(backend?.warning || raw?.warning);
-      const warningData = payload?.warning || null;
-      const esReconteoOpcional = warning === true && !warningData;
-
-      playBeep();
-      setLastScan(payload);
-
-      if (payload?.producto?.sku && inventarioPareja && parejaResumen.length > 0 && !esReconteoOpcional) {
-        const existeEnInventarioAnterior = parejaResumen.some(item => item.sku === payload.producto.sku);
-        if (!existeEnInventarioAnterior) {
-          setSkuWarningInfo({
-            sku: payload.producto.sku,
-            descripcion: payload.producto.descripcion || 'Sin descripción'
-          });
-          setShowSkuWarning(true);
-        }
-      }
-
-      if (warningData?.type === 'producto_en_otra_zona') {
-        setShowZoneWarning(true);
-        setZoneWarningInfo(warningData);
-        setFlashMessage(warningData.message, 'warning');
-        throw new Error('producto_en_otra_zona');
-      } else {
-        setFlashMessage(message, warning ? 'info' : 'success');
-      }
-
-      await loadRoundContext(selectedRonda);
-      return payload;
-    } else {
-      await savePendingScan({
-        rondaId: selectedRonda.id,
-        grupoId: grupoAsignado.id,
-        codigo: codigoLimpio,
-        fecha: new Date().toISOString()
-      });
-      await loadPendingStatsOffline();
-      playBeep();
-      setFlashMessage('Sin conexión. Escaneo guardado localmente.', 'warning');
-      setLastScan({ producto: { sku: codigoLimpio, descripcion: 'Guardado local' }, acumuladoSku: 'pendiente' });
-      return { offline: true };
+      // ... resto del código original
     }
-  }, [selectedRonda, grupoAsignado, loadRoundContext, inventarioPareja, parejaResumen]);
+    */
+  }, [selectedRonda, grupoAsignado, playBeep, resumen]);
 
   // Handler para escaneos inválidos
   const handleInvalidScan = useCallback((codigo, motivo, ultimoExitoso) => {
     playErrorBeep();
-    
+
     setErrorInfo({
       codigoRechazado: codigo,
       ultimoExitoso: ultimoExitoso || lastScan?.producto?.sku || null,
@@ -466,19 +466,19 @@ export default function EscaneoPage() {
       setFlashMessage('No hay conexión a internet para sincronizar', 'warning');
       return;
     }
-    
+
     if (offlineSyncing) {
       console.log('Ya hay una sincronización en curso');
       return;
     }
-    
+
     setOfflineSyncing(true);
     try {
       const result = await syncAllPendingScans(api, (progress) => {
         console.log(`Sincronizando escaneos: ${progress.sincronizados}/${progress.total}`);
         loadPendingStatsOffline();
       });
-      
+
       if (result.sincronizados > 0) {
         setFlashMessage(`${result.sincronizados} escaneo(s) sincronizado(s) correctamente`, 'success');
         if (selectedRonda) {
@@ -504,10 +504,10 @@ export default function EscaneoPage() {
       setIsOnline(false);
       setFlashMessage('Sin conexión a internet. Los escaneos se guardarán localmente.', 'warning');
     };
-    
+
     window.addEventListener('online', handleOnline);
     window.addEventListener('offline', handleOffline);
-    
+
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
@@ -582,7 +582,7 @@ export default function EscaneoPage() {
   // Función para agregar producto manual
   const handleAgregarManual = async () => {
     const skuLimpio = manualSku.trim().toUpperCase();
-    
+
     if (!skuLimpio) {
       setFlashMessage('Debes ingresar un SKU', 'error');
       return;
@@ -631,19 +631,19 @@ export default function EscaneoPage() {
       if (response.ok) {
         playBeep();
         setFlashMessage(response.message || `Producto ${skuLimpio} agregado correctamente`, 'success');
-        
+
         setShowManualModal(false);
         setManualSku('');
         setManualCantidad(1);
         setManualRepeticiones(1);
-        
+
         await loadRoundContext(selectedRonda);
       } else {
         setFlashMessage(response.message || 'Error al agregar producto', 'error');
       }
     } catch (err) {
       console.error('Error en agregar manual:', err);
-      
+
       if (err.response?.status === 409 && err.response?.data?.code === 'PRODUCTO_EN_OTRA_ZONA') {
         const errorData = err.response.data;
         setShowZoneWarning(true);
@@ -656,18 +656,83 @@ export default function EscaneoPage() {
       setLoadingManual(false);
     }
   };
+    const procesarEscaneoDirecto = useCallback(async (codigo) => {
+    console.log('=== INICIANDO ESCANEO ===');
+    console.log('Código a enviar:', codigo);
+    console.log('Tipo de código:', typeof codigo);
+    console.log('Longitud:', codigo.length);
+    console.log('Ronda ID:', selectedRonda?.id);
+    console.log('Grupo ID:', grupoAsignado?.id);
 
+    if (!selectedRonda?.id || selectedRonda.estado !== 'activa' || !grupoAsignado?.id) {
+      console.log('Validación fallida:', {
+        tieneRonda: !!selectedRonda?.id,
+        rondaActiva: selectedRonda?.estado === 'activa',
+        tieneGrupo: !!grupoAsignado?.id
+      });
+      playErrorBeep();
+      setErrorInfo({
+        codigoRechazado: codigo,
+        ultimoExitoso: lastScan?.producto?.sku || null,
+        motivo: 'ronda_inactiva'
+      });
+      setShowErrorModal(true);
+      return;
+    }
+
+    // Mostrar el payload que se va a enviar
+    const payload = {
+      rondaId: selectedRonda.id,
+      grupoId: grupoAsignado.id,
+      codigo: codigo
+    };
+    console.log('Payload a enviar:', payload);
+
+    try {
+      const raw = await scanLecturaRonda(payload);
+      console.log('Respuesta exitosa:', raw);
+
+      playBeep();
+      setLastScan(raw?.data || raw);
+      setFlashMessage('Escaneo exitoso', 'success');
+      await loadRoundContext(selectedRonda);
+    } catch (err) {
+      console.error('=== ERROR DETALLADO ===');
+      console.error('Status:', err.response?.status);
+      console.error('Mensaje:', err.response?.data?.message);
+      console.error('Data completa:', err.response?.data);
+      console.error('Config:', err.config);
+
+      playErrorBeep();
+
+      // Mostrar el mensaje específico del backend
+      const mensajeError = err.response?.data?.message || err.response?.data?.error || 'Error en el servidor';
+
+      setErrorInfo({
+        codigoRechazado: codigo,
+        ultimoExitoso: lastScan?.producto?.sku || null,
+        motivo: mensajeError
+      });
+      setShowErrorModal(true);
+      setFlashMessage(mensajeError, 'error');
+    }
+  }, [selectedRonda, grupoAsignado, lastScan, loadRoundContext]);
   const handleCodigoChange = useCallback((e) => {
     const value = e.target.value;
-    const numeros = value.replace(/[^0-9]/g, '').slice(0, 6);
-    
+    const numeros = value.replace(/[^0-9]/g, '').slice(0, 6); // Limita a 6 dígitos
+
     setCodigo(numeros);
-    
+
+    // Cambia esto de vuelta a 5 o 6 dígitos
     if (numeros.length === 5 || numeros.length === 6) {
-      addCode(numeros);
+      console.log('✅ Código completo detectado:', numeros);
+      procesarEscaneoDirecto(numeros);
       setCodigo('');
     }
-  }, [addCode]);
+  }, [procesarEscaneoDirecto]);
+
+  // Función directa para probar
+
 
   const handleSubmit = useCallback((e) => {
     e.preventDefault();
@@ -755,14 +820,14 @@ export default function EscaneoPage() {
       <audio ref={errorAudioRef} src={alertaSound} preload="auto" />
 
       <div className="escaneo-mobile-header">
-        <button 
+        <button
           className="mobile-menu-btn-escaneo"
           onClick={() => setMobileMenuOpen(!mobileMenuOpen)}
         >
           {mobileMenuOpen ? <X size={24} /> : <ScanLine size={24} />}
         </button>
         <h2 className="mobile-title">Escaneo</h2>
-        <button 
+        <button
           className="fullscreen-btn"
           onClick={() => setFullScreen(!fullScreen)}
         >
@@ -810,7 +875,7 @@ export default function EscaneoPage() {
           <div className="online-badge">
             <span>Online</span>
             {pendingCount > 0 && (
-              <button 
+              <button
                 className="sync-btn"
                 onClick={syncOfflineScans}
                 disabled={offlineSyncing}
@@ -958,10 +1023,10 @@ export default function EscaneoPage() {
 
               <form onSubmit={handleSubmit}>
                 <div className={`scanner-input-row ${scannerProcessing ? 'processing' : ''}`}>
-                  <input 
-                    ref={inputRef} 
-                    type="text" 
-                    value={codigo} 
+                  <input
+                    ref={inputRef}
+                    type="text"
+                    value={codigo}
                     onChange={handleCodigoChange}
                     placeholder="Escanea el código"
                     autoComplete="off"
@@ -1081,8 +1146,8 @@ export default function EscaneoPage() {
               </div>
             ) : (
               <>
-                <div 
-                  className="table-responsive-container" 
+                <div
+                  className="table-responsive-container"
                   style={{ maxHeight: '400px', overflowY: 'auto', overflowX: 'auto' }}
                 >
                   <table className="data-table pareja-table">
@@ -1115,11 +1180,11 @@ export default function EscaneoPage() {
                     </tbody>
                   </table>
                 </div>
-                
-                <div className="pareja-resumen" style={{ 
-                  marginTop: '16px', 
-                  padding: '12px', 
-                  backgroundColor: 'var(--surface-soft)', 
+
+                <div className="pareja-resumen" style={{
+                  marginTop: '16px',
+                  padding: '12px',
+                  backgroundColor: 'var(--surface-soft)',
                   borderRadius: '12px',
                   display: 'flex',
                   justifyContent: 'space-between',
@@ -1323,7 +1388,7 @@ export default function EscaneoPage() {
               <div className="alert-info" style={{ marginTop: '16px' }}>
                 <AlertTriangle size={16} />
                 <span>
-                  <strong>Recomendación:</strong> Verifica que el código sea correcto. 
+                  <strong>Recomendación:</strong> Verifica que el código sea correcto.
                   Si el producto es nuevo, puedes continuar con el escaneo.
                 </span>
               </div>

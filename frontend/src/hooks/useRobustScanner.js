@@ -4,33 +4,30 @@ import { useCallback, useRef, useState } from 'react';
 export function useRobustScanner({ 
   onValidScan, 
   onInvalidScan,
-  minDelay = 150,      // Delay mínimo entre escaneos del mismo código (ms)
-  maxQueueSize = 10,   // Tamaño máximo de cola de procesamiento
-  debounceTime = 50    // Tiempo para agrupar lecturas rápidas
+  minDelay = 150,
+  maxQueueSize = 10,
+  debounceTime = 50
 }) {
   const [processing, setProcessing] = useState(false);
   const lastScanRef = useRef({ code: '', time: 0 });
   const pendingQueueRef = useRef([]);
   const processingTimerRef = useRef(null);
-  const debounceTimerRef = useRef(null);
 
-  // Validación de formato
+  // Validación de formato - MÁS FLEXIBLE
   const isValidFormat = useCallback((code) => {
-    return /^\d{5,6}$/.test(code);
+    // Acepta cualquier código que tenga al menos 3 dígitos numéricos
+    // Esto es temporal para que puedas probar
+    const cleanCode = String(code).replace(/[^0-9]/g, '');
+    return cleanCode.length >= 3 && cleanCode.length <= 20;
   }, []);
 
   // Limpiar y normalizar código
   const normalizeCode = useCallback((rawCode) => {
-    // Eliminar cualquier caracter no numérico
     let clean = String(rawCode).replace(/[^0-9]/g, '');
-    
-    // Limitar a máximo 6 dígitos
-    if (clean.length > 6) clean = clean.slice(0, 6);
-    
     return clean;
   }, []);
 
-  // Procesar la cola de pendientes
+  // Procesar la cola
   const processQueue = useCallback(async () => {
     if (processingTimerRef.current) return;
     if (pendingQueueRef.current.length === 0) return;
@@ -47,14 +44,12 @@ export function useRobustScanner({
         }
       }
       
-      // Procesar cada código único
       for (const code of uniqueCodes) {
         await processSingleCode(code);
       }
       
       processingTimerRef.current = null;
       
-      // Si entraron más códigos mientras procesábamos, procesarlos
       if (pendingQueueRef.current.length > 0) {
         processQueue();
       }
@@ -66,7 +61,7 @@ export function useRobustScanner({
     const now = Date.now();
     const lastScan = lastScanRef.current;
     
-    // Verificar duplicado muy rápido (mismo código)
+    // Verificar duplicado muy rápido
     if (lastScan.code === code && (now - lastScan.time) < minDelay) {
       onInvalidScan?.(code, 'duplicado_rapido', lastScan.code);
       return false;
@@ -86,9 +81,11 @@ export function useRobustScanner({
       setProcessing(false);
       return result;
     } catch (error) {
+      console.error('Error en escaneo:', error);
       setProcessing(false);
       let motivo = 'error_servidor';
-      if (error.response?.status === 409) motivo = 'producto_en_otra_zona';
+      if (error.message === 'ronda_inactiva') motivo = 'ronda_inactiva';
+      if (error.message === 'producto_en_otra_zona') motivo = 'producto_en_otra_zona';
       if (!navigator.onLine) motivo = 'offline';
       onInvalidScan?.(code, motivo, lastScan.code);
       return false;
@@ -102,10 +99,10 @@ export function useRobustScanner({
     const cleanCode = normalizeCode(rawCode);
     if (!cleanCode) return;
     
-    // Agregar a la cola
+    console.log('📦 Código encolado:', cleanCode); // Para debug
+    
     pendingQueueRef.current.push(cleanCode);
     
-    // Limitar tamaño de cola
     if (pendingQueueRef.current.length > maxQueueSize) {
       pendingQueueRef.current = pendingQueueRef.current.slice(-maxQueueSize);
     }
@@ -113,12 +110,10 @@ export function useRobustScanner({
     processQueue();
   }, [normalizeCode, maxQueueSize, processQueue]);
 
-  // Reset del escáner (útil para cambios de ronda)
   const resetScanner = useCallback(() => {
     lastScanRef.current = { code: '', time: 0 };
     pendingQueueRef.current = [];
     if (processingTimerRef.current) clearTimeout(processingTimerRef.current);
-    if (debounceTimerRef.current) clearTimeout(debounceTimerRef.current);
     setProcessing(false);
   }, []);
 
