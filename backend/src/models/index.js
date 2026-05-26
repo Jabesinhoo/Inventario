@@ -54,7 +54,16 @@ Usuario.hasMany(Grupo, { foreignKey: 'liderId', as: 'gruposLiderados' });
 // Inventario -> Grupo
 Inventario.hasMany(Grupo, { foreignKey: 'inventarioId', as: 'grupos' });
 Grupo.belongsTo(Inventario, { foreignKey: 'inventarioId', as: 'inventario' });
+// Inventario -> Inventario base para validación de escaneos
+Inventario.belongsTo(Inventario, {
+  foreignKey: 'inventarioBaseId',
+  as: 'inventarioBase'
+});
 
+Inventario.hasMany(Inventario, {
+  foreignKey: 'inventarioBaseId',
+  as: 'inventariosDerivados'
+});
 // Inventario -> AsignacionConteo
 Inventario.hasMany(AsignacionConteo, { foreignKey: 'inventarioId', as: 'asignaciones' });
 AsignacionConteo.belongsTo(Inventario, { foreignKey: 'inventarioId', as: 'inventario' });

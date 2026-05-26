@@ -8,6 +8,7 @@ const {
   Rol,
   Zona,
   AsignacionConteo,
+  AsignacionRonda,
   Lectura
 } = require('../models');
 
@@ -551,6 +552,7 @@ async function deleteGrupo(req, res, next) {
       });
     }
 
+    // 1. Eliminar miembros del grupo
     await sequelize.query(
       `
       DELETE FROM usuario_grupo
@@ -563,11 +565,21 @@ async function deleteGrupo(req, res, next) {
       }
     );
 
+    // 2. Eliminar asignaciones normales de conteo
     await AsignacionConteo.destroy({
       where: { grupoId: id },
       transaction
     });
 
+    // 3. Eliminar asignaciones de rondas
+    // Esto corrige:
+    // asignaciones_ronda_grupoId_fkey
+    await AsignacionRonda.destroy({
+      where: { grupoId: id },
+      transaction
+    });
+
+    // 4. Ahora sí se puede eliminar el grupo
     await grupo.destroy({ transaction });
 
     await transaction.commit();

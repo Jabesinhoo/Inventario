@@ -20,6 +20,10 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
         defaultValue: 'borrador'
       },
+      inventarioBaseId: {
+        type: DataTypes.INTEGER,
+        allowNull: true
+      },
       requiereConteo3: {
         type: DataTypes.BOOLEAN,
         allowNull: false,

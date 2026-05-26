@@ -431,6 +431,14 @@ export default function EscaneoPage() {
       console.error('Error en escaneo:', err);
       playErrorBeep();
 
+      if (err.response?.status === 409 && err.response?.data?.code === 'PRODUCTO_EN_OTRA_ZONA') {
+        const errorData = err.response.data;
+        setShowZoneWarning(true);
+        setZoneWarningInfo(errorData.data);
+        setFlashMessage(errorData.message, 'error');
+        return;
+      }
+
       let mensajeError = err.response?.data?.message || err.response?.data?.error || 'Error en el servidor';
 
       if (mensajeError.includes('reconteo solo se permiten productos reconocidos y pendientes')) {
@@ -1517,14 +1525,26 @@ export default function EscaneoPage() {
             </div>
             <div className="modal-body">
               <p className="warning-text">
-                El producto <strong>{zoneWarningInfo.sku}</strong> ya fue escaneado en <strong>{zoneWarningInfo.zona?.nombre}</strong> con <strong>{zoneWarningInfo.cantidadEnOtraZona} unidades</strong>.
+                {zoneWarningInfo.origen === 'inventario_base' ? (
+                  <>
+                    El producto <strong>{zoneWarningInfo.sku}</strong> pertenece a la zona{' '}
+                    <strong>{zoneWarningInfo.zona?.nombre}</strong> en el inventario base,
+                    con <strong>{zoneWarningInfo.cantidadEnOtraZona} unidades</strong>.
+                  </>
+                ) : (
+                  <>
+                    El producto <strong>{zoneWarningInfo.sku}</strong> ya fue escaneado en{' '}
+                    <strong>{zoneWarningInfo.zona?.nombre}</strong> con{' '}
+                    <strong>{zoneWarningInfo.cantidadEnOtraZona} unidades</strong>.
+                  </>
+                )}
               </p>
               <div className="alert-destino">
                 <p className="destino-title">Llevar a:</p>
                 <p className="destino-zona"><strong>{zoneWarningInfo.zona?.nombre}</strong></p>
-                <p className="destino-grupo">Grupo: <strong>{zoneWarningInfo.grupo?.nombre}</strong></p>
+                <p className="destino-grupo">Grupo: <strong>{zoneWarningInfo.grupo?.nombre || 'N/A'}</strong></p>
               </div>
-              <p className="warning-text">Escaneo bloqueado. Lleva el producto a la zona indicada.</p>
+              <p className="warning-text">Escaneo bloqueado. Este código no se sumó a la ronda actual.</p>
             </div>
             <div className="modal-actions">
               <button className="btn btn-primary" onClick={() => setShowZoneWarning(false)}>Entendido</button>

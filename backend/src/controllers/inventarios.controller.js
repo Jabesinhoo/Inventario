@@ -1,19 +1,54 @@
 const Joi = require('joi');
+const { Op } = require('sequelize');
 const { Inventario } = require('../models');
 
 const createInventarioSchema = Joi.object({
-  nombre: Joi.string().max(150).required(),
+  nombre: Joi.string().trim().max(150).required(),
   fecha: Joi.date().required(),
-  estado: Joi.string().max(30).default('borrador'),
-  requiereConteo3: Joi.boolean().default(false)
+  estado: Joi.string().trim().max(30).default('borrador'),
+  requiereConteo3: Joi.boolean().default(false),
+  inventarioBaseId: Joi.number().integer().allow(null, '')
 });
 
 const updateInventarioSchema = Joi.object({
-  nombre: Joi.string().max(150),
+  nombre: Joi.string().trim().max(150),
   fecha: Joi.date(),
-  estado: Joi.string().max(30),
-  requiereConteo3: Joi.boolean()
+  estado: Joi.string().trim().max(30),
+  requiereConteo3: Joi.boolean(),
+  inventarioBaseId: Joi.number().integer().allow(null, '')
 }).min(1);
+
+function normalizarNullableNumero(value) {
+  if (value === '' || value === null || typeof value === 'undefined') return null;
+
+  const num = Number(value);
+  return Number.isNaN(num) ? null : num;
+}
+
+async function validarInventarioBase({ inventarioBaseId, inventarioActualId = null }) {
+  if (!inventarioBaseId) return null;
+
+  if (
+    inventarioActualId &&
+    Number(inventarioBaseId) === Number(inventarioActualId)
+  ) {
+    return {
+      status: 400,
+      message: 'Un inventario no puede ser base de sí mismo'
+    };
+  }
+
+  const inventarioBase = await Inventario.findByPk(inventarioBaseId);
+
+  if (!inventarioBase) {
+    return {
+      status: 404,
+      message: 'Inventario base no encontrado'
+    };
+  }
+
+  return null;
+}
 
 async function createInventario(req, res, next) {
   try {
@@ -27,6 +62,7 @@ async function createInventario(req, res, next) {
     }
 
     const nombre = value.nombre.trim();
+    const inventarioBaseId = normalizarNullableNumero(value.inventarioBaseId);
 
     const existe = await Inventario.findOne({
       where: {
@@ -42,16 +78,38 @@ async function createInventario(req, res, next) {
       });
     }
 
+    const errorBase = await validarInventarioBase({ inventarioBaseId });
+
+    if (errorBase) {
+      return res.status(errorBase.status).json({
+        ok: false,
+        message: errorBase.message
+      });
+    }
+
     const inventario = await Inventario.create({
       nombre,
       fecha: value.fecha,
-      estado: value.estado,
-      requiereConteo3: value.requiereConteo3
+      estado: value.estado || 'borrador',
+      requiereConteo3: Boolean(value.requiereConteo3),
+      inventarioBaseId
     });
 
-    res.status(201).json({
+    const inventarioConBase = await Inventario.findByPk(inventario.id, {
+      include: [
+        {
+          model: Inventario,
+          as: 'inventarioBase',
+          attributes: ['id', 'nombre', 'fecha', 'estado'],
+          required: false
+        }
+      ]
+    });
+
+    return res.status(201).json({
       ok: true,
-      data: inventario
+      data: inventarioConBase || inventario,
+      message: 'Inventario creado correctamente'
     });
   } catch (error) {
     next(error);
@@ -61,10 +119,21 @@ async function createInventario(req, res, next) {
 async function getInventarios(req, res, next) {
   try {
     const inventarios = await Inventario.findAll({
-      order: [['fecha', 'DESC']]
+      include: [
+        {
+          model: Inventario,
+          as: 'inventarioBase',
+          attributes: ['id', 'nombre', 'fecha', 'estado'],
+          required: false
+        }
+      ],
+      order: [
+        ['fecha', 'DESC'],
+        ['id', 'DESC']
+      ]
     });
 
-    res.json({
+    return res.json({
       ok: true,
       data: inventarios
     });
@@ -96,10 +165,39 @@ async function updateInventario(req, res, next) {
 
     const updateData = {};
 
-    if (value.nombre !== undefined) updateData.nombre = value.nombre.trim();
-    if (value.fecha !== undefined) updateData.fecha = value.fecha;
-    if (value.estado !== undefined) updateData.estado = value.estado;
-    if (value.requiereConteo3 !== undefined) updateData.requiereConteo3 = value.requiereConteo3;
+    if (value.nombre !== undefined) {
+      updateData.nombre = value.nombre.trim();
+    }
+
+    if (value.fecha !== undefined) {
+      updateData.fecha = value.fecha;
+    }
+
+    if (value.estado !== undefined) {
+      updateData.estado = value.estado;
+    }
+
+    if (value.requiereConteo3 !== undefined) {
+      updateData.requiereConteo3 = Boolean(value.requiereConteo3);
+    }
+
+    if (value.inventarioBaseId !== undefined) {
+      const inventarioBaseId = normalizarNullableNumero(value.inventarioBaseId);
+
+      const errorBase = await validarInventarioBase({
+        inventarioBaseId,
+        inventarioActualId: id
+      });
+
+      if (errorBase) {
+        return res.status(errorBase.status).json({
+          ok: false,
+          message: errorBase.message
+        });
+      }
+
+      updateData.inventarioBaseId = inventarioBaseId;
+    }
 
     const nombreFinal = updateData.nombre ?? inventario.nombre;
     const fechaFinal = updateData.fecha ?? inventario.fecha;
@@ -108,7 +206,7 @@ async function updateInventario(req, res, next) {
       where: {
         nombre: nombreFinal,
         fecha: fechaFinal,
-        id: { [require('sequelize').Op.ne]: id }
+        id: { [Op.ne]: Number(id) }
       }
     });
 
@@ -121,9 +219,20 @@ async function updateInventario(req, res, next) {
 
     await inventario.update(updateData);
 
-    res.json({
+    const inventarioActualizado = await Inventario.findByPk(id, {
+      include: [
+        {
+          model: Inventario,
+          as: 'inventarioBase',
+          attributes: ['id', 'nombre', 'fecha', 'estado'],
+          required: false
+        }
+      ]
+    });
+
+    return res.json({
       ok: true,
-      data: inventario,
+      data: inventarioActualizado || inventario,
       message: 'Inventario actualizado correctamente'
     });
   } catch (error) {
@@ -144,9 +253,23 @@ async function deleteInventario(req, res, next) {
       });
     }
 
+    const derivados = await Inventario.count({
+      where: {
+        inventarioBaseId: Number(id)
+      }
+    });
+
+    if (derivados > 0) {
+      return res.status(400).json({
+        ok: false,
+        message:
+          'No puedes eliminar este inventario porque otros inventarios lo usan como inventario base.'
+      });
+    }
+
     await inventario.destroy();
 
-    res.json({
+    return res.json({
       ok: true,
       message: 'Inventario eliminado correctamente'
     });

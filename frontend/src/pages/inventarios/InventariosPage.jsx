@@ -14,8 +14,7 @@ import {
   CheckCircle,
   Clock,
   RefreshCw,
-  Eye,
-  Unlink
+  Database
 } from 'lucide-react';
 import {
   createInventario,
@@ -79,17 +78,20 @@ function Modal({ open, title, children, onClose, footer }) {
   );
 }
 
+const initialForm = {
+  nombre: '',
+  fecha: '',
+  estado: 'borrador',
+  requiereConteo3: false,
+  inventarioBaseId: '',
+  inventarioParejaId: ''
+};
+
 export default function InventariosPage() {
   const [inventarios, setInventarios] = useState([]);
   const [parejas, setParejas] = useState([]);
   const [editing, setEditing] = useState(null);
-  const [form, setForm] = useState({
-    nombre: '',
-    fecha: '',
-    estado: 'borrador',
-    requiereConteo3: false,
-    inventarioParejaId: ''
-  });
+  const [form, setForm] = useState(initialForm);
   const [loading, setLoading] = useState(true);
   const [loadingParejas, setLoadingParejas] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -106,14 +108,9 @@ export default function InventariosPage() {
     inventario: null
   });
 
-  const [verDetalleModal, setVerDetalleModal] = useState({
-    open: false,
-    pareja: null
-  });
-
   async function loadInventarios() {
     const data = await getInventarios();
-    setInventarios(data);
+    setInventarios(data || []);
   }
 
   async function loadParejas() {
@@ -146,13 +143,7 @@ export default function InventariosPage() {
   }, []);
 
   const resetForm = () => {
-    setForm({
-      nombre: '',
-      fecha: '',
-      estado: 'borrador',
-      requiereConteo3: false,
-      inventarioParejaId: ''
-    });
+    setForm(initialForm);
     setEditing(null);
   };
 
@@ -179,15 +170,18 @@ export default function InventariosPage() {
   };
 
   const getParejaDeInventario = (inventarioId) => {
-    const pareja = parejas.find(p =>
-      p.inventarioBaseId === inventarioId ||
-      p.inventarioComparadoId === inventarioId
+    const pareja = parejas.find(
+      (p) =>
+        Number(p.inventarioBaseId) === Number(inventarioId) ||
+        Number(p.inventarioComparadoId) === Number(inventarioId)
     );
 
     if (!pareja) return null;
 
-    const esBase = pareja.inventarioBaseId === inventarioId;
-    const inventarioPareja = esBase ? pareja.inventarioComparado : pareja.inventarioBase;
+    const esBase = Number(pareja.inventarioBaseId) === Number(inventarioId);
+    const inventarioPareja = esBase
+      ? pareja.inventarioComparado
+      : pareja.inventarioBase;
 
     return {
       id: pareja.id,
@@ -198,12 +192,36 @@ export default function InventariosPage() {
     };
   };
 
-  const inventariosSinPareja = inventarios.filter(inv => {
-    if (editing === inv.id) return true;
-    const tienePareja = parejas.some(p =>
-      p.inventarioBaseId === inv.id ||
-      p.inventarioComparadoId === inv.id
+  const getInventarioBaseLabel = (item) => {
+    if (!item?.inventarioBaseId) {
+      return 'Base propia';
+    }
+
+    if (item.inventarioBase?.nombre) {
+      return `${item.inventarioBase.nombre} - ${item.inventarioBase.fecha}`;
+    }
+
+    const base = inventarios.find(
+      (inv) => Number(inv.id) === Number(item.inventarioBaseId)
     );
+
+    return base ? `${base.nombre} - ${base.fecha}` : `ID ${item.inventarioBaseId}`;
+  };
+
+  const inventariosDisponiblesComoBase = inventarios.filter((inv) => {
+    if (!editing) return true;
+    return Number(inv.id) !== Number(editing);
+  });
+
+  const inventariosSinPareja = inventarios.filter((inv) => {
+    if (editing && Number(editing) === Number(inv.id)) return false;
+
+    const tienePareja = parejas.some(
+      (p) =>
+        Number(p.inventarioBaseId) === Number(inv.id) ||
+        Number(p.inventarioComparadoId) === Number(inv.id)
+    );
+
     return !tienePareja;
   });
 
@@ -214,32 +232,37 @@ export default function InventariosPage() {
     try {
       let inventarioCreado;
 
+      const payloadInventario = {
+        nombre: form.nombre,
+        fecha: form.fecha,
+        estado: form.estado,
+        requiereConteo3: Boolean(form.requiereConteo3),
+        inventarioBaseId: form.inventarioBaseId || null
+      };
+
       if (editing) {
-        await updateInventario(editing, {
-          nombre: form.nombre,
-          fecha: form.fecha,
-          estado: form.estado,
-          requiereConteo3: form.requiereConteo3
-        });
-        inventarioCreado = { id: editing };
+        const actualizado = await updateInventario(editing, payloadInventario);
+        inventarioCreado = actualizado?.data || actualizado || { id: editing };
         openSuccess('Inventario actualizado correctamente');
       } else {
-        const response = await createInventario({
-          nombre: form.nombre,
-          fecha: form.fecha,
-          estado: form.estado,
-          requiereConteo3: form.requiereConteo3
-        });
-        inventarioCreado = response.data;
+        const creado = await createInventario(payloadInventario);
+        inventarioCreado = creado?.data || creado;
         openSuccess('Inventario creado correctamente');
       }
 
-      if (form.inventarioParejaId) {
+      if (form.inventarioParejaId && inventarioCreado?.id) {
         const inventarioParejaId = Number(form.inventarioParejaId);
 
-        const existePareja = parejas.some(p =>
-          (p.inventarioBaseId === inventarioCreado.id && p.inventarioComparadoId === inventarioParejaId) ||
-          (p.inventarioBaseId === inventarioParejaId && p.inventarioComparadoId === inventarioCreado.id)
+        if (Number(inventarioParejaId) === Number(inventarioCreado.id)) {
+          throw new Error('Un inventario no puede ser pareja de sí mismo');
+        }
+
+        const existePareja = parejas.some(
+          (p) =>
+            (Number(p.inventarioBaseId) === Number(inventarioCreado.id) &&
+              Number(p.inventarioComparadoId) === Number(inventarioParejaId)) ||
+            (Number(p.inventarioBaseId) === Number(inventarioParejaId) &&
+              Number(p.inventarioComparadoId) === Number(inventarioCreado.id))
         );
 
         if (!existePareja) {
@@ -249,7 +272,8 @@ export default function InventariosPage() {
             estado: 'pendiente',
             observaciones: `Creada desde inventario ${form.nombre}`
           });
-          openSuccess('Inventario creado y pareja registrada correctamente');
+
+          openSuccess('Inventario guardado y pareja registrada correctamente');
         }
       }
 
@@ -257,7 +281,11 @@ export default function InventariosPage() {
       await loadInventarios();
       await loadParejas();
     } catch (err) {
-      openError(err.response?.data?.message || 'Error al guardar inventario');
+      openError(
+        err.response?.data?.message ||
+          err.message ||
+          'Error al guardar inventario'
+      );
     } finally {
       setSaving(false);
     }
@@ -270,6 +298,7 @@ export default function InventariosPage() {
       fecha: item.fecha || '',
       estado: item.estado || 'borrador',
       requiereConteo3: Boolean(item.requiereConteo3),
+      inventarioBaseId: item.inventarioBaseId || '',
       inventarioParejaId: ''
     });
   };
@@ -295,7 +324,7 @@ export default function InventariosPage() {
     try {
       await deleteInventario(item.id);
 
-      if (editing === item.id) {
+      if (Number(editing) === Number(item.id)) {
         resetForm();
       }
 
@@ -315,7 +344,9 @@ export default function InventariosPage() {
       en_reconteo: { icon: RefreshCw, text: 'En reconteo', color: 'info' },
       completada: { icon: CheckCircle, text: 'Completada', color: 'success' }
     };
+
     const { icon: Icon, text, color } = config[estado] || config.pendiente;
+
     return (
       <span className={`status-badge ${color}`}>
         <Icon size={12} /> {text}
@@ -386,12 +417,41 @@ export default function InventariosPage() {
 
             <div className="form-group">
               <label>
-                <Link2 size={14} /> Inventario pareja (opcional - solo uno por inventario)
+                <Database size={14} /> Inventario base para validar escaneos
+              </label>
+              <select
+                value={form.inventarioBaseId}
+                onChange={(e) =>
+                  setForm((prev) => ({
+                    ...prev,
+                    inventarioBaseId: e.target.value
+                  }))
+                }
+              >
+                <option value="">Este inventario es su propia base</option>
+                {inventariosDisponiblesComoBase.map((inv) => (
+                  <option key={inv.id} value={inv.id}>
+                    {inv.nombre} - {inv.fecha} ({inv.estado})
+                  </option>
+                ))}
+              </select>
+              <small className="text-muted">
+                Este campo define contra qué inventario se validan los códigos
+                al escanear. No es lo mismo que inventario pareja.
+              </small>
+            </div>
+
+            <div className="form-group">
+              <label>
+                <Link2 size={14} /> Inventario pareja para comparación
               </label>
               <select
                 value={form.inventarioParejaId}
                 onChange={(e) =>
-                  setForm((prev) => ({ ...prev, inventarioParejaId: e.target.value }))
+                  setForm((prev) => ({
+                    ...prev,
+                    inventarioParejaId: e.target.value
+                  }))
                 }
               >
                 <option value="">Selecciona un inventario pareja</option>
@@ -402,9 +462,21 @@ export default function InventariosPage() {
                 ))}
               </select>
               <small className="text-muted">
-                Solo inventarios sin pareja aparecen aquí. Relación 1 a 1.
+                Esta relación se usa para comparar inventarios en Diferencias.
+                No controla la validación de escaneo.
               </small>
             </div>
+
+            <label
+              className="checkbox-inline"
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                marginBottom: '16px'
+              }}
+            >
+            </label>
 
             <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
               {editing ? (
@@ -479,12 +551,20 @@ export default function InventariosPage() {
                         }}
                       >
                         <strong>{item.nombre}</strong>
+
                         <span className="badge">{item.estado}</span>
+
+                        <span className="badge info">
+                          <Database size={12} /> Base:{' '}
+                          {getInventarioBaseLabel(item)}
+                        </span>
+
                         {parejaInfo && (
                           <span className="badge info">
                             <Link2 size={12} /> Pareja: {parejaInfo.nombre}
                           </span>
                         )}
+
                         {item.requiereConteo3 ? (
                           <span className="badge">
                             <ShieldCheck size={12} /> Conteo 3
@@ -551,7 +631,8 @@ export default function InventariosPage() {
           <p>Cargando parejas...</p>
         ) : parejas.length === 0 ? (
           <p className="muted">
-            No hay parejas registradas. Al crear un inventario puedes seleccionar su pareja única.
+            No hay parejas registradas. Al crear un inventario puedes seleccionar
+            su pareja única.
           </p>
         ) : (
           <div className="table-container">
