@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import {
   Users, Activity, AlertTriangle, Eye, EyeOff,
   RefreshCw, Clock, Boxes, TrendingUp, Zap,
-  MapPin, Crown, Search, X
+  MapPin, Crown, Search, X, Download, FileSpreadsheet
 } from 'lucide-react';
 import { getInventarios } from '../../services/inventarios.service';
 import {
@@ -10,6 +10,7 @@ import {
   getAlertasRealtime,
   getGrupoDetalle
 } from '../../services/supervisor.service';
+import { exportarRondaExcel, exportarTodasLasRondasExcel } from '../../services/exportar.service';
 
 export default function SupervisorDashboard() {
   const [inventarios, setInventarios] = useState([]);
@@ -21,6 +22,9 @@ export default function SupervisorDashboard() {
   const [grupoDetalle, setGrupoDetalle] = useState(null);
   const [showAlertasModal, setShowAlertasModal] = useState(false);
   const [alertasFiltradas, setAlertasFiltradas] = useState([]);
+  const [exportando, setExportando] = useState(false);
+  const [exportandoRonda, setExportandoRonda] = useState(false);
+  const [rondaSeleccionada, setRondaSeleccionada] = useState(null);
 
   const pollingRef = useRef(null);
 
@@ -79,6 +83,40 @@ export default function SupervisorDashboard() {
     }
   }
 
+  // Exportar ronda específica
+  async function handleExportarRonda(ronda) {
+    setExportandoRonda(true);
+    try {
+      await exportarRondaExcel(ronda.id, ronda.tipoRonda);
+      // Mostrar mensaje de éxito (puedes usar toast si tienes)
+      console.log(`Exportando ronda ${ronda.numeroRonda}...`);
+    } catch (error) {
+      console.error('Error exportando ronda:', error);
+      alert('Error al exportar la ronda');
+    } finally {
+      setExportandoRonda(false);
+    }
+  }
+
+  // Exportar todas las rondas
+  async function handleExportarTodas() {
+  if (!inventarioId) {
+    alert('Selecciona un inventario primero');
+    return;
+  }
+
+  setExportando(true);
+  try {
+    await exportarTodasLasRondasExcel(inventarioId, dashboard);
+    console.log('Exportando todas las rondas...');
+  } catch (error) {
+    console.error('Error exportando todas las rondas:', error);
+    alert('Error al exportar las rondas: ' + (error.message || 'Error desconocido'));
+  } finally {
+    setExportando(false);
+  }
+}
+
   // Configurar polling cada 10 segundos
   const startPolling = useCallback(() => {
     if (pollingRef.current) clearInterval(pollingRef.current);
@@ -126,6 +164,7 @@ export default function SupervisorDashboard() {
   const alertas = dashboard?.alertas || [];
   const escaneosRecientes = dashboard?.escaneosRecientes || [];
   const topProductos = dashboard?.topProductos || [];
+  const rondas = dashboard?.rondas || [];
 
   const getEstadoColor = (estado) => {
     switch (estado) {
@@ -159,6 +198,14 @@ export default function SupervisorDashboard() {
             <button className="btn btn-primary" onClick={() => loadDashboard()} disabled={refreshing}>
               <RefreshCw size={16} className={refreshing ? 'spin' : ''} />
               Actualizar
+            </button>
+            <button 
+              className="btn btn-success" 
+              onClick={handleExportarTodas} 
+              disabled={exportando}
+            >
+              <FileSpreadsheet size={16} />
+              {exportando ? 'Exportando...' : 'Exportar todas las rondas'}
             </button>
             {alertas.length > 0 && (
               <button className="btn btn-danger" onClick={verAlertas}>
@@ -206,6 +253,64 @@ export default function SupervisorDashboard() {
         </div>
       </div>
 
+      {/* Tabla de rondas (nueva sección) */}
+      {rondas.length > 0 && (
+        <div className="card">
+          <div className="list-header">
+            <h2 className="section-title"><Zap size={20} /> Rondas del inventario</h2>
+          </div>
+          <div className="table-container">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>Ronda</th>
+                  <th>Tipo</th>
+                  <th>Estado</th>
+                  <th>Zona</th>
+                  <th>Grupo</th>
+                  <th>Escaneos</th>
+                  <th>Inicio</th>
+                  <th>Fin</th>
+                  <th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {rondas.map((ronda) => (
+                  <tr key={ronda.id}>
+                    <td><strong>Ronda {ronda.numeroRonda}</strong></td>
+                    <td>
+                      <span className={`status-badge ${ronda.tipoRonda === 'reconteo' ? 'warning' : 'info'}`}>
+                        {ronda.tipoRonda === 'reconteo' ? 'Reconteo' : 'Completa'}
+                      </span>
+                    </td>
+                    <td>
+                      <span className={`status-chip ${getRondaEstadoClass(ronda.estado)}`}>
+                        {ronda.estado}
+                      </span>
+                    </td>
+                    <td>{ronda.zona?.nombre || 'N/A'}</td>
+                    <td>{ronda.asignacion?.grupo?.nombre || 'N/A'}</td>
+                    <td className="text-center">{ronda.totalEscaneos || 0}</td>
+                    <td className="text-muted">{ronda.tiempoInicio ? new Date(ronda.tiempoInicio).toLocaleTimeString() : 'N/A'}</td>
+                    <td className="text-muted">{ronda.tiempoFin ? new Date(ronda.tiempoFin).toLocaleTimeString() : 'En curso'}</td>
+                    <td>
+                      <button 
+                        className="btn btn-outline small" 
+                        onClick={() => handleExportarRonda(ronda)}
+                        disabled={exportandoRonda}
+                        title={`Exportar Ronda ${ronda.numeroRonda}`}
+                      >
+                        <Download size={14} /> {exportandoRonda ? '...' : 'Exportar'}
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
       {/* Tabla de grupos */}
       <div className="card">
         <div className="list-header">
@@ -241,7 +346,7 @@ export default function SupervisorDashboard() {
                   </td>
                   <td>
                     <span className="status-chip" style={{ backgroundColor: getEstadoColor(grupo.estado_actividad), color: 'white' }}>
-                      {grupo.estado_actividad === 'activo' ? '🟢 Activo' : grupo.estado_actividad === 'inactivo' ? '🟡 Inactivo' : '⚫ Desconectado'}
+                      {grupo.estado_actividad === 'activo' ? 'Activo' : grupo.estado_actividad === 'inactivo' ? 'Inactivo' : 'Desconectado'}
                     </span>
                   </td>
                   <td className="text-muted">
@@ -444,6 +549,7 @@ export default function SupervisorDashboard() {
           </div>
         </div>
       )}
+
       {/* Modal de alertas */}
       {showAlertasModal && (
         <div className="modal-overlay" onClick={() => setShowAlertasModal(false)}>
