@@ -16,8 +16,7 @@ import { getInventarios } from '../../services/inventarios.service';
 import { getGrupos } from '../../services/grupos.service';
 import {
   compareInventariosDiferencias,
-  exportarDiferenciasExcel,
-  generarRondaReconteoDesdeComparacion
+  exportarDiferenciasExcel
 } from '../../services/diferencias.service';
 import api from '../../services/api';
 
@@ -111,6 +110,7 @@ export default function DiferenciasPage() {
   // Permite decidir dónde se crea la ronda de reconteo.
   // Valores permitidos por el backend: "base" o "comparado".
   const [reconteoDestino, setReconteoDestino] = useState('comparado');
+  const [alcanceReconteo, setAlcanceReconteo] = useState('pendientes');
 
   const [data, setData] = useState(null);
   const [tab, setTab] = useState('diferencias');
@@ -483,12 +483,13 @@ export default function DiferenciasPage() {
         inventarioComparadoId: Number(inventarioComparadoId),
         zonaBaseId: zonaBaseFinalId || null,
         zonaComparadaId: zonaComparadaFinalId || null,
-        reconteoDestino
+        reconteoDestino,
+        alcanceReconteo
       };
 
       console.log('🚨 Generando reconteo con payload:', payload);
 
-      const rawResponse = await generarRondaReconteoDesdeComparacion(payload);
+      const rawResponse = await api.post('/diferencias/reconteo', payload);
 
       const response =
         rawResponse?.data?.data ||
@@ -645,6 +646,21 @@ export default function DiferenciasPage() {
               La ronda de reconteo se creará en el inventario seleccionado aquí.
             </small>
           </div>
+
+              <div className="form-group">
+                <label>Modo de reconteo</label>
+                <select
+                  value={alcanceReconteo}
+                  onChange={(e) => setAlcanceReconteo(e.target.value)}
+                >
+                  <option value="pendientes">Solo productos con diferencia</option>
+                  <option value="inventario_base">Recontar inventario base completo</option>
+                </select>
+                <small className="text-muted">
+                  “Inventario base completo” permite escanear todos los productos del inventario base
+                  de la zona y hace que el reconteo reemplace lógicamente la ronda anterior.
+                </small>
+              </div>
         </div>
 
         {error ? <div className="alert-error">{error}</div> : null}

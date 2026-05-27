@@ -2,19 +2,19 @@
 import { useEffect, useRef } from 'react';
 import { X, AlertTriangle, ScanLine } from 'lucide-react';
 
-export default function ModalErrorLectura({ 
-  isOpen, 
-  onClose, 
-  codigoRechazado, 
+export default function ModalErrorLectura({
+  isOpen,
+  onClose,
+  codigoRechazado,
   ultimoCodigoExitoso,
-  motivo 
+  motivo
 }) {
   const audioErrorRef = useRef(null);
 
   useEffect(() => {
     if (isOpen && audioErrorRef.current) {
       audioErrorRef.current.currentTime = 0;
-      audioErrorRef.current.play().catch(() => {});
+      audioErrorRef.current.play().catch(() => { });
     }
   }, [isOpen]);
 
@@ -24,6 +24,7 @@ export default function ModalErrorLectura({
     formato_invalido: 'El código no tiene el formato válido (5-6 dígitos numéricos)',
     ronda_inactiva: 'La ronda no está activa o no tiene grupo asignado',
     producto_en_otra_zona: 'El producto pertenece a otra zona',
+    codigo_no_registrado_base_datos: 'Este código no está registrado en la base de datos',
     error_servidor: 'Error de comunicación con el servidor',
     duplicado_rapido: 'Escaneo duplicado muy rápido (menos de 300ms)',
     offline: 'Sin conexión a internet'

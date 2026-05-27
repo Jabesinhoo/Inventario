@@ -41,7 +41,6 @@ import {
   getPendientesRonda
 } from '../../services/rondas.service';
 import { getInventarios } from '../../services/inventarios.service';
-import { getParejaInventario } from '../../services/diferencias.service';
 import api from '../../services/api';
 import {
   savePendingScan,
@@ -237,7 +236,7 @@ export default function EscaneoPage() {
     return (rows || []).filter((item) => item?.estado !== 'anulada');
   };
 
-  // Cargar inventario pareja y su resumen
+  // Cargar inventario base de validación y su resumen
   const loadInventarioPareja = useCallback(async (inventarioId, zonaId) => {
     if (!inventarioId) {
       setInventarioPareja(null);
@@ -245,34 +244,60 @@ export default function EscaneoPage() {
       return;
     }
 
+    const inventarioActual = inventarios.find(
+      (item) => Number(item.id) === Number(inventarioId)
+    );
+
+    if (!inventarioActual) {
+      setInventarioPareja(null);
+      setParejaResumen([]);
+      return;
+    }
+
+    // Si no tiene inventarioBaseId, este inventario ES la base.
+    // No debe mostrar tabla de inventario anterior/base.
+    if (!inventarioActual.inventarioBaseId) {
+      setInventarioPareja(null);
+      setParejaResumen([]);
+      setParejaError(null);
+      return;
+    }
+
     setLoadingPareja(true);
     setParejaError(null);
 
     try {
-      const pareja = await getParejaInventario(inventarioId);
+      const inventarioBaseId = Number(inventarioActual.inventarioBaseId);
 
-      if (pareja && pareja.inventarioParejaId) {
-        setInventarioPareja(pareja);
+      const inventarioBase = inventarios.find(
+        (item) => Number(item.id) === inventarioBaseId
+      );
 
-        const resumenData = await getResumenLecturas({
-          inventarioId: pareja.inventarioParejaId,
-          zonaId: zonaId || null
-        });
+      setInventarioPareja({
+        id: inventarioBaseId,
+        inventarioParejaId: inventarioBaseId,
+        nombre: inventarioBase?.nombre || `Inventario base ${inventarioBaseId}`,
+        fecha: inventarioBase?.fecha || '',
+        estado: inventarioBase?.estado || '',
+        esBaseValidacion: true
+      });
 
-        setParejaResumen(resumenData || []);
-      } else {
-        setInventarioPareja(null);
-        setParejaResumen([]);
-      }
+      const resumenData = await getResumenLecturas({
+        inventarioId: inventarioBaseId,
+        zonaId: zonaId || null,
+        referenciaBase: true
+      });
+
+      setParejaResumen(resumenData || []);
     } catch (error) {
-      console.error('Error cargando inventario pareja:', error);
-      setParejaError('No se pudo cargar el inventario anterior');
+      console.error('Error cargando inventario base:', error);
+      setParejaError('No se pudo cargar el inventario base de validación');
       setInventarioPareja(null);
       setParejaResumen([]);
     } finally {
       setLoadingPareja(false);
     }
-  }, []);
+  }, [inventarios]);
 
   async function loadInventariosData() {
     try {
@@ -379,7 +404,7 @@ export default function EscaneoPage() {
     console.log('Código a enviar:', codigo);
     console.log('Es reconteo:', isReconteo);
 
-    if (isReconteo) {
+    if (isReconteo && selectedRonda?.alcanceReconteo !== 'inventario_base') {
       const esPendiente = pendientes.some(p => p.sku === codigo && !p.recontado);
       console.log('¿Es pendiente?', esPendiente);
 
@@ -391,7 +416,7 @@ export default function EscaneoPage() {
         if (productoExistente && productoExistente.recontado) {
           mensajeMotivo = 'Este producto ya fue recontado en esta ronda';
         } else {
-          mensajeMotivo = 'En una ronda de reconteo solo se permiten productos pendientes de la lista';
+          mensajeMotivo = 'En este reconteo solo se permiten productos pendientes de la lista';
         }
 
         setErrorInfo({
@@ -436,6 +461,27 @@ export default function EscaneoPage() {
         setShowZoneWarning(true);
         setZoneWarningInfo(errorData.data);
         setFlashMessage(errorData.message, 'error');
+        return;
+      }
+
+      if (
+        err.response?.status === 409 &&
+        err.response?.data?.code === 'CODIGO_NO_REGISTRADO_BASE_DATOS'
+      ) {
+        const errorData = err.response.data;
+
+        setErrorInfo({
+          codigoRechazado: codigo,
+          ultimoExitoso: lastScan?.producto?.sku || null,
+          motivo: 'codigo_no_registrado_base_datos'
+        });
+
+        setShowErrorModal(true);
+        setFlashMessage(
+          errorData.message || 'Este código no está registrado en la base de datos',
+          'error'
+        );
+
         return;
       }
 
@@ -861,6 +907,23 @@ export default function EscaneoPage() {
         setShowZoneWarning(true);
         setZoneWarningInfo(errorData.data);
         setFlashMessage(errorData.message, 'error');
+      } else if (
+        err.response?.status === 409 &&
+        err.response?.data?.code === 'CODIGO_NO_REGISTRADO_BASE_DATOS'
+      ) {
+        const errorData = err.response.data;
+
+        setErrorInfo({
+          codigoRechazado: skuLimpio,
+          ultimoExitoso: lastScan?.producto?.sku || null,
+          motivo: 'codigo_no_registrado_base_datos'
+        });
+
+        setShowErrorModal(true);
+        setFlashMessage(
+          errorData.message || 'Este código no está registrado en la base de datos',
+          'error'
+        );
       } else {
         setFlashMessage(err.response?.data?.message || 'Error al agregar producto manualmente', 'error');
       }
@@ -1176,7 +1239,7 @@ export default function EscaneoPage() {
               <div className="section-title-group">
                 <h2 className="section-title">
                   <Database size={20} />
-                  <span>Inventario anterior</span>
+                  <span>Inventario base de validación</span>
                   {inventarioPareja && <span className="badge info">{inventarioPareja.nombre}</span>}
                 </h2>
                 {parejaResumen.length > 0 && (
@@ -1189,7 +1252,7 @@ export default function EscaneoPage() {
             {loadingPareja ? (
               <div className="loading-container" style={{ textAlign: 'center', padding: '20px' }}>
                 <div className="loading-spinner-small" />
-                <p className="muted">Cargando inventario anterior...</p>
+                <p className="muted">Cargando inventario base...</p>
               </div>
             ) : parejaError ? (
               <div className="alert-warning">
@@ -1199,11 +1262,11 @@ export default function EscaneoPage() {
             ) : !inventarioPareja ? (
               <div className="empty-state-small">
                 <Database size={32} className="text-muted" />
-                <p className="muted">No hay inventario anterior asociado a este inventario</p>
+                <p className="muted">Este inventario es base o no tiene inventario base asociado</p>
               </div>
             ) : parejaResumen.length === 0 ? (
               <div className="empty-state-small">
-                <p className="muted">No hay registros en el inventario anterior para esta zona</p>
+                <p className="muted">No hay registros en el inventario base para esta zona</p>
               </div>
             ) : (
               <>
@@ -1254,7 +1317,7 @@ export default function EscaneoPage() {
                   gap: '12px'
                 }}>
                   <div className="resumen-item">
-                    <span>Total inventario anterior:</span>
+                    <span>Total inventario base:</span>
                     <strong>{parejaResumen.length}</strong>
                   </div>
                   <div className="resumen-item">

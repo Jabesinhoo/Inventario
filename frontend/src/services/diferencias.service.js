@@ -42,13 +42,15 @@ export async function exportarDiferenciasExcel(params) {
   window.URL.revokeObjectURL(url);
 }
 
+
 export async function generarRondaReconteoDesdeComparacion(data) {
   const payload = {
     inventarioBaseId: data.inventarioBaseId,
     inventarioComparadoId: data.inventarioComparadoId,
     zonaBaseId: data.zonaBaseId ?? data.zonaId ?? null,
     zonaComparadaId: data.zonaComparadaId ?? data.zonaId ?? null,
-    reconteoDestino: data.reconteoDestino || 'comparado'
+    reconteoDestino: data.reconteoDestino || 'comparado',
+    alcanceReconteo: data.alcanceReconteo || 'pendientes'
   };
 
   console.log('🚨 POST /diferencias/reconteo payload:', payload);

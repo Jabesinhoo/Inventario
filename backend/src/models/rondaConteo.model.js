@@ -24,11 +24,17 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
         defaultValue: 'completa'
       },
+      alcanceReconteo: {
+        type: DataTypes.STRING(30),
+        allowNull: false,
+        defaultValue: 'pendientes'
+      },
       estado: {
         type: DataTypes.STRING(30),
         allowNull: false,
         defaultValue: 'borrador'
       },
+
       generadaDesdeRondaId: {
         type: DataTypes.INTEGER,
         allowNull: true

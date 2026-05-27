@@ -19,6 +19,7 @@ const {
 const createRondaSchema = Joi.object({
   grupoId: Joi.number().integer().required(),
   tipoRonda: Joi.string().valid('completa', 'reconteo').required(),
+  alcanceReconteo: Joi.string().valid('pendientes', 'inventario_base').default('pendientes'),
   generadaDesdeRondaId: Joi.number().integer().allow(null),
   observaciones: Joi.string().allow(null, '')
 });
@@ -328,6 +329,7 @@ async function createRonda(req, res, next) {
       zonaId,
       numeroRonda,
       tipoRonda: value.tipoRonda,
+      alcanceReconteo: value.tipoRonda === 'reconteo' ? (value.alcanceReconteo || 'pendientes') : 'pendientes',
       estado: 'borrador',
       generadaDesdeRondaId: value.generadaDesdeRondaId || null,
       observaciones: value.observaciones || null
@@ -636,6 +638,123 @@ async function getPendientesRonda(req, res, next) {
     console.log('Estado:', ronda.estado);
 
     let discrepancias = [];
+
+
+    if (
+      ronda.tipoRonda === 'reconteo' &&
+      ronda.alcanceReconteo === 'inventario_base'
+    ) {
+      const inventario = await Inventario.findByPk(ronda.inventarioId, {
+        attributes: ['id', 'inventarioBaseId']
+      });
+
+      const inventarioBaseId = Number(inventario?.inventarioBaseId || inventario?.id);
+
+      const productosBase = await sequelize.query(
+        `
+        WITH productos_base AS (
+          SELECT
+            c.sku,
+            MAX(NULLIF(c."descripcionSnapshot", 'Sin descripción')) AS descripcion,
+            COALESCE(SUM(c."cantidadTotal"), 0)::int AS "cantidadBase"
+          FROM conteo_inicial_detalle c
+          WHERE c."inventarioId" = :inventarioBaseId
+            AND c."zonaId" = :zonaId
+            AND c.sku IS NOT NULL
+          GROUP BY c.sku
+
+          UNION ALL
+
+          SELECT
+            l.sku,
+            MAX(NULLIF(l."descripcionSnapshot", 'Sin descripción')) AS descripcion,
+            COALESCE(SUM(l.cantidad), 0)::int AS "cantidadBase"
+          FROM lecturas l
+          WHERE l."inventarioId" = :inventarioBaseId
+            AND l."zonaId" = :zonaId
+            AND l.estado = 'valida'
+            AND l.sku IS NOT NULL
+          GROUP BY l.sku
+        ),
+
+        base_agrupada AS (
+          SELECT
+            sku,
+            COALESCE(MAX(descripcion), 'Producto ' || sku) AS descripcion,
+            COALESCE(SUM("cantidadBase"), 0)::int AS "cantidadBase"
+          FROM productos_base
+          GROUP BY sku
+        ),
+
+        reconteo_actual AS (
+          SELECT
+            l.sku,
+            COALESCE(SUM(l.cantidad), 0)::int AS "cantidadRecontada"
+          FROM lecturas l
+          WHERE l."rondaId" = :rondaId
+            AND l.estado = 'valida'
+            AND l.sku IS NOT NULL
+          GROUP BY l.sku
+        )
+
+        SELECT
+          b.sku,
+          b.descripcion,
+          b."cantidadBase",
+          COALESCE(r."cantidadRecontada", 0)::int AS "cantidadRecontada",
+          ABS(b."cantidadBase" - COALESCE(r."cantidadRecontada", 0))::int AS diferencia,
+          CASE
+            WHEN COALESCE(r."cantidadRecontada", 0) > 0 THEN 'reconteo_en_proceso'
+            ELSE 'pendiente_reconteo'
+          END AS estado
+        FROM base_agrupada b
+        LEFT JOIN reconteo_actual r
+          ON r.sku = b.sku
+        ORDER BY b.sku ASC
+        `,
+        {
+          replacements: {
+            inventarioBaseId,
+            zonaId: ronda.zonaId,
+            rondaId: ronda.id
+          },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      const pendientes = productosBase.map((item) => ({
+        id: null,
+        sku: item.sku,
+        descripcion: item.descripcion,
+        descripcionSnapshot: item.descripcion,
+        cantidadBase: Number(item.cantidadBase || 0),
+        cantidadUltima: 0,
+        cantidadRecontada: Number(item.cantidadRecontada || 0),
+        diferencia: Number(item.diferencia || 0),
+        diferenciaOriginal: Number(item.diferencia || 0),
+        estado: item.estado,
+        reconteoCount: 0,
+        recontado: Number(item.cantidadRecontada || 0) > 0,
+        modo: 'inventario_base'
+      }));
+
+      return res.json({
+        ok: true,
+        data: {
+          ronda: {
+            id: ronda.id,
+            numeroRonda: ronda.numeroRonda,
+            tipoRonda: ronda.tipoRonda,
+            alcanceReconteo: ronda.alcanceReconteo,
+            estado: ronda.estado,
+            zona: ronda.zona || null,
+            grupo: ronda.asignacion?.grupo || null
+          },
+          pendientes
+        },
+        pendientes
+      });
+    }
 
     if (ronda.tipoRonda === 'reconteo') {
       // 🔥 CORREGIDO: Buscar discrepancias de DOS maneras:
@@ -1620,6 +1739,7 @@ async function getMisRondasParaEscaneo(req, res, next) {
       zonaId: row.zonaId,
       numeroRonda: row.numeroRonda,
       tipoRonda: row.tipoRonda,
+      alcanceReconteo: row.alcanceReconteo || 'pendientes',
       estado: row.estado,
       tiempoInicio: row.tiempoInicio,
       tiempoFin: row.tiempoFin,
