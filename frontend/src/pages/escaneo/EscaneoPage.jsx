@@ -298,10 +298,14 @@ export default function EscaneoPage() {
         esBaseValidacion: true
       });
 
+      // Esta tabla debe mostrar lo escaneado en el inventario base
+      // para la zona actual. La validación de códigos sigue usando
+      // conteo_inicial_detalle en el backend.
       const resumenData = await getResumenLecturas({
         inventarioId: inventarioBaseId,
         zonaId: zonaId || null,
-        referenciaBase: true
+        referenciaBase: true,
+        fuente: 'lecturas'
       });
 
       setParejaResumen(resumenData || []);
@@ -492,6 +496,7 @@ export default function EscaneoPage() {
       playBeep();
       const responseData = raw?.data || raw;
       setLastScan(responseData);
+      setFlashMessage(`✅ Producto ${codigo} registrado correctamente`, 'success');
       scheduleRoundContextRefresh(selectedRonda);
     } catch (err) {
       console.error('Error en escaneo:', err);
@@ -1401,7 +1406,7 @@ export default function EscaneoPage() {
                       <tr>
                         <th style={{ position: 'sticky', left: 0, backgroundColor: 'var(--surface)', zIndex: 11, minWidth: '100px' }}>SKU</th>
                         <th style={{ minWidth: '200px' }}>Descripción</th>
-                        <th style={{ minWidth: '80px' }}>Cantidad</th>
+                      
                         <th style={{ minWidth: '100px' }}>Estado</th>
                       </tr>
                     </thead>
@@ -1414,7 +1419,6 @@ export default function EscaneoPage() {
                               <strong>{item.sku}</strong>
                             </td>
                             <td data-label="Descripción">{item.descripcionSnapshot || 'Sin descripción'}</td>
-                            <td data-label="Cantidad" className="text-center">{item.cantidadTotal || 0}</td>
                             <td data-label="Estado">
                               <span className={`status-badge ${coincide ? 'success' : 'warning'}`}>
                                 {coincide ? 'Escaneado' : 'Pendiente'}

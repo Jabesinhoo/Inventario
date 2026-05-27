@@ -315,6 +315,8 @@ function esZonaCatalogoBase(zonaNombre) {
 }
 
 async function validarProductoContraInventarioBase({ ronda, codigoLimpio, transaction }) {
+  const codigoNormalizado = String(codigoLimpio || '').trim();
+
   const inventario = await Inventario.findByPk(ronda.inventarioId, {
     attributes: ['id', 'inventarioBaseId'],
     transaction
@@ -326,7 +328,7 @@ async function validarProductoContraInventarioBase({ ronda, codigoLimpio, transa
       status: 404,
       code: 'INVENTARIO_NO_ENCONTRADO',
       message: 'Inventario no encontrado',
-      data: { sku: codigoLimpio }
+      data: { sku: codigoNormalizado }
     };
   }
 
@@ -334,8 +336,6 @@ async function validarProductoContraInventarioBase({ ronda, codigoLimpio, transa
   const inventarioBaseId = inventario.inventarioBaseId
     ? Number(inventario.inventarioBaseId)
     : null;
-
-  const codigoNormalizado = String(codigoLimpio || '').trim();
 
   console.log('🔎 Validando código contra catálogo general conteo_inicial_detalle:', {
     codigoNormalizado,
@@ -345,15 +345,16 @@ async function validarProductoContraInventarioBase({ ronda, codigoLimpio, transa
   });
 
   /*
-    REGLA:
+    REGLA PRINCIPAL:
     conteo_inicial_detalle es el catálogo autorizado del sistema.
-    Si el código no existe aquí, no se puede escanear.
+    Si el código no existe en esta tabla, NO se registra.
 
-    Nota:
-    Bodega Principal y Exhibición son zonas catálogo/base. Sirven para saber
-    si el SKU existe, pero NO bloquean el escaneo por zona.
+    NOTA IMPORTANTE:
+    No filtramos por inventarioId para validar existencia porque esta tabla contiene
+    la base importada desde Melissa y puede quedar asociada al inventario actual/base
+    según el flujo de importación.
   */
-  const productosCatalogoGlobal = await sequelize.query(
+  const productosCatalogo = await sequelize.query(
     `
     SELECT
       c.id,
@@ -394,7 +395,7 @@ async function validarProductoContraInventarioBase({ ronda, codigoLimpio, transa
     }
   );
 
-  if (!productosCatalogoGlobal.length) {
+  if (!productosCatalogo.length) {
     return {
       ok: false,
       status: 409,
@@ -408,28 +409,31 @@ async function validarProductoContraInventarioBase({ ronda, codigoLimpio, transa
     };
   }
 
-  let productosParaZona = productosCatalogoGlobal.filter(
+  /*
+    Para validar zona, preferimos las filas del inventario actual; luego las del
+    inventario base; si no hay, usamos cualquier fila encontrada.
+
+    Bodega Principal y Exhibición son zonas catálogo/base. Sirven para confirmar
+    que el producto existe, pero NO deben bloquear la zona operativa real.
+  */
+  let productosParaZona = productosCatalogo.filter(
     (item) => Number(item.inventarioId) === inventarioActualId
   );
 
   if (productosParaZona.length === 0 && inventarioBaseId) {
-    productosParaZona = productosCatalogoGlobal.filter(
+    productosParaZona = productosCatalogo.filter(
       (item) => Number(item.inventarioId) === inventarioBaseId
     );
   }
 
   if (productosParaZona.length === 0) {
-    productosParaZona = productosCatalogoGlobal;
+    productosParaZona = productosCatalogo;
   }
 
   const productosZonasOperativas = productosParaZona.filter(
     (item) => !esZonaCatalogoBase(item.zonaNombre)
   );
 
-  /*
-    Si el producto solo está en Bodega Principal / Exhibición, se permite.
-    Se guarda la lectura en la zona real de la ronda.
-  */
   if (productosZonasOperativas.length === 0) {
     const productoCatalogo = productosParaZona[0];
 
@@ -495,6 +499,93 @@ async function validarProductoContraInventarioBase({ ronda, codigoLimpio, transa
         `Producto ${productoMismaZona.sku || codigoNormalizado}`,
       zonaId: productoMismaZona.zonaId,
       cantidadTotal: Number(productoMismaZona.cantidadTotal || 0)
+    }
+  };
+}
+
+async function validarSkuYaLeidoEnOtraZona({
+  inventarioId,
+  zonaActualId,
+  sku,
+  codigoLeido,
+  transaction
+}) {
+  const skuNormalizado = String(sku || '').trim();
+  const codigoNormalizado = String(codigoLeido || sku || '').trim();
+
+  const rows = await sequelize.query(
+    `
+    SELECT
+      l."zonaId" AS "zonaId",
+      z.nombre AS "zonaNombre",
+      z.codigo AS "zonaCodigo",
+      l."grupoId" AS "grupoId",
+      g.nombre AS "grupoNombre",
+      COALESCE(SUM(l.cantidad), 0)::int AS "cantidadEnOtraZona",
+      MAX(l."fechaHora") AS "ultimaLectura"
+    FROM lecturas l
+    LEFT JOIN zonas z
+      ON z.id = l."zonaId"
+    LEFT JOIN grupos g
+      ON g.id = l."grupoId"
+    WHERE l."inventarioId" = :inventarioId
+      AND l.estado = 'valida'
+      AND l."zonaId" IS NOT NULL
+      AND l."zonaId" <> :zonaActualId
+      AND (
+        TRIM(l.sku::text) = TRIM(:sku::text)
+        OR TRIM(l."codigoLeido"::text) = TRIM(:sku::text)
+        OR TRIM(l.sku::text) = TRIM(:codigoLeido::text)
+        OR TRIM(l."codigoLeido"::text) = TRIM(:codigoLeido::text)
+      )
+    GROUP BY
+      l."zonaId",
+      z.nombre,
+      z.codigo,
+      l."grupoId",
+      g.nombre
+    ORDER BY
+      "cantidadEnOtraZona" DESC,
+      "ultimaLectura" DESC
+    LIMIT 1
+    `,
+    {
+      replacements: {
+        inventarioId,
+        zonaActualId,
+        sku: skuNormalizado,
+        codigoLeido: codigoNormalizado
+      },
+      type: QueryTypes.SELECT,
+      transaction
+    }
+  );
+
+  if (!rows.length) {
+    return { ok: true };
+  }
+
+  const otraZona = rows[0];
+
+  return {
+    ok: false,
+    status: 409,
+    code: 'PRODUCTO_EN_OTRA_ZONA',
+    message: `El producto ${skuNormalizado || codigoNormalizado} ya fue escaneado en la zona "${otraZona.zonaNombre || 'N/A'}" con ${otraZona.cantidadEnOtraZona || 0} unidades. No se registró la lectura en esta zona.`,
+    data: {
+      sku: skuNormalizado || codigoNormalizado,
+      origen: 'lecturas_otras_zonas',
+      inventarioId,
+      zona: {
+        id: otraZona.zonaId,
+        nombre: otraZona.zonaNombre || 'N/A',
+        codigo: otraZona.zonaCodigo || ''
+      },
+      grupo: {
+        id: otraZona.grupoId,
+        nombre: otraZona.grupoNombre || 'N/A'
+      },
+      cantidadEnOtraZona: Number(otraZona.cantidadEnOtraZona || 0)
     }
   };
 }
@@ -898,60 +989,26 @@ async function scanLecturaRonda(req, res, next) {
       }
     }
 
-    // VALIDACIÓN DE PRODUCTO EN OTRA ZONA (SOLO PARA RONDAS COMPLETAS)
-    if (ronda.tipoRonda !== 'reconteo') {
-      const otraZonaData = await validarProductoEnOtraZona(
-        ronda.inventarioId,
-        skuFinal,
-        ronda.zonaId,
-        grupo.id,
-        transaction
-      );
+    // VALIDACIÓN GLOBAL DE SKU YA LEÍDO EN OTRA ZONA.
+    // Aplica para rondas completas, reconteos y cualquier inventario.
+    // Si el SKU ya fue contado en otra zona del mismo inventario, se bloquea.
+    const validacionOtraZona = await validarSkuYaLeidoEnOtraZona({
+      inventarioId: ronda.inventarioId,
+      zonaActualId: ronda.zonaId,
+      sku: skuFinal,
+      codigoLeido: codigoLimpio,
+      transaction
+    });
 
-      if (otraZonaData && otraZonaData.cantidadTotalEnOtraZona > 0) {
-        const cantidadActualEnEstaZona = await Lectura.sum('cantidad', {
-          where: {
-            rondaId: ronda.id,
-            sku: skuFinal,
-            grupoId: grupo.id,
-            estado: 'valida'
-          },
-          transaction
-        });
-
-        const nuevaCantidad = (cantidadActualEnEstaZona || 0) + 1;
-        const cantidadEnOtraZona = otraZonaData.cantidadTotalEnOtraZona;
-
-        if (cantidadEnOtraZona > nuevaCantidad) {
-          return responderBloqueoProducto({
-            res,
-            transaction,
-            ronda,
-            grupo,
-            req,
-            payload: {
-              ok: false,
-              status: 409,
-              code: 'PRODUCTO_EN_OTRA_ZONA',
-              message: `El producto ${skuFinal} ya fue escaneado en la zona "${otraZonaData.zonaNombre}" con ${cantidadEnOtraZona} unidades. No se permite escanear en esta zona.`,
-              data: {
-                sku: skuFinal,
-                origen: 'lecturas_actuales',
-                zona: {
-                  id: otraZonaData.zonaId,
-                  nombre: otraZonaData.zonaNombre,
-                  codigo: otraZonaData.zonaCodigo
-                },
-                grupo: {
-                  id: otraZonaData.grupoId,
-                  nombre: otraZonaData.grupoNombre
-                },
-                cantidadEnOtraZona
-              }
-            }
-          });
-        }
-      }
+    if (!validacionOtraZona.ok) {
+      return responderBloqueoProducto({
+        res,
+        transaction,
+        ronda,
+        grupo,
+        req,
+        payload: validacionOtraZona
+      });
     }
 
     // Crear la lectura
@@ -1230,8 +1287,47 @@ async function anularLectura(req, res, next) {
 
 async function getResumenLecturas(req, res, next) {
   try {
-    const { inventarioId, conteoTipo, zonaId, grupoId, rondaId, referenciaBase } = req.query;
+    const {
+      inventarioId,
+      conteoTipo,
+      zonaId,
+      grupoId,
+      rondaId,
+      referenciaBase,
+      fuente
+    } = req.query;
+
     const esReferenciaBase = referenciaBase === '1' || referenciaBase === 'true' || referenciaBase === true;
+    const fuenteResumen = String(fuente || '').toLowerCase();
+
+    // Cuando el frontend pide referenciaBase, esta respuesta debe venir del
+    // catálogo autorizado (conteo_inicial_detalle), no de lecturas.
+    // No filtramos por grupo y tampoco por zona operativa, porque Bodega Principal
+    // y Exhibición funcionan como zonas catálogo/base.
+    if (esReferenciaBase && fuenteResumen !== 'lecturas' && inventarioId && !rondaId) {
+      const resumenBase = await sequelize.query(
+        `
+        SELECT
+          TRIM(COALESCE(c.sku, c."codigoLeido")::text) AS sku,
+          COALESCE(
+            MAX(NULLIF(c."descripcionSnapshot", 'Sin descripción')),
+            'Producto ' || TRIM(COALESCE(c.sku, c."codigoLeido")::text)
+          ) AS "descripcionSnapshot",
+          COALESCE(SUM(c."cantidadTotal"), 0)::int AS "cantidadTotal"
+        FROM conteo_inicial_detalle c
+        WHERE c."inventarioId" = :inventarioId
+          AND COALESCE(c.sku, c."codigoLeido") IS NOT NULL
+        GROUP BY TRIM(COALESCE(c.sku, c."codigoLeido")::text)
+        ORDER BY sku ASC
+        `,
+        {
+          replacements: { inventarioId },
+          type: QueryTypes.SELECT
+        }
+      );
+
+      return res.json({ ok: true, data: resumenBase });
+    }
 
     if (rondaId) {
       const where = { estado: 'valida', rondaId };
@@ -1690,60 +1786,26 @@ async function agregarLecturaManual(req, res, next) {
       }
     }
 
-    // Validación de producto en otra zona también para entrada manual.
-    if (ronda.tipoRonda !== 'reconteo') {
-      const otraZonaData = await validarProductoEnOtraZona(
-        ronda.inventarioId,
-        validacionBase.producto?.sku || sku,
-        ronda.zonaId,
-        grupoIdFinal,
-        transaction
-      );
+    // Validación global de SKU ya leído en otra zona también para entrada manual.
+    const skuManualFinal = String(validacionBase.producto?.sku || sku || '').trim();
 
-      if (otraZonaData && otraZonaData.cantidadTotalEnOtraZona > 0) {
-        const cantidadActualEnEstaZona = await Lectura.sum('cantidad', {
-          where: {
-            rondaId: ronda.id,
-            sku: validacionBase.producto?.sku || sku,
-            grupoId: grupoIdFinal,
-            estado: 'valida'
-          },
-          transaction
-        });
+    const validacionOtraZonaManual = await validarSkuYaLeidoEnOtraZona({
+      inventarioId: ronda.inventarioId,
+      zonaActualId: ronda.zonaId,
+      sku: skuManualFinal,
+      codigoLeido: sku,
+      transaction
+    });
 
-        const nuevaCantidad = Number(cantidadActualEnEstaZona || 0) + Number(cantidad || 0);
-        const cantidadEnOtraZona = Number(otraZonaData.cantidadTotalEnOtraZona || 0);
-
-        if (cantidadEnOtraZona > nuevaCantidad) {
-          return responderBloqueoProducto({
-            res,
-            transaction,
-            ronda,
-            grupo,
-            req,
-            payload: {
-              ok: false,
-              status: 409,
-              code: 'PRODUCTO_EN_OTRA_ZONA',
-              message: `El producto ${validacionBase.producto?.sku || sku} ya fue escaneado en la zona "${otraZonaData.zonaNombre}" con ${cantidadEnOtraZona} unidades. No se permite agregarlo manualmente en esta zona.`,
-              data: {
-                sku: validacionBase.producto?.sku || sku,
-                origen: 'lecturas_actuales',
-                zona: {
-                  id: otraZonaData.zonaId,
-                  nombre: otraZonaData.zonaNombre,
-                  codigo: otraZonaData.zonaCodigo
-                },
-                grupo: {
-                  id: otraZonaData.grupoId,
-                  nombre: otraZonaData.grupoNombre
-                },
-                cantidadEnOtraZona
-              }
-            }
-          });
-        }
-      }
+    if (!validacionOtraZonaManual.ok) {
+      return responderBloqueoProducto({
+        res,
+        transaction,
+        ronda,
+        grupo,
+        req,
+        payload: validacionOtraZonaManual
+      });
     }
 
     // Crear la lectura
