@@ -504,7 +504,6 @@ export default function DiferenciasPage() {
         rawResponse?.data ||
         rawResponse;
 
-      console.log('✅ Respuesta generar reconteo:', response);
 
       const rondaId = response?.ronda?.id;
       const rondaNumero = response?.ronda?.numeroRonda;
@@ -531,7 +530,6 @@ export default function DiferenciasPage() {
       }
 
       setMessage(
-        `✅ Ronda creada correctamente · ID ${rondaId} · Ronda ${rondaNumero} · Inventario ${inventarioObjetivoId} · Zona ${zonaObjetivoId} · ${totalDiferencias} SKUs pendientes`
       );
     } catch (err) {
       console.error('❌ Error generando reconteo:', err);

@@ -60,6 +60,10 @@ export default function EscaneoPage() {
   const inputRef = useRef(null);
   const audioRef = useRef(null);
   const errorAudioRef = useRef(null);
+  const scannerTimeoutRef = useRef(null);
+  const scanQueueRef = useRef([]);
+  const processingQueueRef = useRef(false);
+  const refreshTimeoutRef = useRef(null);
 
   const [inventarios, setInventarios] = useState([]);
   const [selectedInventario, setSelectedInventario] = useState('');
@@ -186,6 +190,18 @@ export default function EscaneoPage() {
     return () => {
       document.removeEventListener('click', unlockAudio);
       document.removeEventListener('keydown', unlockAudio);
+    };
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (scannerTimeoutRef.current) {
+        clearTimeout(scannerTimeoutRef.current);
+      }
+
+      if (refreshTimeoutRef.current) {
+        clearTimeout(refreshTimeoutRef.current);
+      }
     };
   }, []);
 
@@ -411,8 +427,22 @@ export default function EscaneoPage() {
     }
   }, []);
 
+  const scheduleRoundContextRefresh = useCallback((ronda) => {
+    if (!ronda?.id) return;
+
+    if (refreshTimeoutRef.current) {
+      clearTimeout(refreshTimeoutRef.current);
+    }
+
+    refreshTimeoutRef.current = setTimeout(() => {
+      loadRoundContext(ronda).catch((error) => {
+        console.error('Error refrescando contexto de ronda:', error);
+      });
+    }, 250);
+  }, [loadRoundContext]);
+
   // Función para procesar escaneo directamente
-  const procesarEscaneoDirecto = useCallback(async (codigo) => {
+  const procesarEscaneoDirecto = useCallback(async (codigo, meta = {}) => {
     console.log('=== INICIANDO ESCANEO ===');
     console.log('Código a enviar:', codigo);
     console.log('Es reconteo:', isReconteo);
@@ -452,15 +482,17 @@ export default function EscaneoPage() {
     const payload = {
       rondaId: selectedRonda.id,
       grupoId: grupoAsignado.id,
-      codigo: codigo
+      codigo: codigo,
+      requestId: meta.requestId || null,
+      scannedAtClient: meta.timestamp || Date.now()
     };
 
     try {
       const raw = await scanLecturaRonda(payload);
       playBeep();
-      setLastScan(raw?.data || raw);
-      setFlashMessage(`✅ Producto ${codigo} registrado correctamente`, 'success');
-      await loadRoundContext(selectedRonda);
+      const responseData = raw?.data || raw;
+      setLastScan(responseData);
+      scheduleRoundContextRefresh(selectedRonda);
     } catch (err) {
       console.error('Error en escaneo:', err);
       playErrorBeep();
@@ -508,7 +540,56 @@ export default function EscaneoPage() {
       setShowErrorModal(true);
       setFlashMessage(mensajeError, 'error');
     }
-  }, [selectedRonda, grupoAsignado, lastScan, loadRoundContext, isReconteo, pendientes]);
+  }, [selectedRonda, grupoAsignado, lastScan, scheduleRoundContextRefresh, isReconteo, pendientes]);
+
+  const processScanQueue = useCallback(async () => {
+    if (processingQueueRef.current) return;
+
+    processingQueueRef.current = true;
+
+    try {
+      while (scanQueueRef.current.length > 0) {
+        const nextScan = scanQueueRef.current.shift();
+
+        try {
+          await procesarEscaneoDirecto(nextScan.codigo, {
+            requestId: nextScan.requestId,
+            timestamp: nextScan.timestamp
+          });
+        } catch (error) {
+          console.error('Error procesando cola de escaneos:', error);
+        }
+      }
+    } finally {
+      processingQueueRef.current = false;
+    }
+  }, [procesarEscaneoDirecto]);
+
+  const enqueueScan = useCallback((rawCode) => {
+    const cleanCode = String(rawCode || '').replace(/[^0-9]/g, '').trim();
+
+    if (!/^\d{5,6}$/.test(cleanCode)) {
+      playErrorBeep();
+      setErrorInfo({
+        codigoRechazado: cleanCode || String(rawCode || ''),
+        ultimoExitoso: lastScan?.producto?.sku || null,
+        motivo: 'formato_invalido'
+      });
+      setShowErrorModal(true);
+      return;
+    }
+
+    scanQueueRef.current.push({
+      codigo: cleanCode,
+      timestamp: Date.now(),
+      requestId:
+        typeof crypto !== 'undefined' && crypto.randomUUID
+          ? crypto.randomUUID()
+          : `${Date.now()}-${Math.random()}`
+    });
+
+    processScanQueue();
+  }, [lastScan, processScanQueue]);
 
   // Cargar inventario pareja cuando cambia la ronda
   useEffect(() => {
@@ -648,24 +729,55 @@ export default function EscaneoPage() {
 
   const handleCodigoChange = useCallback((e) => {
     const value = e.target.value;
-    const numeros = value.replace(/[^0-9]/g, '').slice(0, 6);
+    const cleanValue = value.replace(/[^0-9]/g, '').slice(0, 12);
 
-    setCodigo(numeros);
+    setCodigo(cleanValue);
 
-    if (numeros.length === 5 || numeros.length === 6) {
-      console.log('✅ Código completo detectado:', numeros);
-      procesarEscaneoDirecto(numeros);
-      setCodigo('');
+    if (scannerTimeoutRef.current) {
+      clearTimeout(scannerTimeoutRef.current);
     }
-  }, [procesarEscaneoDirecto]);
+
+    scannerTimeoutRef.current = setTimeout(() => {
+      const finalCode = String(cleanValue || '').replace(/[^0-9]/g, '');
+
+      if (/^\d{5,6}$/.test(finalCode)) {
+        enqueueScan(finalCode);
+        setCodigo('');
+      }
+    }, 80);
+  }, [enqueueScan]);
 
   const handleSubmit = useCallback((e) => {
     e.preventDefault();
-    if (codigo.length === 5 || codigo.length === 6) {
-      procesarEscaneoDirecto(codigo);
+
+    if (scannerTimeoutRef.current) {
+      clearTimeout(scannerTimeoutRef.current);
+    }
+
+    const finalCode = String(codigo || '').replace(/[^0-9]/g, '');
+
+    if (finalCode) {
+      enqueueScan(finalCode);
       setCodigo('');
     }
-  }, [codigo, procesarEscaneoDirecto]);
+  }, [codigo, enqueueScan]);
+
+  const handleScannerKeyDown = useCallback((e) => {
+    if (e.key !== 'Enter') return;
+
+    e.preventDefault();
+
+    if (scannerTimeoutRef.current) {
+      clearTimeout(scannerTimeoutRef.current);
+    }
+
+    const finalCode = String(codigo || '').replace(/[^0-9]/g, '');
+
+    if (finalCode) {
+      enqueueScan(finalCode);
+      setCodigo('');
+    }
+  }, [codigo, enqueueScan]);
 
   const handleAnularLectura = async (lecturaId) => {
     if (!window.confirm('¿Anular esta lectura?')) return;
@@ -1166,6 +1278,7 @@ export default function EscaneoPage() {
                     type="text"
                     value={codigo}
                     onChange={handleCodigoChange}
+                    onKeyDown={handleScannerKeyDown}
                     placeholder="Escanea el código (5-6 dígitos)"
                     autoComplete="off"
                     autoCorrect="off"

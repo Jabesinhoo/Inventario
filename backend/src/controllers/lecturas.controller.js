@@ -27,7 +27,13 @@ const scanSchema = Joi.object({
 const scanRondaSchema = Joi.object({
   rondaId: Joi.number().integer().required(),
   grupoId: Joi.number().integer().required(),
-  codigo: Joi.string().trim().required()
+  codigo: Joi.string().trim().required(),
+  requestId: Joi.string().trim().max(120).allow(null, ''),
+  scannedAtClient: Joi.alternatives().try(
+    Joi.number().integer(),
+    Joi.date(),
+    Joi.string().trim().allow(null, '')
+  ).optional()
 });
 
 // ==================== HELPERS ====================
@@ -564,6 +570,7 @@ async function scanLectura(req, res, next) {
     }
 
     const { codigoLimpio } = validacionCodigo;
+    const requestId = value.requestId || null;
 
     if (!req.canViewAllGroups && Number(value.grupoId) !== Number(req.grupoId)) {
       await transaction.rollback();
@@ -729,6 +736,7 @@ async function scanLecturaRonda(req, res, next) {
     }
 
     const { codigoLimpio } = validacionCodigo;
+    const requestId = value.requestId || null;
 
     if (!req.canViewAllGroups && Number(value.grupoId) !== Number(req.grupoId)) {
       await transaction.rollback();
@@ -1002,19 +1010,17 @@ async function scanLecturaRonda(req, res, next) {
       }
     }
 
-    const totalEscaneosRonda = await Lectura.sum('cantidad', {
-      where: {
-        rondaId: ronda.id,
-        estado: 'valida'
-      },
-      transaction
-    });
+    // Incremento atómico: evita perder conteos cuando entran varios escaneos casi al mismo tiempo.
+    await RondaConteo.increment(
+      { totalEscaneos: 1 },
+      {
+        where: { id: ronda.id },
+        transaction
+      }
+    );
 
     await ronda.update(
-      {
-        updatedAt: new Date(),
-        totalEscaneos: Number(totalEscaneosRonda || 0)
-      },
+      { updatedAt: new Date() },
       { transaction }
     );
 
@@ -1022,6 +1028,8 @@ async function scanLecturaRonda(req, res, next) {
 
     const responseData = {
       lecturaId: lectura.id,
+      requestId,
+      scannedAtClient: value.scannedAtClient || null,
       ronda: {
         id: ronda.id,
         numeroRonda: ronda.numeroRonda,
