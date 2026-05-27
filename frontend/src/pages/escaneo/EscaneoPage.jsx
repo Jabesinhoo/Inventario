@@ -381,10 +381,23 @@ export default function EscaneoPage() {
           [];
         pendientesRows = Array.isArray(pendientesRows) ? pendientesRows : [];
 
-        pendientesRows = pendientesRows.map(p => ({
-          ...p,
-          recontado: resumenRows.some(r => r.sku === p.sku && r.cantidadTotal > 0)
-        }));
+        pendientesRows = pendientesRows.map((p) => {
+          const resumenProducto = resumenRows.find(
+            (r) => String(r.sku).trim() === String(p.sku).trim()
+          );
+
+          const cantidadRecontada = Number(
+            resumenProducto?.cantidadTotal ||
+            p.cantidadRecontada ||
+            0
+          );
+
+          return {
+            ...p,
+            cantidadRecontada,
+            recontado: cantidadRecontada > 0
+          };
+        });
       }
 
       setResumen(resumenRows);
@@ -405,25 +418,21 @@ export default function EscaneoPage() {
     console.log('Es reconteo:', isReconteo);
 
     if (isReconteo && selectedRonda?.alcanceReconteo !== 'inventario_base') {
-      const esPendiente = pendientes.some(p => p.sku === codigo && !p.recontado);
-      console.log('¿Es pendiente?', esPendiente);
+      const productoPermitido = pendientes.find(
+        (p) => String(p.sku).trim() === String(codigo).trim()
+      );
 
-      if (!esPendiente) {
+      console.log('¿Está en lista de reconteo?', Boolean(productoPermitido));
+
+      if (!productoPermitido) {
         playErrorBeep();
-        const productoExistente = pendientes.find(p => p.sku === codigo);
-        let mensajeMotivo = '';
-
-        if (productoExistente && productoExistente.recontado) {
-          mensajeMotivo = 'Este producto ya fue recontado en esta ronda';
-        } else {
-          mensajeMotivo = 'En este reconteo solo se permiten productos pendientes de la lista';
-        }
 
         setErrorInfo({
           codigoRechazado: codigo,
           ultimoExitoso: lastScan?.producto?.sku || null,
-          motivo: mensajeMotivo
+          motivo: 'En este reconteo solo se permiten productos pendientes de la lista'
         });
+
         setShowErrorModal(true);
         return;
       }
@@ -1217,7 +1226,7 @@ export default function EscaneoPage() {
                               <p className="pending-sku-desc">{item.descripcionSnapshot || 'Sin descripción'}</p>
                             </div>
                             {item.recontado ? (
-                              <span className="badge success">Recontado</span>
+                              <span className="badge success">Recontado: {item.cantidadRecontada || 0}</span>
                             ) : (
                               <span className="badge warning">Pendiente</span>
                             )}

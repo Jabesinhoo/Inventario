@@ -308,11 +308,7 @@ function esZonaCatalogoBase(zonaNombre) {
   );
 }
 
-async function validarProductoContraInventarioBase({
-  ronda,
-  codigoLimpio,
-  transaction
-}) {
+async function validarProductoContraInventarioBase({ ronda, codigoLimpio, transaction }) {
   const inventario = await Inventario.findByPk(ronda.inventarioId, {
     attributes: ['id', 'inventarioBaseId'],
     transaction
@@ -346,6 +342,10 @@ async function validarProductoContraInventarioBase({
     REGLA:
     conteo_inicial_detalle es el catálogo autorizado del sistema.
     Si el código no existe aquí, no se puede escanear.
+
+    Nota:
+    Bodega Principal y Exhibición son zonas catálogo/base. Sirven para saber
+    si el SKU existe, pero NO bloquean el escaneo por zona.
   */
   const productosCatalogoGlobal = await sequelize.query(
     `
@@ -402,19 +402,6 @@ async function validarProductoContraInventarioBase({
     };
   }
 
-  /*
-    Elegimos el grupo de filas más relevante:
-    1. Primero las del inventario actual.
-    2. Luego las del inventario base.
-    3. Si no hay ninguna de esas, cualquier fila global del catálogo.
-
-    Pero para validar ZONA, se excluyen las zonas catálogo:
-    - Bodega Principal
-    - Exhibición
-
-    Esas zonas solo indican que el producto existe en la base de datos Melissa,
-    no que el escaneo deba hacerse en esa zona.
-  */
   let productosParaZona = productosCatalogoGlobal.filter(
     (item) => Number(item.inventarioId) === inventarioActualId
   );
@@ -434,8 +421,8 @@ async function validarProductoContraInventarioBase({
   );
 
   /*
-    Si el producto solo aparece en Bodega Principal / Exhibición,
-    NO bloqueamos por zona. Permitimos escanear en la zona actual.
+    Si el producto solo está en Bodega Principal / Exhibición, se permite.
+    Se guarda la lectura en la zona real de la ronda.
   */
   if (productosZonasOperativas.length === 0) {
     const productoCatalogo = productosParaZona[0];
@@ -457,10 +444,6 @@ async function validarProductoContraInventarioBase({
     };
   }
 
-  /*
-    Si sí hay zonas operativas reales, ahí sí validamos que corresponda
-    a la zona actual de la ronda.
-  */
   const productoMismaZona = productosZonasOperativas.find(
     (item) => Number(item.zonaId) === Number(ronda.zonaId)
   );
@@ -509,8 +492,6 @@ async function validarProductoContraInventarioBase({
     }
   };
 }
-
-
 
 async function responderBloqueoProducto({
   res,
@@ -821,14 +802,14 @@ async function scanLecturaRonda(req, res, next) {
       const payload = validacionBase || {
         status: 500,
         code: 'VALIDACION_BASE_SIN_RESPUESTA',
-        message: 'La validación del catálogo no devolvió respuesta.',
+        message: 'La validación del inventario base no devolvió respuesta.',
         data: {
           sku: codigoLimpio,
           inventarioActualId: ronda.inventarioId
         }
       };
 
-      return responderBloqueoProductoEnOtraZona({
+      return responderBloqueoProducto({
         res,
         transaction,
         ronda,
@@ -1097,70 +1078,7 @@ async function scanLecturaRonda(req, res, next) {
 }
 
 
-async function responderBloqueoProductoEnOtraZona({
-  res,
-  transaction,
-  ronda,
-  grupo,
-  req,
-  payload
-}) {
-  try {
-    if (transaction && !transaction.finished) {
-      await transaction.rollback();
-    }
-  } catch (rollbackError) {
-    console.error('Error haciendo rollback:', rollbackError);
-  }
 
-  // Solo guardamos warning log cuando realmente es producto en otra zona.
-  // Para código no registrado en base de datos NO hace falta warning log.
-  if (payload?.code === 'PRODUCTO_EN_OTRA_ZONA') {
-    try {
-      if (typeof registrarWarningLog === 'function') {
-        await registrarWarningLog(
-          {
-            tipo: payload.data?.origen === 'inventario_base'
-              ? 'producto_zona_inventario_base'
-              : 'producto_en_otra_zona',
-
-            rondaId: ronda?.id || null,
-            sku: payload.data?.sku || null,
-
-            zonaActualId: ronda?.zonaId || null,
-            zonaActualNombre: ronda?.zona?.nombre || 'N/A',
-
-            grupoActualId: grupo?.id || null,
-            grupoActualNombre: grupo?.nombre || 'N/A',
-
-            cantidadActual: 0,
-
-            zonaOtraId: payload.data?.zona?.id || null,
-            zonaOtraNombre: payload.data?.zona?.nombre || 'N/A',
-
-            grupoOtroId: payload.data?.grupo?.id || null,
-            grupoOtroNombre: payload.data?.grupo?.nombre || 'N/A',
-
-            cantidadOtraZona: Number(payload.data?.cantidadEnOtraZona || 0),
-
-            usuarioId: req?.user?.id || null,
-            usuarioNombre: req?.user?.nombre || req?.user?.email || 'N/A'
-          },
-          null
-        );
-      }
-    } catch (warningError) {
-      console.error('Error registrando warning log:', warningError);
-    }
-  }
-
-  return res.status(payload?.status || 409).json({
-    ok: false,
-    code: payload?.code || 'LECTURA_BLOQUEADA',
-    message: payload?.message || 'No se registró la lectura.',
-    data: payload?.data || null
-  });
-}
 // ==================== ANULAR LECTURA ====================
 
 async function anularLectura(req, res, next) {
@@ -1705,14 +1623,24 @@ async function agregarLecturaManual(req, res, next) {
       transaction
     });
 
-    if (!validacionBase.ok) {
+    if (!validacionBase || validacionBase.ok !== true) {
+      const payload = validacionBase || {
+        status: 500,
+        code: 'VALIDACION_BASE_SIN_RESPUESTA',
+        message: 'La validación del catálogo no devolvió respuesta.',
+        data: {
+          sku,
+          inventarioActualId: ronda.inventarioId
+        }
+      };
+
       return responderBloqueoProducto({
         res,
         transaction,
         ronda,
         grupo,
         req,
-        payload: validacionBase
+        payload
       });
     }
 
@@ -2132,6 +2060,5 @@ module.exports = {
   buildWherePendienteReconteo,
   agregarLecturaManual,
   eliminarLecturaPorSku,
-  editarCantidadProducto,
-  responderBloqueoProducto
+  editarCantidadProducto
 };

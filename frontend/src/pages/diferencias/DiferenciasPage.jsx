@@ -208,7 +208,10 @@ export default function DiferenciasPage() {
     Boolean(zonaBaseSeleccionada) &&
     Boolean(zonaComparadaSeleccionada) &&
     zonesAreEquivalent(zonaBaseSeleccionada, zonaComparadaSeleccionada) &&
-    Number(resumen.totalDiferencias || 0) > 0;
+    (
+      alcanceReconteo === 'inventario_base' ||
+      Number(resumen.totalDiferencias || 0) > 0
+    );
 
   const rowsActivos = useMemo(() => {
     if (!data) return [];
@@ -470,7 +473,12 @@ export default function DiferenciasPage() {
         return;
       }
 
-      if (!data || Number(resumen.totalDiferencias || 0) === 0) {
+      if (!data) {
+        setError('Primero debes comparar los inventarios.');
+        return;
+      }
+
+      if (Number(resumen.totalDiferencias || 0) === 0 && alcanceReconteo !== 'inventario_base') {
         setError('No hay diferencias para generar reconteo.');
         return;
       }

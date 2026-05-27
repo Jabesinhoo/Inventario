@@ -1634,6 +1634,7 @@ async function getMisRondasParaEscaneo(req, res, next) {
         r."zonaId",
         r."numeroRonda",
         r."tipoRonda",
+        r."alcanceReconteo",
         r.estado,
         r."tiempoInicio",
         r."tiempoFin",
@@ -1683,24 +1684,6 @@ async function getMisRondasParaEscaneo(req, res, next) {
             AND ac_mia.id IS NOT NULL
           )
 
-          OR (
-            r."tipoRonda" = 'reconteo'
-            AND EXISTS (
-              SELECT 1
-              FROM discrepancias_conteo d
-              WHERE d."rondaReconteoId" = r.id
-                AND d."inventarioId" = r."inventarioId"
-                AND d."zonaId" = r."zonaId"
-                AND d.estado IN ('pendiente_reconteo', 'reconteo_en_proceso', 'pendiente')
-            )
-            AND EXISTS (
-              SELECT 1
-              FROM grupos g2
-              INNER JOIN mis_grupos mg2
-                ON mg2."grupoId" = g2.id
-              WHERE g2."inventarioId" = r."inventarioId"
-            )
-          )
         )
 
       ORDER BY

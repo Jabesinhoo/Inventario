@@ -1387,7 +1387,7 @@ async function generarReconteoDesdeComparacion(req, res, next) {
 
     console.log(`📊 Diferencias encontradas: ${diferencias.length}`);
 
-    if (diferencias.length === 0) {
+    if (diferencias.length === 0 && alcanceNormalizado !== 'inventario_base') {
       await transaction.rollback();
       return res.status(400).json({
         ok: false,
@@ -1402,6 +1402,10 @@ async function generarReconteoDesdeComparacion(req, res, next) {
           alcanceReconteo: alcanceNormalizado
         }
       });
+    }
+
+    if (diferencias.length === 0 && alcanceNormalizado === 'inventario_base') {
+      console.log('ℹ️ No hay diferencias, pero se generará reconteo completo por alcance inventario_base.');
     }
 
     const ultimaRondaReferenciaCompleta = await RondaConteo.findOne({
@@ -1480,10 +1484,10 @@ async function generarReconteoDesdeComparacion(req, res, next) {
     } = require('../models');
 
     /*
-      asignaciones_ronda tiene unique por rondaId.
-      Por eso se crea SOLO una asignación principal.
-      La visibilidad para otros grupos debe manejarse desde getMisRondasParaEscaneo
-      usando asignaciones_conteo para rondas tipo reconteo.
+      REGLA CRÍTICA:
+      El reconteo se asigna SOLO al grupo que tiene asignada la zona objetivo
+      dentro del inventario objetivo. No hay fallback al primer grupo del inventario,
+      porque eso mezcla zonas, miembros y códigos pendientes.
     */
     const asignacionConteoPrincipal = await AsignacionConteo.findOne({
       where: {
@@ -1497,29 +1501,27 @@ async function generarReconteoDesdeComparacion(req, res, next) {
       transaction
     });
 
-    let grupoPrincipalAsignado = null;
-
-    if (asignacionConteoPrincipal?.grupoId) {
-      grupoPrincipalAsignado = await Grupo.findByPk(asignacionConteoPrincipal.grupoId, {
-        transaction
+    if (!asignacionConteoPrincipal?.grupoId) {
+      await transaction.rollback();
+      return res.status(400).json({
+        ok: false,
+        message: `No hay grupo asignado para la zona ${zonaObjetivo.nombre} en el inventario donde se hará el reconteo.`
       });
     }
 
-    if (!grupoPrincipalAsignado) {
-      grupoPrincipalAsignado = await Grupo.findOne({
-        where: {
-          inventarioId: inventarioObjetivoId
-        },
-        order: [['id', 'ASC']],
-        transaction
-      });
-    }
+    const grupoPrincipalAsignado = await Grupo.findOne({
+      where: {
+        id: asignacionConteoPrincipal.grupoId,
+        inventarioId: inventarioObjetivoId
+      },
+      transaction
+    });
 
     if (!grupoPrincipalAsignado) {
       await transaction.rollback();
       return res.status(400).json({
         ok: false,
-        message: `No se encontró grupo para asignar la ronda en el inventario ${inventarioObjetivoId}.`
+        message: `La asignación de conteo para la zona ${zonaObjetivo.nombre} apunta a un grupo que no pertenece al inventario objetivo.`
       });
     }
 
@@ -1550,7 +1552,7 @@ async function generarReconteoDesdeComparacion(req, res, next) {
     }
 
     console.log(
-      `✅ Ronda ${nuevaRonda.id} asignada como principal al grupo ${grupoPrincipalAsignado.id} - ${grupoPrincipalAsignado.nombre}`
+      `✅ Ronda ${nuevaRonda.id} asignada SOLO al grupo ${grupoPrincipalAsignado.id} - ${grupoPrincipalAsignado.nombre}, zona ${zonaObjetivoId}`
     );
 
     let creadas = 0;

@@ -2,19 +2,19 @@
 import { useEffect, useRef } from 'react';
 import { X, AlertTriangle, ScanLine } from 'lucide-react';
 
-export default function ModalErrorLectura({
-  isOpen,
-  onClose,
-  codigoRechazado,
+export default function ModalErrorLectura({ 
+  isOpen, 
+  onClose, 
+  codigoRechazado, 
   ultimoCodigoExitoso,
-  motivo
+  motivo 
 }) {
   const audioErrorRef = useRef(null);
 
   useEffect(() => {
     if (isOpen && audioErrorRef.current) {
       audioErrorRef.current.currentTime = 0;
-      audioErrorRef.current.play().catch(() => { });
+      audioErrorRef.current.play().catch(() => {});
     }
   }, [isOpen]);
 
