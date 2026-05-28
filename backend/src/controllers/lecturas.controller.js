@@ -33,7 +33,8 @@ const scanRondaSchema = Joi.object({
     Joi.number().integer(),
     Joi.date(),
     Joi.string().trim().allow(null, '')
-  ).optional()
+  ).optional(),
+  permitirConteoBodega: Joi.boolean().default(false)
 });
 
 // ==================== HELPERS ====================
@@ -314,6 +315,118 @@ function esZonaCatalogoBase(zonaNombre) {
   );
 }
 
+
+function esZonaBodegaOperativa(zonaNombre, zonaCodigo = '') {
+  const nombre = normalizarTextoZona(zonaNombre);
+  const codigo = normalizarTextoZona(zonaCodigo);
+
+  return (
+    nombre.includes('bodega') ||
+    nombre.includes('bod') ||
+    nombre.includes('almacen') ||
+    nombre.includes('almacén') ||
+    codigo.includes('bodega') ||
+    codigo.includes('bod') ||
+    codigo.includes('almacen') ||
+    codigo.includes('almacén')
+  );
+}
+
+async function getEtiquetasPorSku(sku, transaction = null) {
+  const skuNormalizado = String(sku || '').trim();
+  if (!skuNormalizado) return [];
+
+  try {
+    return await sequelize.query(
+      `
+      SELECT
+        id,
+        TRIM(sku::text) AS sku,
+        nombre,
+        color,
+        nota,
+        activo
+      FROM sku_etiquetas
+      WHERE activo = true
+        AND TRIM(sku::text) = TRIM(:sku::text)
+      ORDER BY "updatedAt" DESC, id DESC
+      `,
+      {
+        replacements: { sku: skuNormalizado },
+        type: QueryTypes.SELECT,
+        transaction
+      }
+    );
+  } catch (error) {
+    // Si la tabla aún no existe en una instalación, no debe romper el escaneo.
+    console.warn('No se pudieron cargar etiquetas del SKU:', error?.message || error);
+    return [];
+  }
+}
+
+async function adjuntarEtiquetasAResumen(rows) {
+  const data = (rows || []).map((row) => {
+    if (row && typeof row.get === 'function') {
+      return row.get({ plain: true });
+    }
+    return { ...(row || {}) };
+  });
+
+  const skus = Array.from(
+    new Set(
+      data
+        .map((item) => String(item.sku || '').trim())
+        .filter(Boolean)
+    )
+  );
+
+  if (skus.length === 0) {
+    return data.map((item) => ({ ...item, etiquetas: [] }));
+  }
+
+  try {
+    const etiquetas = await sequelize.query(
+      `
+      SELECT
+        id,
+        TRIM(sku::text) AS sku,
+        nombre,
+        color,
+        nota,
+        activo
+      FROM sku_etiquetas
+      WHERE activo = true
+        AND TRIM(sku::text) IN (:skus)
+      ORDER BY "updatedAt" DESC, id DESC
+      `,
+      {
+        replacements: { skus },
+        type: QueryTypes.SELECT
+      }
+    );
+
+    const etiquetasPorSku = new Map();
+
+    for (const etiqueta of etiquetas || []) {
+      const sku = String(etiqueta.sku || '').trim();
+      if (!etiquetasPorSku.has(sku)) etiquetasPorSku.set(sku, []);
+      etiquetasPorSku.get(sku).push(etiqueta);
+    }
+
+    return data.map((item) => {
+      const sku = String(item.sku || '').trim();
+      return {
+        ...item,
+        etiquetas: etiquetasPorSku.get(sku) || []
+      };
+    });
+  } catch (error) {
+    console.warn('No se pudieron adjuntar etiquetas al resumen:', error?.message || error);
+    return data.map((item) => ({ ...item, etiquetas: [] }));
+  }
+}
+
+
 async function validarProductoContraInventarioBase({ ronda, codigoLimpio, transaction }) {
   const codigoNormalizado = String(codigoLimpio || '').trim();
 
@@ -337,22 +450,22 @@ async function validarProductoContraInventarioBase({ ronda, codigoLimpio, transa
     ? Number(inventario.inventarioBaseId)
     : null;
 
-  console.log('🔎 Validando código contra catálogo general conteo_inicial_detalle:', {
+  console.log('🔎 Validando código contra catálogo conteo_inicial_detalle:', {
     codigoNormalizado,
     inventarioActualId,
     inventarioBaseId,
-    zonaRondaId: ronda.zonaId
+    zonaRondaId: ronda.zonaId,
+    tipoRonda: ronda.tipoRonda,
+    rondaId: ronda.id
   });
 
   /*
-    REGLA PRINCIPAL:
-    conteo_inicial_detalle es el catálogo autorizado del sistema.
-    Si el código no existe en esta tabla, NO se registra.
+    REGLA OPERATIVA SIMPLE Y ESTABLE:
+    - conteo_inicial_detalle es la lista autorizada de códigos.
+    - Si el código no existe en esa tabla, NO se registra.
+    - Si existe, se permite seguir validando zona.
 
-    NOTA IMPORTANTE:
-    No filtramos por inventarioId para validar existencia porque esta tabla contiene
-    la base importada desde Melissa y puede quedar asociada al inventario actual/base
-    según el flujo de importación.
+    No usamos sku_etiquetas para validar. Las etiquetas son 100% visuales.
   */
   const productosCatalogo = await sequelize.query(
     `
@@ -410,11 +523,13 @@ async function validarProductoContraInventarioBase({ ronda, codigoLimpio, transa
   }
 
   /*
-    Para validar zona, preferimos las filas del inventario actual; luego las del
-    inventario base; si no hay, usamos cualquier fila encontrada.
+    Para validar zona elegimos las filas más cercanas al contexto:
+    1. Inventario actual.
+    2. Inventario base, si existe.
+    3. Cualquier fila del catálogo.
 
-    Bodega Principal y Exhibición son zonas catálogo/base. Sirven para confirmar
-    que el producto existe, pero NO deben bloquear la zona operativa real.
+    Bodega Principal y Exhibición son zonas catálogo/base:
+    confirman que el producto existe, pero NO bloquean por zona.
   */
   let productosParaZona = productosCatalogo.filter(
     (item) => Number(item.inventarioId) === inventarioActualId
@@ -434,6 +549,7 @@ async function validarProductoContraInventarioBase({ ronda, codigoLimpio, transa
     (item) => !esZonaCatalogoBase(item.zonaNombre)
   );
 
+  // Si solo existe en Bodega Principal / Exhibición, permitimos escanear en la zona real.
   if (productosZonasOperativas.length === 0) {
     const productoCatalogo = productosParaZona[0];
 
@@ -506,13 +622,54 @@ async function validarProductoContraInventarioBase({ ronda, codigoLimpio, transa
 async function validarSkuYaLeidoEnOtraZona({
   inventarioId,
   zonaActualId,
+  zonaActualNombre,
+  zonaActualCodigo,
+  grupoActualId,
   sku,
   codigoLeido,
+  permitirConteoBodega = false,
   transaction
 }) {
   const skuNormalizado = String(sku || '').trim();
   const codigoNormalizado = String(codigoLeido || sku || '').trim();
 
+  let nombreZonaActual = zonaActualNombre || '';
+  let codigoZonaActual = zonaActualCodigo || '';
+
+  if ((!nombreZonaActual || !codigoZonaActual) && zonaActualId) {
+    try {
+      const zonaActual = await Zona.findByPk(zonaActualId, {
+        attributes: ['id', 'nombre', 'codigo'],
+        transaction
+      });
+
+      nombreZonaActual = nombreZonaActual || zonaActual?.nombre || '';
+      codigoZonaActual = codigoZonaActual || zonaActual?.codigo || '';
+    } catch (error) {
+      console.warn('No se pudo consultar zona actual para validar otra zona:', error?.message || error);
+    }
+  }
+
+  /*
+    REGLA MANUAL DE BODEGA:
+    Cuando el usuario presiona “Contar aquí como bodega”, este SKU queda
+    autorizado para esta zona desde el frontend y se envía permitirConteoBodega=true.
+    En ese caso NO se bloquea por existir en otra zona y NO se limita a una sola unidad.
+    El aviso debe aparecer una sola vez por código/zona; después el código sigue contando.
+  */
+  if (permitirConteoBodega === true) {
+    return {
+      ok: true,
+      permitidoPorBodega: true
+    };
+  }
+
+  /*
+    REGLA NORMAL:
+    Si NO se marcó como bodega, y el SKU ya fue leído en otra zona del mismo inventario,
+    se bloquea y no se cuenta en la zona actual. El frontend mostrará el modal con la opción
+    “Contar aquí como bodega”.
+  */
   const rows = await sequelize.query(
     `
     SELECT
@@ -576,6 +733,12 @@ async function validarSkuYaLeidoEnOtraZona({
       sku: skuNormalizado || codigoNormalizado,
       origen: 'lecturas_otras_zonas',
       inventarioId,
+      permitirConteoBodega: true,
+      zonaActual: {
+        id: zonaActualId,
+        nombre: nombreZonaActual || 'Zona actual',
+        codigo: codigoZonaActual || ''
+      },
       zona: {
         id: otraZona.zonaId,
         nombre: otraZona.zonaNombre || 'N/A',
@@ -778,6 +941,8 @@ async function scanLectura(req, res, next) {
       transaction
     });
 
+    const etiquetas = await getEtiquetasPorSku(skuFinal, transaction);
+
     await transaction.commit();
 
     return res.status(201).json({
@@ -790,7 +955,8 @@ async function scanLectura(req, res, next) {
           sku: skuFinal,
           codigoBarra: productoLocal.codigoLeido || codigoLimpio,
           descripcion: descripcionFinal,
-          source: 'postgres'
+          source: 'postgres',
+          etiquetas
         },
         acumuladoSku: Number(acumuladoSku || 0)
       }
@@ -995,8 +1161,12 @@ async function scanLecturaRonda(req, res, next) {
     const validacionOtraZona = await validarSkuYaLeidoEnOtraZona({
       inventarioId: ronda.inventarioId,
       zonaActualId: ronda.zonaId,
+      zonaActualNombre: ronda.zona?.nombre || '',
+      zonaActualCodigo: ronda.zona?.codigo || '',
+      grupoActualId: grupo.id,
       sku: skuFinal,
       codigoLeido: codigoLimpio,
+      permitirConteoBodega: value.permitirConteoBodega === true,
       transaction
     });
 
@@ -1081,6 +1251,8 @@ async function scanLecturaRonda(req, res, next) {
       { transaction }
     );
 
+    const etiquetas = await getEtiquetasPorSku(skuFinal, transaction);
+
     await transaction.commit();
 
     const responseData = {
@@ -1099,7 +1271,8 @@ async function scanLecturaRonda(req, res, next) {
         sku: skuFinal,
         codigoBarra: productoLocal.codigoLeido || codigoLimpio,
         descripcion: descripcionFinal,
-        source: 'postgres'
+        source: 'postgres',
+        etiquetas
       },
       acumuladoSku: cantidadTotalReconteo
     };
@@ -1326,7 +1499,8 @@ async function getResumenLecturas(req, res, next) {
         }
       );
 
-      return res.json({ ok: true, data: resumenBase });
+      const resumenBaseConEtiquetas = await adjuntarEtiquetasAResumen(resumenBase);
+      return res.json({ ok: true, data: resumenBaseConEtiquetas });
     }
 
     if (rondaId) {
@@ -1348,7 +1522,8 @@ async function getResumenLecturas(req, res, next) {
         order: [[sequelize.literal('"cantidadTotal"'), 'DESC']]
       });
 
-      return res.json({ ok: true, data: resumen });
+      const resumenConEtiquetas = await adjuntarEtiquetasAResumen(resumen);
+      return res.json({ ok: true, data: resumenConEtiquetas });
     }
 
     const replacements = {};
@@ -1410,7 +1585,8 @@ async function getResumenLecturas(req, res, next) {
       }
     );
 
-    return res.json({ ok: true, data: resumen });
+    const resumenConEtiquetas = await adjuntarEtiquetasAResumen(resumen);
+    return res.json({ ok: true, data: resumenConEtiquetas });
   } catch (error) {
     next(error);
   }
@@ -1661,10 +1837,10 @@ async function agregarLecturaManual(req, res, next) {
   const transaction = await sequelize.transaction();
 
   try {
-    const { rondaId, sku, cantidad, grupoId } = req.body;
+    const { rondaId, sku, cantidad, grupoId, permitirConteoBodega = false } = req.body;
     const usuarioId = req.user.id;
 
-    console.log('🔥 agregarLecturaManual - Datos:', { rondaId, sku, cantidad, grupoId, usuarioId });
+    console.log('🔥 agregarLecturaManual - Datos:', { rondaId, sku, cantidad, grupoId, permitirConteoBodega, usuarioId });
 
     // Validaciones básicas
     if (!rondaId || !sku || !cantidad || cantidad <= 0) {
@@ -1680,7 +1856,7 @@ async function agregarLecturaManual(req, res, next) {
 
     // Verificar que la ronda existe y está activa
     const ronda = await RondaConteo.findByPk(rondaId, {
-      include: [{ model: Zona, as: 'zona', attributes: ['id', 'nombre'] }],
+      include: [{ model: Zona, as: 'zona', attributes: ['id', 'nombre', 'codigo'] }],
       transaction
     });
 
@@ -1792,8 +1968,12 @@ async function agregarLecturaManual(req, res, next) {
     const validacionOtraZonaManual = await validarSkuYaLeidoEnOtraZona({
       inventarioId: ronda.inventarioId,
       zonaActualId: ronda.zonaId,
+      zonaActualNombre: ronda.zona?.nombre || '',
+      zonaActualCodigo: ronda.zona?.codigo || '',
+      grupoActualId: grupo?.id || grupoIdFinal,
       sku: skuManualFinal,
       codigoLeido: sku,
+      permitirConteoBodega: permitirConteoBodega === true,
       transaction
     });
 
@@ -1903,6 +2083,8 @@ async function agregarLecturaManual(req, res, next) {
       updatedAt: new Date()
     }, { transaction });
 
+    const etiquetas = await getEtiquetasPorSku(sku, transaction);
+
     // Commit de la transacción
     await transaction.commit();
 
@@ -1942,7 +2124,8 @@ async function agregarLecturaManual(req, res, next) {
         producto: {
           sku: sku,
           descripcion: descripcionSnapshot,
-          fuente: fuenteDescripcion
+          fuente: fuenteDescripcion,
+          etiquetas
         },
         acumuladoSku: totalAcumulado,
         totalPendientes: totalPendientes,

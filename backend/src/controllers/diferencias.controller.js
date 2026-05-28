@@ -82,6 +82,99 @@ function buildLecturasFilterSql({
   return sql;
 }
 
+async function getEtiquetasPorSkus(skus) {
+  const skusLimpios = Array.from(
+    new Set((skus || []).map((sku) => String(sku || '').trim()).filter(Boolean))
+  );
+
+  if (skusLimpios.length === 0) return new Map();
+
+  try {
+    const rows = await sequelize.query(
+      `
+      SELECT
+        id,
+        TRIM(sku::text) AS sku,
+        nombre,
+        color,
+        nota,
+        activo
+      FROM sku_etiquetas
+      WHERE activo = true
+        AND TRIM(sku::text) IN (:skus)
+      ORDER BY "updatedAt" DESC, id DESC
+      `,
+      {
+        replacements: { skus: skusLimpios },
+        type: QueryTypes.SELECT
+      }
+    );
+
+    const map = new Map();
+
+    for (const row of rows) {
+      const sku = String(row.sku || '').trim();
+      if (!sku) continue;
+      if (!map.has(sku)) map.set(sku, []);
+      map.get(sku).push(row);
+    }
+
+    return map;
+  } catch (error) {
+    console.warn('No se pudieron cargar etiquetas de SKUs para diferencias:', error?.message || error);
+    return new Map();
+  }
+}
+
+
+async function getTotalesConteoInicialPorSku(inventarioId) {
+  const rows = await sequelize.query(
+    `
+    SELECT
+      TRIM(COALESCE(c.sku, c."codigoLeido")::text) AS sku,
+      COALESCE(
+        SUM(
+          COALESCE(
+            c."cantidadTotal",
+            COALESCE(c."cantidadBodega", 0) + COALESCE(c."cantidadExhibicion", 0),
+            0
+          )
+        ),
+        0
+      )::int AS "cantidadConteoInicial",
+      COALESCE(
+        MAX(NULLIF(c."descripcionSnapshot", 'Sin descripción')),
+        MAX(NULLIF(c."descripcionSnapshot", 'Sin descripcion')),
+        'Producto ' || TRIM(COALESCE(c.sku, c."codigoLeido")::text)
+      ) AS descripcion
+    FROM conteo_inicial_detalle c
+    WHERE c."inventarioId" = :inventarioId
+      AND COALESCE(c.sku, c."codigoLeido") IS NOT NULL
+      AND TRIM(COALESCE(c.sku, c."codigoLeido")::text) <> ''
+    GROUP BY TRIM(COALESCE(c.sku, c."codigoLeido")::text)
+    ORDER BY sku ASC
+    `,
+    {
+      replacements: { inventarioId },
+      type: QueryTypes.SELECT
+    }
+  );
+
+  const map = new Map();
+
+  for (const row of rows || []) {
+    const sku = String(row.sku || '').trim();
+    if (!sku) continue;
+
+    map.set(sku, {
+      cantidadConteoInicial: Number(row.cantidadConteoInicial || 0),
+      descripcion: row.descripcion || ''
+    });
+  }
+
+  return map;
+}
+
 async function getSkuComparisonRows(
   inventarioBaseId,
   inventarioComparadoId,
@@ -467,7 +560,7 @@ async function buildComparisonData(
     }
   }
 
-  const comparisonRows = await getSkuComparisonRows(
+  const comparisonRowsRaw = await getSkuComparisonRows(
     inventarioBaseId,
     inventarioComparadoId,
     allowedGroupIds,
@@ -475,8 +568,29 @@ async function buildComparisonData(
     zonaComparadaId
   );
 
+  const conteoInicialMap = await getTotalesConteoInicialPorSku(inventarioBaseId);
+  const etiquetasMap = await getEtiquetasPorSkus(comparisonRowsRaw.map((row) => row.sku));
+
+  const comparisonRows = comparisonRowsRaw.map((row) => {
+    const sku = String(row.sku || '').trim();
+    const etiquetas = etiquetasMap.get(sku) || [];
+    const conteoInicialInfo = conteoInicialMap.get(sku) || {
+      cantidadConteoInicial: 0,
+      descripcion: ''
+    };
+
+    return {
+      ...row,
+      descripcion: row.descripcion || conteoInicialInfo.descripcion || `Producto ${sku}`,
+      cantidadConteoInicial: Number(conteoInicialInfo.cantidadConteoInicial || 0),
+      etiquetas,
+      tieneEtiquetas: etiquetas.length > 0
+    };
+  });
+
   const coinciden = comparisonRows.filter((row) => row.estado === 'coincide');
   const diferencias = comparisonRows.filter((row) => row.estado === 'difiere');
+  const etiquetados = comparisonRows.filter((row) => row.tieneEtiquetas);
 
   const [
     gruposBase,
@@ -506,11 +620,17 @@ async function buildComparisonData(
       inventarioComparadoId,
       totalItemsComparados: comparisonRows.length,
       totalDiferencias: diferencias.length,
+      totalEtiquetados: etiquetados.length,
+      totalConteoInicialUnidades: comparisonRows.reduce(
+        (sum, row) => sum + Number(row.cantidadConteoInicial || 0),
+        0
+      ),
       totalDiferenciaUnidades: diferencias.reduce((sum, row) => sum + Math.abs(row.diferencia), 0)
     },
     comparacion: comparisonRows,
     coinciden,
     diferencias,
+    etiquetados,
     totales: {
       base: {
         grupos: gruposBase,
@@ -835,6 +955,7 @@ function setupComparisonSheet(sheet) {
     { header: 'Zona Comparada', key: 'zonaComparada', width: 24 },
     { header: 'SKU', key: 'sku', width: 16 },
     { header: 'Descripción', key: 'descripcion', width: 55 },
+    { header: 'Conteo Inicial', key: 'cantidadConteoInicial', width: 18 },
     { header: 'Cantidad Base', key: 'cantidadBase', width: 15 },
     { header: 'Cantidad Comparada', key: 'cantidadComparada', width: 18 },
     { header: 'Cantidad Aceptada', key: 'cantidadAceptada', width: 18 },
@@ -852,6 +973,7 @@ function setupComparisonSheet(sheet) {
 
   sheet.views = [{ state: 'frozen', ySplit: 1 }];
 
+  sheet.getColumn('cantidadConteoInicial').numFmt = '#,##0';
   sheet.getColumn('cantidadBase').numFmt = '#,##0';
   sheet.getColumn('cantidadComparada').numFmt = '#,##0';
   sheet.getColumn('cantidadAceptada').numFmt = '#,##0';
@@ -871,6 +993,7 @@ function addComparisonRowsToSheet(sheet, rows, cantidadesAceptadas, productosMap
       zonaComparada: row.zonaComparada?.nombre || 'Todas',
       sku: row.sku,
       descripcion: datosProducto.descripcion || row.descripcion || 'Sin descripción',
+      cantidadConteoInicial: Number(row.cantidadConteoInicial || 0),
       cantidadBase: Number(row.cantidadBase || 0),
       cantidadComparada: Number(row.cantidadComparada || 0),
       cantidadAceptada,

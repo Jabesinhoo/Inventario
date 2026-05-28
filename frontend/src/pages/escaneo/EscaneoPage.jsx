@@ -51,6 +51,68 @@ import {
 import ModalErrorLectura from '../../pages/escaneo/ModalErrorLectura';
 import alertaSound from '../../sound/alerta.mp3';
 
+function SkuEtiquetaBadge({ etiqueta }) {
+  if (!etiqueta) return null;
+
+  return (
+    <span
+      className="sku-etiqueta-badge"
+      style={{
+        backgroundColor: etiqueta.color || '#f59e0b',
+        color: 'white',
+        padding: '3px 8px',
+        borderRadius: '999px',
+        fontSize: '11px',
+        fontWeight: 700,
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '4px',
+        marginRight: '6px',
+        marginTop: '6px'
+      }}
+      title={etiqueta.nota || etiqueta.nombre}
+    >
+      {etiqueta.nombre}
+    </span>
+  );
+}
+
+
+function limpiarTextoParaVoz(value, maxLength = 90) {
+  return String(value || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, maxLength);
+}
+
+function hablarTexto(texto) {
+  try {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+
+    const textoLimpio = limpiarTextoParaVoz(texto, 60);
+    if (!textoLimpio) return;
+
+    window.speechSynthesis.cancel();
+
+    const utterance = new SpeechSynthesisUtterance(textoLimpio);
+    utterance.lang = 'es-CO';
+    utterance.rate = 2.0;
+    utterance.pitch = 1;
+    utterance.volume = 1;
+
+    window.speechSynthesis.speak(utterance);
+  } catch (error) {
+    console.warn('No se pudo reproducir voz:', error);
+  }
+}
+
+function hablarEscaneoExitoso({ sku, acumulado }) {
+  const skuTexto = limpiarTextoParaVoz(sku, 40);
+  const totalTexto = Number(acumulado || 0);
+
+  hablarTexto(`${skuTexto}. Total ${totalTexto}`);
+}
+
 export default function EscaneoPage() {
   const [searchParams] = useSearchParams();
 
@@ -64,6 +126,7 @@ export default function EscaneoPage() {
   const scanQueueRef = useRef([]);
   const processingQueueRef = useRef(false);
   const refreshTimeoutRef = useRef(null);
+  const codigosBodegaAutorizadosRef = useRef(new Set());
 
   const [inventarios, setInventarios] = useState([]);
   const [selectedInventario, setSelectedInventario] = useState('');
@@ -85,6 +148,7 @@ export default function EscaneoPage() {
 
   const [showZoneWarning, setShowZoneWarning] = useState(false);
   const [zoneWarningInfo, setZoneWarningInfo] = useState(null);
+  const [scanPendienteBodega, setScanPendienteBodega] = useState(null);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   // Modal entrada manual
@@ -99,6 +163,13 @@ export default function EscaneoPage() {
   const [editProducto, setEditProducto] = useState(null);
   const [editCantidad, setEditCantidad] = useState(0);
   const [loadingEdit, setLoadingEdit] = useState(false);
+
+  // Etiquetas visuales por SKU. No bloquean escaneo ni cambian cantidades.
+  const [etiquetasProducto, setEtiquetasProducto] = useState([]);
+  const [etiquetaNombre, setEtiquetaNombre] = useState('Muchos stickers');
+  const [etiquetaColor, setEtiquetaColor] = useState('#dc2626');
+  const [etiquetaNota, setEtiquetaNota] = useState('');
+  const [savingEtiqueta, setSavingEtiqueta] = useState(false);
 
   // Estado para inventario anterior (pareja)
   const [inventarioPareja, setInventarioPareja] = useState(null);
@@ -445,6 +516,29 @@ export default function EscaneoPage() {
     }, 250);
   }, [loadRoundContext]);
 
+  function getBodegaAutorizacionKey(codigoValue) {
+    const codigoLimpio = String(codigoValue || '').trim();
+    const inventarioId = selectedRonda?.inventarioId || selectedInventario || '';
+    const zonaId = selectedRonda?.zonaId || '';
+    return `${inventarioId}:${zonaId}:${codigoLimpio}`;
+  }
+
+  function codigoTienePermisoBodega(codigoValue) {
+    const key = getBodegaAutorizacionKey(codigoValue);
+
+    return (
+      codigosBodegaAutorizadosRef.current.has(key) ||
+      sessionStorage.getItem(`bodega-ok:${key}`) === '1'
+    );
+  }
+
+  function marcarCodigoComoBodega(codigoValue) {
+    const key = getBodegaAutorizacionKey(codigoValue);
+
+    codigosBodegaAutorizadosRef.current.add(key);
+    sessionStorage.setItem(`bodega-ok:${key}`, '1');
+  }
+
   // Función para procesar escaneo directamente
   const procesarEscaneoDirecto = useCallback(async (codigo, meta = {}) => {
     console.log('=== INICIANDO ESCANEO ===');
@@ -460,6 +554,7 @@ export default function EscaneoPage() {
 
       if (!productoPermitido) {
         playErrorBeep();
+        hablarTexto('Error');
 
         setErrorInfo({
           codigoRechazado: codigo,
@@ -474,6 +569,7 @@ export default function EscaneoPage() {
 
     if (!selectedRonda?.id || selectedRonda.estado !== 'activa' || !grupoAsignado?.id) {
       playErrorBeep();
+      hablarTexto('Error');
       setErrorInfo({
         codigoRechazado: codigo,
         ultimoExitoso: lastScan?.producto?.sku || null,
@@ -483,20 +579,37 @@ export default function EscaneoPage() {
       return;
     }
 
+    const permitidoPorBodega =
+      meta.permitirConteoBodega === true ||
+      codigoTienePermisoBodega(codigo);
+
     const payload = {
       rondaId: selectedRonda.id,
       grupoId: grupoAsignado.id,
       codigo: codigo,
       requestId: meta.requestId || null,
-      scannedAtClient: meta.timestamp || Date.now()
+      scannedAtClient: meta.timestamp || Date.now(),
+      permitirConteoBodega: permitidoPorBodega
     };
 
     try {
       const raw = await scanLecturaRonda(payload);
       playBeep();
       const responseData = raw?.data || raw;
+      const productoVoz = responseData?.producto || {};
+      const skuVoz = productoVoz?.sku || codigo;
+      const acumuladoVoz = responseData?.acumuladoSku || 0;
+
       setLastScan(responseData);
-      setFlashMessage(`✅ Producto ${codigo} registrado correctamente`, 'success');
+      setScanPendienteBodega((prev) => {
+        if (String(prev?.codigo || '').trim() === String(codigo || '').trim()) return null;
+        return prev;
+      });
+      hablarEscaneoExitoso({
+        sku: skuVoz,
+        acumulado: acumuladoVoz
+      });
+      setFlashMessage(`✅ Producto ${skuVoz} registrado correctamente`, 'success');
       scheduleRoundContextRefresh(selectedRonda);
     } catch (err) {
       console.error('Error en escaneo:', err);
@@ -504,8 +617,15 @@ export default function EscaneoPage() {
 
       if (err.response?.status === 409 && err.response?.data?.code === 'PRODUCTO_EN_OTRA_ZONA') {
         const errorData = err.response.data;
+        setScanPendienteBodega({
+          tipo: 'escaneo',
+          codigo,
+          rondaId: selectedRonda?.id || null,
+          grupoId: grupoAsignado?.id || null
+        });
         setShowZoneWarning(true);
         setZoneWarningInfo(errorData.data);
+        hablarTexto('Error');
         setFlashMessage(errorData.message, 'error');
         return;
       }
@@ -523,6 +643,7 @@ export default function EscaneoPage() {
         });
 
         setShowErrorModal(true);
+        hablarTexto('Error');
         setFlashMessage(
           errorData.message || 'Este código no está registrado en la base de datos',
           'error'
@@ -543,6 +664,7 @@ export default function EscaneoPage() {
         motivo: mensajeError
       });
       setShowErrorModal(true);
+      hablarTexto('Error');
       setFlashMessage(mensajeError, 'error');
     }
   }, [selectedRonda, grupoAsignado, lastScan, scheduleRoundContextRefresh, isReconteo, pendientes]);
@@ -559,7 +681,8 @@ export default function EscaneoPage() {
         try {
           await procesarEscaneoDirecto(nextScan.codigo, {
             requestId: nextScan.requestId,
-            timestamp: nextScan.timestamp
+            timestamp: nextScan.timestamp,
+            permitirConteoBodega: nextScan.permitirConteoBodega === true
           });
         } catch (error) {
           console.error('Error procesando cola de escaneos:', error);
@@ -575,6 +698,7 @@ export default function EscaneoPage() {
 
     if (!/^\d{5,6}$/.test(cleanCode)) {
       playErrorBeep();
+      hablarTexto('Error');
       setErrorInfo({
         codigoRechazado: cleanCode || String(rawCode || ''),
         ultimoExitoso: lastScan?.producto?.sku || null,
@@ -749,7 +873,7 @@ export default function EscaneoPage() {
         enqueueScan(finalCode);
         setCodigo('');
       }
-    }, 80);
+    }, 120);
   }, [enqueueScan]);
 
   const handleSubmit = useCallback((e) => {
@@ -838,19 +962,45 @@ export default function EscaneoPage() {
     }
   };
 
-  // Funciones para editar/eliminar productos (SOLO ADMIN)
-  const handleEditarProducto = (item) => {
-    console.log('=== handleEditarProducto ===');
-    console.log('Producto a editar:', item);
+  // Funciones para editar/eliminar productos y etiquetar SKUs
+  const cargarEtiquetasSku = useCallback(async (sku) => {
+    const skuLimpio = String(sku || '').trim();
+    if (!skuLimpio) return [];
 
-    if (!isAdmin) {
-      setFlashMessage('No tienes permisos para editar productos. Solo Administradores.', 'error');
-      return;
+    try {
+      const response = await api.get(`/sku-etiquetas/${skuLimpio}`);
+      return response.data?.data || response.data || [];
+    } catch (error) {
+      console.warn('No se pudieron cargar etiquetas del SKU:', error?.response?.data || error?.message || error);
+      return [];
     }
+  }, []);
+
+  const prepararFormularioEtiqueta = (etiquetas = []) => {
+    const primera = Array.isArray(etiquetas) && etiquetas.length > 0 ? etiquetas[0] : null;
+
+    setEtiquetaNombre('Muchos stickers');
+    setEtiquetaColor('#dc2626');
+    setEtiquetaNota('');
+  };
+
+  const handleEditarProducto = async (item) => {
+    console.log('=== handleEditarProducto / Etiquetar SKU ===');
+    console.log('Producto:', item);
 
     setEditProducto(item);
-    setEditCantidad(item.cantidadTotal);
+    setEditCantidad(Number(item?.cantidadTotal || 0));
     setShowEditModal(true);
+
+    const etiquetasLocales = Array.isArray(item?.etiquetas) ? item.etiquetas : [];
+    setEtiquetasProducto(etiquetasLocales);
+    prepararFormularioEtiqueta(etiquetasLocales);
+
+    const etiquetasRemotas = await cargarEtiquetasSku(item?.sku);
+    if (etiquetasRemotas.length > 0) {
+      setEtiquetasProducto(etiquetasRemotas);
+      prepararFormularioEtiqueta(etiquetasRemotas);
+    }
   };
 
   const handleEliminarProducto = async (sku) => {
@@ -884,12 +1034,7 @@ export default function EscaneoPage() {
 
       if (response.data.ok) {
         setFlashMessage(response.data.message || `Producto ${sku} eliminado correctamente`, 'success');
-
-        // Actualizar estado local
-        const nuevoResumen = resumen.filter(item => item.sku !== sku);
-        setResumen(nuevoResumen);
-
-        // Recargar contexto completo para sincronizar
+        setResumen((prev) => prev.filter(item => item.sku !== sku));
         await loadRoundContext(selectedRonda);
       } else {
         setFlashMessage(response.data.message || 'Error al eliminar el producto', 'error');
@@ -904,14 +1049,89 @@ export default function EscaneoPage() {
     }
   };
 
+  const handleGuardarEtiqueta = async () => {
+    const sku = String(editProducto?.sku || '').trim();
+
+    if (!sku) {
+      setFlashMessage('No hay SKU seleccionado para etiquetar', 'error');
+      return;
+    }
+
+    setSavingEtiqueta(true);
+
+    try {
+      let response;
+      const payloadEtiqueta = { sku };
+
+      try {
+        response = await api.post('/sku-etiquetas/upsert', payloadEtiqueta);
+      } catch (firstError) {
+        // Compatibilidad por si montaste la ruta como /etiquetas/upsert.
+        if (firstError?.response?.status === 404) {
+          response = await api.post('/etiquetas/upsert', payloadEtiqueta);
+        } else {
+          throw firstError;
+        }
+      }
+
+      const etiquetaGuardada = response.data?.data || response.data;
+      const etiquetasActualizadas = await cargarEtiquetasSku(sku);
+      const etiquetasFinales = etiquetasActualizadas.length > 0
+        ? etiquetasActualizadas
+        : etiquetaGuardada?.id
+          ? [etiquetaGuardada]
+          : etiquetasProducto;
+
+      setEtiquetasProducto(etiquetasFinales);
+
+      setResumen((prev) => prev.map((item) => (
+        String(item.sku).trim() === sku
+          ? { ...item, etiquetas: etiquetasFinales }
+          : item
+      )));
+
+      setLastScan((prev) => {
+        if (String(prev?.producto?.sku || '').trim() !== sku) return prev;
+        return {
+          ...prev,
+          producto: {
+            ...prev.producto,
+            etiquetas: etiquetasFinales
+          }
+        };
+      });
+
+      setFlashMessage(`Etiqueta guardada para SKU ${sku}`, 'success');
+    } catch (error) {
+      console.error('Error guardando etiqueta:', {
+        status: error.response?.status,
+        data: error.response?.data,
+        message: error.message
+      });
+      setFlashMessage(
+        error.response?.data?.message ||
+          error.response?.data?.error ||
+          'No se pudo guardar la etiqueta',
+        'error'
+      );
+    } finally {
+      setSavingEtiqueta(false);
+    }
+  };
+
   const handleSaveEdit = async () => {
     console.log('=== handleSaveEdit ===');
     console.log('Producto a editar:', editProducto);
     console.log('Nueva cantidad:', editCantidad);
     console.log('Ronda ID:', selectedRonda?.id);
 
-    if (!editProducto || !isAdmin) {
-      console.log('Validacion fallida: no hay producto o no es admin');
+    if (!editProducto) {
+      console.log('Validacion fallida: no hay producto');
+      return;
+    }
+
+    if (!isAdmin) {
+      setFlashMessage('Este rol solo puede guardar etiquetas. La cantidad queda en solo lectura.', 'warning');
       return;
     }
 
@@ -938,17 +1158,7 @@ export default function EscaneoPage() {
 
       if (response.data.ok) {
         setFlashMessage(response.data.message || `Producto ${editProducto.sku} actualizado a ${editCantidad} unidades`, 'success');
-        setShowEditModal(false);
-
-        // Actualizar estado local
-        const nuevoResumen = resumen.map(item =>
-          item.sku === editProducto.sku
-            ? { ...item, cantidadTotal: editCantidad }
-            : item
-        );
-        setResumen(nuevoResumen);
-
-        // Recargar contexto completo para sincronizar
+        setResumen((prev) => prev.map(item => item.sku === editProducto.sku ? { ...item, cantidadTotal: editCantidad } : item));
         await loadRoundContext(selectedRonda);
       } else {
         setFlashMessage(response.data.message || 'Error al actualizar el producto', 'error');
@@ -1030,8 +1240,16 @@ export default function EscaneoPage() {
 
       if (err.response?.status === 409 && err.response?.data?.code === 'PRODUCTO_EN_OTRA_ZONA') {
         const errorData = err.response.data;
+        setScanPendienteBodega({
+          tipo: 'manual',
+          codigo: skuLimpio,
+          cantidad: manualCantidad * manualRepeticiones,
+          rondaId: selectedRonda?.id || null,
+          grupoId: grupoAsignado?.id || null
+        });
         setShowZoneWarning(true);
         setZoneWarningInfo(errorData.data);
+        hablarTexto('Error');
         setFlashMessage(errorData.message, 'error');
       } else if (
         err.response?.status === 409 &&
@@ -1065,6 +1283,71 @@ export default function EscaneoPage() {
         <p>Cargando módulo de escaneo...</p>
       </div>
     );
+  }
+
+
+  function cerrarZoneWarning() {
+    setShowZoneWarning(false);
+    setZoneWarningInfo(null);
+    setScanPendienteBodega(null);
+  }
+
+  async function handleContarComoBodega() {
+    if (!scanPendienteBodega?.codigo) {
+      setFlashMessage('No hay código pendiente para contar como bodega', 'error');
+      return;
+    }
+
+    const codigoBodega = String(scanPendienteBodega.codigo || '').trim();
+
+    try {
+      setShowZoneWarning(false);
+      marcarCodigoComoBodega(codigoBodega);
+
+      if (scanPendienteBodega.tipo === 'manual') {
+        const response = await agregarLecturaManual({
+          rondaId: selectedRonda.id,
+          grupoId: grupoAsignado.id,
+          sku: codigoBodega,
+          cantidad: Number(scanPendienteBodega.cantidad || 1),
+          permitirConteoBodega: true
+        });
+
+        if (response?.ok === false) {
+          throw new Error(response.message || 'No se pudo contar como bodega');
+        }
+
+        playBeep();
+        hablarEscaneoExitoso({
+          sku: codigoBodega,
+          acumulado: response?.data?.acumuladoSku || response?.acumuladoSku || 0
+        });
+        setFlashMessage(`Producto ${codigoBodega} contado como bodega`, 'success');
+        setShowManualModal(false);
+        setManualSku('');
+        setManualCantidad(1);
+        setManualRepeticiones(1);
+        await loadRoundContext(selectedRonda);
+      } else {
+        await procesarEscaneoDirecto(codigoBodega, {
+          permitirConteoBodega: true,
+          requestId:
+            typeof crypto !== 'undefined' && crypto.randomUUID
+              ? crypto.randomUUID()
+              : `${Date.now()}-${Math.random()}`,
+          timestamp: Date.now()
+        });
+      }
+
+      setScanPendienteBodega(null);
+    } catch (error) {
+      console.error('Error contando como bodega:', error);
+      hablarTexto('Error');
+      setFlashMessage(
+        error.response?.data?.message || error.message || 'No se pudo contar como bodega',
+        'error'
+      );
+    }
   }
 
   return (
@@ -1298,17 +1581,94 @@ export default function EscaneoPage() {
               </form>
 
               <p className="scan-helper">
-                Códigos válidos: 5 o 6 dígitos numéricos
+                Códigos válidos: 5 o 6 dígitos numéricos. El sistema espera ENTER del lector o una pausa corta antes de registrar y dirá en voz alta lo escaneado.
               </p>
 
               {lastScan && (
                 <div className="last-scan-card">
-                  <div className="last-scan-header"><CheckCircle size={18} className="text-success" /><span>Último escaneo</span></div>
-                  <div className="last-scan-grid">
-                    <div><span className="meta-label">SKU</span><strong>{lastScan.producto?.sku || 'No reconocido'}</strong></div>
-                    <div><span className="meta-label">Descripción</span><strong>{lastScan.producto?.descripcion || 'Sin descripción'}</strong></div>
-                    <div><span className="meta-label">Acumulado</span><strong>{lastScan.acumuladoSku || 0}</strong></div>
+                  <div className="last-scan-header">
+                    <CheckCircle size={18} className="text-success" />
+                    <span>Último escaneo</span>
                   </div>
+
+                  <div
+                    className="last-scan-code-display"
+                    style={{
+                      fontSize: '36px',
+                      lineHeight: 1.1,
+                      fontWeight: 900,
+                      letterSpacing: '2px',
+                      padding: '14px 16px',
+                      borderRadius: '14px',
+                      background: 'var(--surface-soft)',
+                      border: '2px solid var(--border)',
+                      textAlign: 'center',
+                      marginBottom: '14px',
+                      wordBreak: 'break-word'
+                    }}
+                    title="Código leído por el lector"
+                  >
+                    {lastScan.producto?.sku || 'No reconocido'}
+                  </div>
+
+                  <div className="last-scan-grid">
+                    <div>
+                      <span className="meta-label">SKU</span>
+                      <strong>{lastScan.producto?.sku || 'No reconocido'}</strong>
+                    </div>
+                    <div>
+                      <span className="meta-label">Descripción</span>
+                      <strong>{lastScan.producto?.descripcion || 'Sin descripción'}</strong>
+                    </div>
+                    <div>
+                      <span className="meta-label">Acumulado</span>
+                      <strong>{lastScan.acumuladoSku || 0}</strong>
+                    </div>
+                  </div>
+
+                  {lastScan?.producto?.sku && (
+                    <div style={{ marginTop: '12px' }}>
+                      <button
+                        type="button"
+                        className="btn btn-outline small"
+                        onClick={() => handleEditarProducto({
+                          sku: lastScan.producto?.sku,
+                          descripcionSnapshot: lastScan.producto?.descripcion,
+                          cantidadTotal: lastScan.acumuladoSku || 0,
+                          etiquetas: lastScan.producto?.etiquetas || []
+                        })}
+                      >
+                        <Edit2 size={14} /> Etiquetar SKU
+                      </button>
+                    </div>
+                  )}
+
+                  {lastScan?.producto?.etiquetas?.length > 0 && (
+                    <div
+                      className="alert-warning"
+                      style={{
+                        marginTop: '12px',
+                        display: 'flex',
+                        gap: '10px',
+                        alignItems: 'flex-start'
+                      }}
+                    >
+                      <AlertTriangle size={16} />
+                      <div>
+                        <strong>Producto con etiqueta especial</strong>
+                        <div style={{ marginTop: '6px', display: 'flex', flexWrap: 'wrap' }}>
+                          {lastScan.producto.etiquetas.map((etiqueta) => (
+                            <SkuEtiquetaBadge key={etiqueta.id} etiqueta={etiqueta} />
+                          ))}
+                        </div>
+                        {lastScan.producto.etiquetas.some((e) => e.nota) && (
+                          <p className="muted" style={{ marginTop: '6px', marginBottom: 0 }}>
+                            {lastScan.producto.etiquetas.find((e) => e.nota)?.nota}
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>
@@ -1406,7 +1766,6 @@ export default function EscaneoPage() {
                       <tr>
                         <th style={{ position: 'sticky', left: 0, backgroundColor: 'var(--surface)', zIndex: 11, minWidth: '100px' }}>SKU</th>
                         <th style={{ minWidth: '200px' }}>Descripción</th>
-                      
                         <th style={{ minWidth: '100px' }}>Estado</th>
                       </tr>
                     </thead>
@@ -1477,7 +1836,8 @@ export default function EscaneoPage() {
                         <th>SKU</th>
                         <th>Descripción</th>
                         <th>Cantidad</th>
-                        {isAdmin && <th>Acciones</th>}
+                        <th>Etiquetas</th>
+                        <th>Acciones</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -1486,19 +1846,30 @@ export default function EscaneoPage() {
                           <td data-label="SKU"><strong>{item.sku}</strong></td>
                           <td data-label="Descripción">{item.descripcionSnapshot || 'Sin descripción'}</td>
                           <td data-label="Cantidad" className="text-center">{item.cantidadTotal}</td>
+                          <td data-label="Etiquetas">
+                            {item.etiquetas?.length > 0 ? (
+                              <div style={{ display: 'flex', flexWrap: 'wrap' }}>
+                                {item.etiquetas.map((etiqueta) => (
+                                  <SkuEtiquetaBadge key={etiqueta.id} etiqueta={etiqueta} />
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="text-muted">Sin etiqueta</span>
+                            )}
+                          </td>
 
-                          {isAdmin && (
-                            <td data-label="Acciones" className="text-center">
-                              <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
-                                <button
-                                  className="icon-btn"
-                                  onClick={() => handleEditarProducto(item)}
-                                  title="Editar cantidad"
-                                  style={{ color: 'var(--primary)' }}
-                                >
-                                  <Edit2 size={16} />
-                                </button>
+                          <td data-label="Acciones" className="text-center">
+                            <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
+                              <button
+                                className="icon-btn"
+                                onClick={() => handleEditarProducto(item)}
+                                title={isAdmin ? 'Editar cantidad / etiqueta' : 'Etiquetar SKU'}
+                                style={{ color: 'var(--primary)' }}
+                              >
+                                <Edit2 size={16} />
+                              </button>
 
+                              {isAdmin && (
                                 <button
                                   className="icon-btn danger"
                                   onClick={() => handleEliminarProducto(item.sku)}
@@ -1507,15 +1878,15 @@ export default function EscaneoPage() {
                                 >
                                   <Trash2 size={16} />
                                 </button>
-                              </div>
-                            </td>
-                          )}
+                              )}
+                            </div>
+                          </td>
                         </tr>
                       ))}
 
                       {resumen.length > 15 && (
                         <tr className="more-items">
-                          <td colSpan={isAdmin ? 4 : 3} className="text-center">
+                          <td colSpan={5} className="text-center">
                             +{resumen.length - 15} productos más
                           </td>
                         </tr>
@@ -1633,24 +2004,28 @@ export default function EscaneoPage() {
         motivo={errorInfo.motivo}
       />
 
-      {/* Modal de edición de producto (solo admin) */}
-      {/* Modal de edicion de producto (solo admin) */}
-      {showEditModal && editProducto && isAdmin && (
+      {/* Modal de edición de producto / etiquetado de SKU */}
+      {showEditModal && editProducto && (
         <div className="modal-overlay" onClick={() => setShowEditModal(false)}>
           <div className="modal" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
-              <h3><Edit2 size={18} /> Editar Cantidad</h3>
+              <h3>
+                <Edit2 size={18} /> {isAdmin ? 'Editar producto / etiquetar' : 'Etiquetar SKU'}
+              </h3>
               <button className="icon-btn" onClick={() => setShowEditModal(false)}><X size={18} /></button>
             </div>
+
             <div className="modal-body">
               <div className="form-group">
                 <label>SKU</label>
-                <input value={editProducto.sku} disabled />
+                <input value={editProducto.sku || ''} disabled />
               </div>
+
               <div className="form-group">
-                <label>Descripcion</label>
-                <input value={editProducto.descripcionSnapshot || 'Sin descripcion'} disabled />
+                <label>Descripción</label>
+                <input value={editProducto.descripcionSnapshot || editProducto.descripcion || 'Sin descripción'} disabled />
               </div>
+
               <div className="form-group">
                 <label>Cantidad Total</label>
                 <input
@@ -1659,16 +2034,84 @@ export default function EscaneoPage() {
                   onChange={(e) => setEditCantidad(parseInt(e.target.value) || 0)}
                   min="0"
                   step="1"
-                  autoFocus
+                  disabled={!isAdmin}
                 />
-                <small>Ingresa la nueva cantidad para este producto</small>
+                <small>
+                  {isAdmin
+                    ? 'Solo administradores pueden modificar cantidades.'
+                    : 'Solo lectura. Tu rol puede agregar etiquetas, pero no cambiar cantidades.'}
+                </small>
+              </div>
+
+              <div
+                style={{
+                  marginTop: '16px',
+                  paddingTop: '16px',
+                  borderTop: '1px solid var(--border)'
+                }}
+              >
+                <h4 style={{ marginTop: 0, marginBottom: '12px' }}>Etiqueta visual del SKU</h4>
+
+                {etiquetasProducto.length > 0 && (
+                  <div className="form-group">
+                    <label>Etiquetas actuales</label>
+                    <div style={{ display: 'flex', flexWrap: 'wrap' }}>
+                      {etiquetasProducto.map((etiqueta) => (
+                        <SkuEtiquetaBadge key={etiqueta.id} etiqueta={etiqueta} />
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="form-group">
+                  <label>Etiqueta</label>
+                  <select
+                    value="Muchos stickers"
+                    onChange={() => {}}
+                  >
+                    <option value="Muchos stickers">Muchos stickers</option>
+                  </select>
+                </div>
+
+                <div className="form-group">
+                  <label>Color</label>
+                  <div
+                    style={{
+                      width: '90px',
+                      height: '36px',
+                      borderRadius: '10px',
+                      backgroundColor: '#dc2626',
+                      color: 'white',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontWeight: 700,
+                      fontSize: '12px'
+                    }}
+                  >
+                    Rojo
+                  </div>
+                </div>
+
+                <div className="alert-warning" style={{ marginTop: '12px' }}>
+                  <AlertTriangle size={16} />
+                  <span>La etiqueta es solo visual. No cambia cantidades ni bloquea escaneos.</span>
+                </div>
               </div>
             </div>
+
             <div className="modal-actions">
-              <button className="btn btn-outline" onClick={() => setShowEditModal(false)}>Cancelar</button>
-              <button className="btn btn-primary" onClick={handleSaveEdit} disabled={loadingEdit}>
-                {loadingEdit ? 'Guardando...' : 'Guardar Cambios'}
+              <button className="btn btn-outline" onClick={() => setShowEditModal(false)}>Cerrar</button>
+
+              <button className="btn btn-primary" onClick={handleGuardarEtiqueta} disabled={savingEtiqueta}>
+                {savingEtiqueta ? 'Guardando etiqueta...' : 'Guardar etiqueta'}
               </button>
+
+              {isAdmin && (
+                <button className="btn btn-success" onClick={handleSaveEdit} disabled={loadingEdit}>
+                  {loadingEdit ? 'Guardando cantidad...' : 'Guardar cantidad'}
+                </button>
+              )}
             </div>
           </div>
         </div>
@@ -1706,11 +2149,11 @@ export default function EscaneoPage() {
 
       {/* Modal de advertencia - Producto en otra zona */}
       {showZoneWarning && zoneWarningInfo && (
-        <div className="modal-overlay" onClick={() => setShowZoneWarning(false)}>
+        <div className="modal-overlay" onClick={cerrarZoneWarning}>
           <div className="modal modal-warning" onClick={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h3><AlertTriangle size={20} color="#f59e0b" /><span>Producto en otra zona</span></h3>
-              <button className="icon-btn" onClick={() => setShowZoneWarning(false)}><X size={18} /></button>
+              <button className="icon-btn" onClick={cerrarZoneWarning}><X size={18} /></button>
             </div>
             <div className="modal-body">
               <p className="warning-text">
@@ -1733,10 +2176,16 @@ export default function EscaneoPage() {
                 <p className="destino-zona"><strong>{zoneWarningInfo.zona?.nombre}</strong></p>
                 <p className="destino-grupo">Grupo: <strong>{zoneWarningInfo.grupo?.nombre || 'N/A'}</strong></p>
               </div>
-              <p className="warning-text">Escaneo bloqueado. Este código no se sumó a la ronda actual.</p>
+              <p className="warning-text">
+                Este código no se sumó todavía a la ronda actual. Si esta zona funciona como bodega,
+                puedes contarlo aquí una sola vez para este SKU.
+              </p>
             </div>
             <div className="modal-actions">
-              <button className="btn btn-primary" onClick={() => setShowZoneWarning(false)}>Entendido</button>
+              <button className="btn btn-outline" onClick={cerrarZoneWarning}>Entendido</button>
+              <button className="btn btn-primary" onClick={handleContarComoBodega}>
+                Contar aquí como bodega
+              </button>
             </div>
           </div>
         </div>

@@ -10,7 +10,8 @@ import {
   MapPin,
   User,
   Repeat,
-  Search
+  Search,
+  Tag
 } from 'lucide-react';
 import { getInventarios } from '../../services/inventarios.service';
 import { getGrupos } from '../../services/grupos.service';
@@ -72,6 +73,32 @@ function buildZoneOptions(groups) {
 function getZonaLabel(zona) {
   const grupos = zona.grupos?.length ? ` · ${zona.grupos.join(', ')}` : '';
   return `${zona.nombre}${zona.codigo ? ` (${zona.codigo})` : ''}${grupos}`;
+}
+
+function SkuEtiquetaBadge({ etiqueta }) {
+  if (!etiqueta) return null;
+
+  return (
+    <span
+      className="sku-etiqueta-badge"
+      style={{
+        backgroundColor: etiqueta.color || '#f59e0b',
+        color: 'white',
+        padding: '3px 8px',
+        borderRadius: '999px',
+        fontSize: '11px',
+        fontWeight: 700,
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: '4px',
+        marginRight: '6px',
+        marginTop: '4px'
+      }}
+      title={etiqueta.nota || etiqueta.nombre}
+    >
+      {etiqueta.nombre}
+    </span>
+  );
 }
 
 function getParejaDelInventarioFromList(parejas, inventarioId) {
@@ -193,12 +220,21 @@ export default function DiferenciasPage() {
   const resumen = data?.resumen || {
     totalItemsComparados: 0,
     totalDiferencias: 0,
+    totalEtiquetados: 0,
+    totalConteoInicialUnidades: 0,
     totalDiferenciaUnidades: 0
   };
 
   const totalCoinciden = Math.max(
     Number(resumen.totalItemsComparados || 0) - Number(resumen.totalDiferencias || 0),
     0
+  );
+
+  const totalEtiquetados = Number(
+    resumen.totalEtiquetados ??
+      data?.etiquetados?.length ??
+      (data?.comparacion || []).filter((row) => row?.tieneEtiquetas || row?.etiquetas?.length > 0).length ??
+      0
   );
 
   const puedeGenerarReconteo =
@@ -220,6 +256,8 @@ export default function DiferenciasPage() {
 
     if (tab === 'coinciden') {
       rows = (data.comparacion || []).filter((row) => Number(row.diferencia || 0) === 0);
+    } else if (tab === 'etiquetados') {
+      rows = data.etiquetados || (data.comparacion || []).filter((row) => row.tieneEtiquetas || row.etiquetas?.length > 0);
     } else if (tab === 'todos') {
       rows = data.comparacion || [];
     } else {
@@ -235,16 +273,24 @@ export default function DiferenciasPage() {
       const descripcion = normalizeZoneText(row.descripcion);
       const fuenteBase = normalizeZoneText(row.fuenteBase);
       const fuenteComparada = normalizeZoneText(row.fuenteComparada);
+      const cantidadConteoInicial = normalizeZoneText(row.cantidadConteoInicial);
       const cantidadBase = normalizeZoneText(row.cantidadBase);
       const cantidadComparada = normalizeZoneText(row.cantidadComparada);
+      const etiquetas = normalizeZoneText(
+        (row.etiquetas || [])
+          .map((etiqueta) => `${etiqueta.nombre || ''} ${etiqueta.nota || ''}`)
+          .join(' ')
+      );
 
       return (
         sku.includes(term) ||
         descripcion.includes(term) ||
         fuenteBase.includes(term) ||
         fuenteComparada.includes(term) ||
+        cantidadConteoInicial.includes(term) ||
         cantidadBase.includes(term) ||
-        cantidadComparada.includes(term)
+        cantidadComparada.includes(term) ||
+        etiquetas.includes(term)
       );
     });
   }, [data, tab, searchTerm]);
@@ -504,6 +550,7 @@ export default function DiferenciasPage() {
         rawResponse?.data ||
         rawResponse;
 
+      console.log('✅ Respuesta generar reconteo:', response);
 
       const rondaId = response?.ronda?.id;
       const rondaNumero = response?.ronda?.numeroRonda;
@@ -530,6 +577,7 @@ export default function DiferenciasPage() {
       }
 
       setMessage(
+        `✅ Ronda creada correctamente · ID ${rondaId} · Ronda ${rondaNumero} · Inventario ${inventarioObjetivoId} · Zona ${zonaObjetivoId} · ${totalDiferencias} SKUs pendientes`
       );
     } catch (err) {
       console.error('❌ Error generando reconteo:', err);
@@ -744,6 +792,16 @@ export default function DiferenciasPage() {
             <h3 className="kpi-value">{resumen.totalDiferencias}</h3>
           </div>
         </div>
+
+        <div className="card kpi-card">
+          <div className="kpi-icon">
+            <Tag size={24} />
+          </div>
+          <div className="kpi-content">
+            <p className="kpi-title">Etiquetados</p>
+            <h3 className="kpi-value">{totalEtiquetados}</h3>
+          </div>
+        </div>
       </div>
 
       <div className="card">
@@ -765,6 +823,14 @@ export default function DiferenciasPage() {
           </button>
 
           <button
+            className={`btn ${tab === 'etiquetados' ? 'btn-primary' : 'btn-outline'}`}
+            onClick={() => setTab('etiquetados')}
+          >
+            <Tag size={16} />
+            <span>Ver etiquetados ({totalEtiquetados})</span>
+          </button>
+
+          <button
             className={`btn ${tab === 'todos' ? 'btn-primary' : 'btn-outline'}`}
             onClick={() => setTab('todos')}
           >
@@ -781,7 +847,7 @@ export default function DiferenciasPage() {
               type="text"
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              placeholder="Ej: 11342, teclado, reconteo..."
+              placeholder="Ej: 11342, teclado, reconteo, cantidad..."
             />
           </div>
           {searchTerm ? (
@@ -802,6 +868,8 @@ export default function DiferenciasPage() {
                 <tr>
                   <th>SKU</th>
                   <th>Descripción</th>
+                  <th>Etiquetas</th>
+                  <th>Conteo inicial</th>
                   <th>Base</th>
                   <th>Comparado</th>
                   {(tab === 'diferencias' || tab === 'todos') ? <th>Diferencia</th> : null}
@@ -821,6 +889,18 @@ export default function DiferenciasPage() {
                     >
                       <td>{row.sku}</td>
                       <td>{row.descripcion || 'Sin descripción'}</td>
+                      <td>
+                        {row.etiquetas?.length > 0 ? (
+                          <div style={{ display: 'flex', flexWrap: 'wrap' }}>
+                            {row.etiquetas.map((etiqueta) => (
+                              <SkuEtiquetaBadge key={etiqueta.id} etiqueta={etiqueta} />
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="muted">—</span>
+                        )}
+                      </td>
+                      <td className="text-center cantidad-conteo-inicial">{Number(row.cantidadConteoInicial || 0)}</td>
                       <td className="text-center cantidad-base">{row.cantidadBase}</td>
                       <td className="text-center cantidad-comparada">{row.cantidadComparada}</td>
                       {(tab === 'diferencias' || tab === 'todos') && (

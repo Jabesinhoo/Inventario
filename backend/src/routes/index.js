@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const skuEtiquetasRoutes = require('./sku-etiquetas.routes');
 
 router.use('/auth', require('./auth.routes'));
 router.use('/usuarios', require('./usuarios.routes'));  
@@ -20,5 +21,7 @@ router.use('/estadisticas', require('./estadisticas.routes'));
 router.use('/scripts', require('./scripts.routes'));
 router.use('/grupo-miembros', require('./grupoMiembros.routes'));
 router.use('/supervisor', require('./supervisor.routes'));  // ← AGREGAR ESTA LÍNEA
+router.use('/sku-etiquetas', skuEtiquetasRoutes);
+router.use('/etiquetas', skuEtiquetasRoutes);
 
 module.exports = router;
