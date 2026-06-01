@@ -4586,4 +4586,511 @@ input[type="number"]::-webkit-outer-spin-button {
   border-color: #f59e0b;
   background-color: #fffbeb;
 }
+/* =========================================================
+   RESUMEN POR PRODUCTO - SCROLL INTERNO
+   ========================================================= */
 
+.resumen-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.resumen-card .list-header {
+  flex-shrink: 0;
+}
+
+.resumen-productos-scroll {
+  max-height: 520px;
+  overflow-y: auto;
+  overflow-x: auto;
+  padding-right: 6px;
+  border-radius: 14px;
+}
+
+.resumen-productos-scroll::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+
+.resumen-productos-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.resumen-productos-scroll::-webkit-scrollbar-thumb {
+  background: #94a3b8;
+  border-radius: 999px;
+}
+
+.resumen-productos-scroll::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+.resumen-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 8;
+  background: var(--surface, #ffffff);
+  box-shadow: 0 1px 0 var(--border, #e5e7eb);
+}
+
+.resumen-table tbody tr {
+  transition: background-color 0.14s ease;
+}
+
+.resumen-table tbody tr:hover {
+  background: var(--surface-soft, #f8fafc);
+}
+
+.resumen-etiquetas-wrap {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+
+.resumen-actions {
+  display: flex;
+  gap: 8px;
+  justify-content: center;
+  align-items: center;
+}
+
+.cantidad-pill {
+  min-width: 42px;
+  display: inline-flex;
+  justify-content: center;
+  align-items: center;
+  padding: 5px 10px;
+  border-radius: 999px;
+  background: rgba(16, 185, 129, 0.12);
+  color: #047857;
+  font-weight: 900;
+}
+
+/* Por si aún queda el antiguo + productos más */
+.more-items {
+  display: none;
+}
+
+/* =========================================================
+   HISTORIAL RECIENTE - SE MANTIENE
+   ========================================================= */
+
+.historial-card {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.historial-card .list-header {
+  flex-shrink: 0;
+}
+
+.history-list {
+  max-height: 520px;
+  overflow-y: auto;
+  padding-right: 6px;
+}
+
+.history-list::-webkit-scrollbar {
+  width: 9px;
+}
+
+.history-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.history-list::-webkit-scrollbar-thumb {
+  background: #94a3b8;
+  border-radius: 999px;
+}
+
+.history-list::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+@media (max-width: 768px) {
+  .resumen-productos-scroll,
+  .history-list {
+    max-height: 430px;
+  }
+
+  .resumen-table {
+    min-width: 780px;
+  }
+}
+
+
+/* =========================================================
+   MODAL EDITAR PRODUCTO / ETIQUETA - ESCANEO PAGE
+   ========================================================= */
+
+.modal-overlay,
+.edit-product-modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: rgba(15, 23, 42, 0.72);
+  backdrop-filter: blur(6px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 18px;
+  animation: modalFadeIn 0.18s ease-out;
+}
+
+.modal,
+.modal-detalle,
+.modal-editar-producto,
+.edit-product-modal {
+  width: min(620px, 96vw);
+  max-height: 88vh;
+  background: var(--surface, #ffffff);
+  color: var(--text, #0f172a);
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 20px;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.32);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  animation: modalSlideIn 0.2s ease-out;
+}
+
+.modal-header,
+.edit-product-modal-header {
+  padding: 18px 22px;
+  border-bottom: 1px solid var(--border, #e5e7eb);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  background: linear-gradient(
+    135deg,
+    rgba(37, 99, 235, 0.08),
+    rgba(220, 38, 38, 0.05)
+  );
+}
+
+.modal-header h3,
+.edit-product-modal-header h3 {
+  margin: 0;
+  font-size: 18px;
+  font-weight: 800;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.modal-body,
+.edit-product-modal-body {
+  padding: 20px 22px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.modal-body::-webkit-scrollbar,
+.edit-product-modal-body::-webkit-scrollbar {
+  width: 8px;
+}
+
+.modal-body::-webkit-scrollbar-thumb,
+.edit-product-modal-body::-webkit-scrollbar-thumb {
+  background: #94a3b8;
+  border-radius: 999px;
+}
+
+.modal-body::-webkit-scrollbar-track,
+.edit-product-modal-body::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.modal-actions,
+.edit-product-modal-actions {
+  padding: 16px 22px;
+  border-top: 1px solid var(--border, #e5e7eb);
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  background: var(--surface-soft, #f8fafc);
+}
+
+.edit-product-info,
+.product-edit-info {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.edit-product-field,
+.product-edit-field {
+  background: var(--surface-soft, #f8fafc);
+  border: 1px solid var(--border, #e5e7eb);
+  border-radius: 14px;
+  padding: 12px 14px;
+}
+
+.edit-product-field label,
+.product-edit-field label {
+  display: block;
+  margin-bottom: 6px;
+  font-size: 12px;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted, #64748b);
+}
+
+.edit-product-field input,
+.edit-product-field select,
+.edit-product-field textarea,
+.product-edit-field input,
+.product-edit-field select,
+.product-edit-field textarea {
+  width: 100%;
+  border: 1px solid var(--border, #d1d5db);
+  border-radius: 12px;
+  padding: 10px 12px;
+  font-size: 14px;
+  outline: none;
+  background: var(--surface, #ffffff);
+  color: var(--text, #111827);
+  transition: border-color 0.16s ease, box-shadow 0.16s ease;
+}
+
+.edit-product-field input:focus,
+.edit-product-field select:focus,
+.edit-product-field textarea:focus,
+.product-edit-field input:focus,
+.product-edit-field select:focus,
+.product-edit-field textarea:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.16);
+}
+
+.edit-product-field input[readonly],
+.product-edit-field input[readonly],
+.edit-product-field textarea[readonly],
+.product-edit-field textarea[readonly] {
+  background: #f1f5f9;
+  color: #64748b;
+  cursor: not-allowed;
+}
+
+.sku-etiqueta-section {
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px dashed #dc2626;
+  border-radius: 16px;
+  background: rgba(220, 38, 38, 0.06);
+}
+
+.sku-etiqueta-section-title {
+  margin: 0 0 10px;
+  font-size: 14px;
+  font-weight: 800;
+  color: #991b1b;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.sku-etiqueta-badge {
+  background: #dc2626;
+  color: #ffffff;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 800;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  line-height: 1;
+  box-shadow: 0 4px 12px rgba(220, 38, 38, 0.25);
+}
+
+/* =========================================================
+   RESUMEN POR PRODUCTO CON SCROLL
+   ========================================================= */
+
+/*
+  Pon esta clase en el contenedor donde haces map de resumen por producto:
+  <div className="resumen-productos-scroll">
+    ...
+  </div>
+*/
+
+.resumen-productos-scroll,
+.resumen-productos-list,
+.productos-resumen-list,
+.resumen-list {
+  max-height: 520px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding-right: 6px;
+  scroll-behavior: smooth;
+}
+
+.resumen-productos-scroll::-webkit-scrollbar,
+.resumen-productos-list::-webkit-scrollbar,
+.productos-resumen-list::-webkit-scrollbar,
+.resumen-list::-webkit-scrollbar {
+  width: 9px;
+}
+
+.resumen-productos-scroll::-webkit-scrollbar-track,
+.resumen-productos-list::-webkit-scrollbar-track,
+.productos-resumen-list::-webkit-scrollbar-track,
+.resumen-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.resumen-productos-scroll::-webkit-scrollbar-thumb,
+.resumen-productos-list::-webkit-scrollbar-thumb,
+.productos-resumen-list::-webkit-scrollbar-thumb,
+.resumen-list::-webkit-scrollbar-thumb {
+  background: #94a3b8;
+  border-radius: 999px;
+}
+
+.resumen-productos-scroll::-webkit-scrollbar-thumb:hover,
+.resumen-productos-list::-webkit-scrollbar-thumb:hover,
+.productos-resumen-list::-webkit-scrollbar-thumb:hover,
+.resumen-list::-webkit-scrollbar-thumb:hover {
+  background: #64748b;
+}
+
+.resumen-producto-item,
+.producto-resumen-item,
+.summary-product-item {
+  border: 1px solid var(--border, #e5e7eb);
+  background: var(--surface, #ffffff);
+  border-radius: 14px;
+  padding: 12px 14px;
+  margin-bottom: 10px;
+  transition: transform 0.14s ease, box-shadow 0.14s ease, border-color 0.14s ease;
+}
+
+.resumen-producto-item:hover,
+.producto-resumen-item:hover,
+.summary-product-item:hover {
+  transform: translateY(-1px);
+  border-color: rgba(37, 99, 235, 0.35);
+  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.08);
+}
+
+.resumen-producto-main,
+.producto-resumen-main {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.resumen-producto-sku,
+.producto-resumen-sku {
+  font-size: 15px;
+  font-weight: 900;
+  color: var(--text, #0f172a);
+}
+
+.resumen-producto-desc,
+.producto-resumen-desc {
+  margin-top: 3px;
+  font-size: 13px;
+  color: var(--text-muted, #64748b);
+  line-height: 1.35;
+}
+
+.resumen-producto-cantidad,
+.producto-resumen-cantidad {
+  min-width: 64px;
+  padding: 7px 10px;
+  border-radius: 999px;
+  background: rgba(16, 185, 129, 0.12);
+  color: #047857;
+  font-weight: 900;
+  text-align: center;
+}
+
+/* Para el "+ X productos más" */
+.productos-mas,
+.resumen-productos-mas,
+.more-products-indicator {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  margin-top: 8px;
+  padding: 11px 14px;
+  border-radius: 14px;
+  background: linear-gradient(180deg, rgba(248, 250, 252, 0.92), #f8fafc);
+  border: 1px solid var(--border, #e5e7eb);
+  color: var(--text-muted, #64748b);
+  font-size: 13px;
+  font-weight: 800;
+  text-align: center;
+  backdrop-filter: blur(6px);
+}
+
+/* Si quieres limitar más el alto en pantallas pequeñas */
+@media (max-width: 768px) {
+  .modal,
+  .modal-detalle,
+  .modal-editar-producto,
+  .edit-product-modal {
+    width: 96vw;
+    max-height: 92vh;
+    border-radius: 16px;
+  }
+
+  .modal-header,
+  .edit-product-modal-header,
+  .modal-body,
+  .edit-product-modal-body,
+  .modal-actions,
+  .edit-product-modal-actions {
+    padding-left: 16px;
+    padding-right: 16px;
+  }
+
+  .resumen-productos-scroll,
+  .resumen-productos-list,
+  .productos-resumen-list,
+  .resumen-list {
+    max-height: 430px;
+  }
+
+  .resumen-producto-main,
+  .producto-resumen-main {
+    flex-direction: column;
+  }
+
+  .resumen-producto-cantidad,
+  .producto-resumen-cantidad {
+    align-self: flex-start;
+  }
+}
+
+/* =========================================================
+   ANIMACIONES
+   ========================================================= */
+
+@keyframes modalFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes modalSlideIn {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}

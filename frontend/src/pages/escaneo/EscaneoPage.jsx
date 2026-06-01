@@ -1819,111 +1819,142 @@ export default function EscaneoPage() {
           </div>
 
           <div className="grid-2">
-            <div className="card resumen-card">
-              <div className="list-header">
-                <h2 className="section-title">
-                  <Boxes size={20} />
-                  <span>Resumen por producto</span>
-                </h2>
-              </div>
-              {resumen.length === 0 ? (
-                <div className="escaneo-empty">No hay escaneos</div>
-              ) : (
-                <div className="table-responsive-container">
-                  <table className="data-table resumen-table">
-                    <thead>
-                      <tr>
-                        <th>SKU</th>
-                        <th>Descripción</th>
-                        <th>Cantidad</th>
-                        <th>Etiquetas</th>
-                        <th>Acciones</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {resumen.slice(0, 15).map((item, index) => (
-                        <tr key={`${item.sku || 'sku'}-${index}`}>
-                          <td data-label="SKU"><strong>{item.sku}</strong></td>
-                          <td data-label="Descripción">{item.descripcionSnapshot || 'Sin descripción'}</td>
-                          <td data-label="Cantidad" className="text-center">{item.cantidadTotal}</td>
-                          <td data-label="Etiquetas">
-                            {item.etiquetas?.length > 0 ? (
-                              <div style={{ display: 'flex', flexWrap: 'wrap' }}>
-                                {item.etiquetas.map((etiqueta) => (
-                                  <SkuEtiquetaBadge key={etiqueta.id} etiqueta={etiqueta} />
-                                ))}
-                              </div>
-                            ) : (
-                              <span className="text-muted">Sin etiqueta</span>
-                            )}
-                          </td>
+  <div className="card resumen-card">
+    <div className="list-header">
+      <h2 className="section-title">
+        <Boxes size={20} />
+        <span>Resumen por producto</span>
+      </h2>
 
-                          <td data-label="Acciones" className="text-center">
-                            <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
-                              <button
-                                className="icon-btn"
-                                onClick={() => handleEditarProducto(item)}
-                                title={isAdmin ? 'Editar cantidad / etiqueta' : 'Etiquetar SKU'}
-                                style={{ color: 'var(--primary)' }}
-                              >
-                                <Edit2 size={16} />
-                              </button>
+      {resumen.length > 0 && (
+        <span className="badge">
+          {resumen.length} producto{resumen.length === 1 ? '' : 's'}
+        </span>
+      )}
+    </div>
 
-                              {isAdmin && (
-                                <button
-                                  className="icon-btn danger"
-                                  onClick={() => handleEliminarProducto(item.sku)}
-                                  title="Eliminar producto"
-                                  style={{ color: 'var(--danger)' }}
-                                >
-                                  <Trash2 size={16} />
-                                </button>
-                              )}
-                            </div>
-                          </td>
-                        </tr>
+    {resumen.length === 0 ? (
+      <div className="escaneo-empty">No hay escaneos</div>
+    ) : (
+      <div className="table-responsive-container resumen-productos-scroll">
+        <table className="data-table resumen-table">
+          <thead>
+            <tr>
+              <th>SKU</th>
+              <th>Descripción</th>
+              <th>Cantidad</th>
+              <th>Etiquetas</th>
+              <th>Acciones</th>
+            </tr>
+          </thead>
+
+          <tbody>
+            {resumen.map((item, index) => (
+              <tr key={`${item.sku || 'sku'}-${index}`}>
+                <td data-label="SKU">
+                  <strong>{item.sku}</strong>
+                </td>
+
+                <td data-label="Descripción">
+                  {item.descripcionSnapshot || 'Sin descripción'}
+                </td>
+
+                <td data-label="Cantidad" className="text-center">
+                  <span className="cantidad-pill">
+                    {item.cantidadTotal}
+                  </span>
+                </td>
+
+                <td data-label="Etiquetas">
+                  {item.etiquetas?.length > 0 ? (
+                    <div className="resumen-etiquetas-wrap">
+                      {item.etiquetas.map((etiqueta) => (
+                        <SkuEtiquetaBadge key={etiqueta.id} etiqueta={etiqueta} />
                       ))}
+                    </div>
+                  ) : (
+                    <span className="text-muted">Sin etiqueta</span>
+                  )}
+                </td>
 
-                      {resumen.length > 15 && (
-                        <tr className="more-items">
-                          <td colSpan={5} className="text-center">
-                            +{resumen.length - 15} productos más
-                          </td>
-                        </tr>
-                      )}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+                <td data-label="Acciones" className="text-center">
+                  <div className="resumen-actions">
+                    <button
+                      className="icon-btn"
+                      onClick={() => handleEditarProducto(item)}
+                      title={isAdmin ? 'Editar cantidad / etiqueta' : 'Etiquetar SKU'}
+                      style={{ color: 'var(--primary)' }}
+                    >
+                      <Edit2 size={16} />
+                    </button>
+
+                    {isAdmin && (
+                      <button
+                        className="icon-btn danger"
+                        onClick={() => handleEliminarProducto(item.sku)}
+                        title="Eliminar producto"
+                        style={{ color: 'var(--danger)' }}
+                      >
+                        <Trash2 size={16} />
+                      </button>
+                    )}
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    )}
+  </div>
+
+  <div className="card historial-card">
+    <div className="list-header">
+      <h2 className="section-title">
+        <History size={20} />
+        <span>Historial reciente</span>
+      </h2>
+    </div>
+
+    {history.length === 0 ? (
+      <div className="escaneo-empty">No hay lecturas</div>
+    ) : (
+      <div className="history-list">
+        {history.slice(0, 15).map((lectura) => (
+          <div
+            key={lectura.id}
+            className={`history-item ${lectura.estado === 'anulada' ? 'anulada' : ''}`}
+          >
+            <div className="history-main">
+              <strong>{lectura.codigoLeido}</strong>
+              <p>{lectura.sku || 'No reconocido'}</p>
             </div>
 
-            <div className="card historial-card">
-              <div className="list-header">
-                <h2 className="section-title"><History size={20} /><span>Historial reciente</span></h2>
-              </div>
-              {history.length === 0 ? (
-                <div className="escaneo-empty">No hay lecturas</div>
-              ) : (
-                <div className="history-list">
-                  {history.slice(0, 15).map((lectura) => (
-                    <div key={lectura.id} className={`history-item ${lectura.estado === 'anulada' ? 'anulada' : ''}`}>
-                      <div className="history-main">
-                        <strong>{lectura.codigoLeido}</strong>
-                        <p>{lectura.sku || 'No reconocido'}</p>
-                      </div>
-                      <div className="history-meta">
-                        <span className="tag-muted">{formatOnlyTime(lectura.fechaHora)}</span>
-                        <span className={`status-chip mini ${lectura.estado}`}>{lectura.estado === 'valida' ? 'OK' : 'NO'}</span>
-                        {lectura.estado !== 'anulada' && (
-                          <button className="icon-btn" onClick={() => handleAnularLectura(lectura.id)} title="Anular"><Trash2 size={14} /></button>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
+            <div className="history-meta">
+              <span className="tag-muted">
+                {formatOnlyTime(lectura.fechaHora)}
+              </span>
+
+              <span className={`status-chip mini ${lectura.estado}`}>
+                {lectura.estado === 'valida' ? 'OK' : 'NO'}
+              </span>
+
+              {lectura.estado !== 'anulada' && (
+                <button
+                  className="icon-btn"
+                  onClick={() => handleAnularLectura(lectura.id)}
+                  title="Anular"
+                >
+                  <Trash2 size={14} />
+                </button>
               )}
             </div>
           </div>
+        ))}
+      </div>
+    )}
+  </div>
+</div>
         </>
       ) : (
         <div className="card">
