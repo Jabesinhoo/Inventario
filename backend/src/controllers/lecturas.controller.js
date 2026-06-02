@@ -34,7 +34,10 @@ const scanRondaSchema = Joi.object({
     Joi.date(),
     Joi.string().trim().allow(null, '')
   ).optional(),
-  permitirConteoBodega: Joi.boolean().default(false)
+  // Compatibilidad vieja: antes este permiso se llamaba conteo de bodega.
+  permitirConteoBodega: Joi.boolean().default(false),
+  // Nombre correcto: autorizar contar este SKU en una zona donde ya apareció en otra zona.
+  permitirConteoCruzadoZona: Joi.boolean().default(false)
 });
 
 // ==================== HELPERS ====================
@@ -628,6 +631,7 @@ async function validarSkuYaLeidoEnOtraZona({
   sku,
   codigoLeido,
   permitirConteoBodega = false,
+  permitirConteoCruzadoZona = false,
   transaction
 }) {
   const skuNormalizado = String(sku || '').trim();
@@ -650,25 +654,29 @@ async function validarSkuYaLeidoEnOtraZona({
     }
   }
 
+  const autorizadoCruceZona =
+    permitirConteoBodega === true ||
+    permitirConteoCruzadoZona === true;
+
   /*
-    REGLA MANUAL DE BODEGA:
-    Cuando el usuario presiona “Contar aquí como bodega”, este SKU queda
-    autorizado para esta zona desde el frontend y se envía permitirConteoBodega=true.
-    En ese caso NO se bloquea por existir en otra zona y NO se limita a una sola unidad.
-    El aviso debe aparecer una sola vez por código/zona; después el código sigue contando.
+    REGLA DE CRUCE DE ZONA:
+    Si el usuario autorizó este SKU para la zona actual, se permite contar aunque
+    ya exista lectura válida en otra zona. Esto funciona en ambos sentidos:
+    zona normal -> bodega y bodega -> zona normal.
   */
-  if (permitirConteoBodega === true) {
+  if (autorizadoCruceZona) {
     return {
       ok: true,
+      permitidoPorCruceZona: true,
       permitidoPorBodega: true
     };
   }
 
   /*
     REGLA NORMAL:
-    Si NO se marcó como bodega, y el SKU ya fue leído en otra zona del mismo inventario,
-    se bloquea y no se cuenta en la zona actual. El frontend mostrará el modal con la opción
-    “Contar aquí como bodega”.
+    Si el SKU ya fue leído en otra zona del mismo inventario y no hay autorización,
+    se bloquea y no se cuenta en la zona actual. El frontend mostrará el modal con
+    la opción de autorizar el conteo en esta zona.
   */
   const rows = await sequelize.query(
     `
@@ -734,6 +742,7 @@ async function validarSkuYaLeidoEnOtraZona({
       origen: 'lecturas_otras_zonas',
       inventarioId,
       permitirConteoBodega: true,
+      permitirConteoCruzadoZona: true,
       zonaActual: {
         id: zonaActualId,
         nombre: nombreZonaActual || 'Zona actual',
@@ -1167,6 +1176,7 @@ async function scanLecturaRonda(req, res, next) {
       sku: skuFinal,
       codigoLeido: codigoLimpio,
       permitirConteoBodega: value.permitirConteoBodega === true,
+      permitirConteoCruzadoZona: value.permitirConteoCruzadoZona === true,
       transaction
     });
 
@@ -1837,10 +1847,25 @@ async function agregarLecturaManual(req, res, next) {
   const transaction = await sequelize.transaction();
 
   try {
-    const { rondaId, sku, cantidad, grupoId, permitirConteoBodega = false } = req.body;
+    const {
+      rondaId,
+      sku,
+      cantidad,
+      grupoId,
+      permitirConteoBodega = false,
+      permitirConteoCruzadoZona = false
+    } = req.body;
     const usuarioId = req.user.id;
 
-    console.log('🔥 agregarLecturaManual - Datos:', { rondaId, sku, cantidad, grupoId, permitirConteoBodega, usuarioId });
+    console.log('🔥 agregarLecturaManual - Datos:', {
+      rondaId,
+      sku,
+      cantidad,
+      grupoId,
+      permitirConteoBodega,
+      permitirConteoCruzadoZona,
+      usuarioId
+    });
 
     // Validaciones básicas
     if (!rondaId || !sku || !cantidad || cantidad <= 0) {
@@ -1974,6 +1999,7 @@ async function agregarLecturaManual(req, res, next) {
       sku: skuManualFinal,
       codigoLeido: sku,
       permitirConteoBodega: permitirConteoBodega === true,
+      permitirConteoCruzadoZona: permitirConteoCruzadoZona === true,
       transaction
     });
 

@@ -5071,9 +5071,7 @@ input[type="number"]::-webkit-outer-spin-button {
   }
 }
 
-/* =========================================================
-   ANIMACIONES
-   ========================================================= */
+
 
 @keyframes modalFadeIn {
   from {

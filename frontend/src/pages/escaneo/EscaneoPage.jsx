@@ -126,7 +126,7 @@ export default function EscaneoPage() {
   const scanQueueRef = useRef([]);
   const processingQueueRef = useRef(false);
   const refreshTimeoutRef = useRef(null);
-  const codigosBodegaAutorizadosRef = useRef(new Set());
+  const codigosCruceZonaAutorizadosRef = useRef(new Set());
 
   const [inventarios, setInventarios] = useState([]);
   const [selectedInventario, setSelectedInventario] = useState('');
@@ -516,26 +516,30 @@ export default function EscaneoPage() {
     }, 250);
   }, [loadRoundContext]);
 
-  function getBodegaAutorizacionKey(codigoValue) {
+  function getCruceZonaAutorizacionKey(codigoValue) {
     const codigoLimpio = String(codigoValue || '').trim();
     const inventarioId = selectedRonda?.inventarioId || selectedInventario || '';
     const zonaId = selectedRonda?.zonaId || '';
     return `${inventarioId}:${zonaId}:${codigoLimpio}`;
   }
 
-  function codigoTienePermisoBodega(codigoValue) {
-    const key = getBodegaAutorizacionKey(codigoValue);
+  function codigoTienePermisoCruceZona(codigoValue) {
+    const key = getCruceZonaAutorizacionKey(codigoValue);
 
     return (
-      codigosBodegaAutorizadosRef.current.has(key) ||
+      codigosCruceZonaAutorizadosRef.current.has(key) ||
+      sessionStorage.getItem(`cruce-zona-ok:${key}`) === '1' ||
+      // Compatibilidad con autorizaciones guardadas con el nombre anterior.
       sessionStorage.getItem(`bodega-ok:${key}`) === '1'
     );
   }
 
-  function marcarCodigoComoBodega(codigoValue) {
-    const key = getBodegaAutorizacionKey(codigoValue);
+  function marcarCodigoComoCruceZona(codigoValue) {
+    const key = getCruceZonaAutorizacionKey(codigoValue);
 
-    codigosBodegaAutorizadosRef.current.add(key);
+    codigosCruceZonaAutorizadosRef.current.add(key);
+    sessionStorage.setItem(`cruce-zona-ok:${key}`, '1');
+    // Compatibilidad vieja.
     sessionStorage.setItem(`bodega-ok:${key}`, '1');
   }
 
@@ -579,9 +583,10 @@ export default function EscaneoPage() {
       return;
     }
 
-    const permitidoPorBodega =
+    const permitidoPorCruceZona =
       meta.permitirConteoBodega === true ||
-      codigoTienePermisoBodega(codigo);
+      meta.permitirConteoCruzadoZona === true ||
+      codigoTienePermisoCruceZona(codigo);
 
     const payload = {
       rondaId: selectedRonda.id,
@@ -589,7 +594,10 @@ export default function EscaneoPage() {
       codigo: codigo,
       requestId: meta.requestId || null,
       scannedAtClient: meta.timestamp || Date.now(),
-      permitirConteoBodega: permitidoPorBodega
+      // Compatibilidad vieja.
+      permitirConteoBodega: permitidoPorCruceZona,
+      // Nombre correcto para la lógica nueva.
+      permitirConteoCruzadoZona: permitidoPorCruceZona
     };
 
     try {
@@ -682,7 +690,8 @@ export default function EscaneoPage() {
           await procesarEscaneoDirecto(nextScan.codigo, {
             requestId: nextScan.requestId,
             timestamp: nextScan.timestamp,
-            permitirConteoBodega: nextScan.permitirConteoBodega === true
+            permitirConteoBodega: nextScan.permitirConteoBodega === true,
+            permitirConteoCruzadoZona: nextScan.permitirConteoCruzadoZona === true
           });
         } catch (error) {
           console.error('Error procesando cola de escaneos:', error);
@@ -1215,11 +1224,15 @@ export default function EscaneoPage() {
     setLoadingManual(true);
 
     try {
+      const permitidoPorCruceZonaManual = codigoTienePermisoCruceZona(skuLimpio);
+
       const response = await agregarLecturaManual({
         rondaId: selectedRonda.id,
         grupoId: grupoAsignado.id,
         sku: skuLimpio,
-        cantidad: manualCantidad * manualRepeticiones
+        cantidad: manualCantidad * manualRepeticiones,
+        permitirConteoBodega: permitidoPorCruceZonaManual,
+        permitirConteoCruzadoZona: permitidoPorCruceZonaManual
       });
 
       if (response.ok) {
@@ -1292,45 +1305,47 @@ export default function EscaneoPage() {
     setScanPendienteBodega(null);
   }
 
-  async function handleContarComoBodega() {
+  async function handleAutorizarCruceZona() {
     if (!scanPendienteBodega?.codigo) {
-      setFlashMessage('No hay código pendiente para contar como bodega', 'error');
+      setFlashMessage('No hay código pendiente para autorizar en esta zona', 'error');
       return;
     }
 
-    const codigoBodega = String(scanPendienteBodega.codigo || '').trim();
+    const codigoAutorizado = String(scanPendienteBodega.codigo || '').trim();
 
     try {
       setShowZoneWarning(false);
-      marcarCodigoComoBodega(codigoBodega);
+      marcarCodigoComoCruceZona(codigoAutorizado);
 
       if (scanPendienteBodega.tipo === 'manual') {
         const response = await agregarLecturaManual({
           rondaId: selectedRonda.id,
           grupoId: grupoAsignado.id,
-          sku: codigoBodega,
+          sku: codigoAutorizado,
           cantidad: Number(scanPendienteBodega.cantidad || 1),
-          permitirConteoBodega: true
+          permitirConteoBodega: true,
+          permitirConteoCruzadoZona: true
         });
 
         if (response?.ok === false) {
-          throw new Error(response.message || 'No se pudo contar como bodega');
+          throw new Error(response.message || 'No se pudo autorizar el conteo en esta zona');
         }
 
         playBeep();
         hablarEscaneoExitoso({
-          sku: codigoBodega,
+          sku: codigoAutorizado,
           acumulado: response?.data?.acumuladoSku || response?.acumuladoSku || 0
         });
-        setFlashMessage(`Producto ${codigoBodega} contado como bodega`, 'success');
+        setFlashMessage(`Producto ${codigoAutorizado} autorizado y contado en esta zona`, 'success');
         setShowManualModal(false);
         setManualSku('');
         setManualCantidad(1);
         setManualRepeticiones(1);
         await loadRoundContext(selectedRonda);
       } else {
-        await procesarEscaneoDirecto(codigoBodega, {
+        await procesarEscaneoDirecto(codigoAutorizado, {
           permitirConteoBodega: true,
+          permitirConteoCruzadoZona: true,
           requestId:
             typeof crypto !== 'undefined' && crypto.randomUUID
               ? crypto.randomUUID()
@@ -1341,10 +1356,10 @@ export default function EscaneoPage() {
 
       setScanPendienteBodega(null);
     } catch (error) {
-      console.error('Error contando como bodega:', error);
+      console.error('Error autorizando cruce de zona:', error);
       hablarTexto('Error');
       setFlashMessage(
-        error.response?.data?.message || error.message || 'No se pudo contar como bodega',
+        error.response?.data?.message || error.message || 'No se pudo autorizar el conteo en esta zona',
         'error'
       );
     }
@@ -1766,6 +1781,7 @@ export default function EscaneoPage() {
                       <tr>
                         <th style={{ position: 'sticky', left: 0, backgroundColor: 'var(--surface)', zIndex: 11, minWidth: '100px' }}>SKU</th>
                         <th style={{ minWidth: '200px' }}>Descripción</th>
+                        <th style={{ minWidth: '80px' }}>Cantidad</th>
                         <th style={{ minWidth: '100px' }}>Estado</th>
                       </tr>
                     </thead>
@@ -1778,6 +1794,7 @@ export default function EscaneoPage() {
                               <strong>{item.sku}</strong>
                             </td>
                             <td data-label="Descripción">{item.descripcionSnapshot || 'Sin descripción'}</td>
+                            <td data-label="Cantidad" className="text-center">{item.cantidadTotal || 0}</td>
                             <td data-label="Estado">
                               <span className={`status-badge ${coincide ? 'success' : 'warning'}`}>
                                 {coincide ? 'Escaneado' : 'Pendiente'}
@@ -1819,142 +1836,111 @@ export default function EscaneoPage() {
           </div>
 
           <div className="grid-2">
-  <div className="card resumen-card">
-    <div className="list-header">
-      <h2 className="section-title">
-        <Boxes size={20} />
-        <span>Resumen por producto</span>
-      </h2>
+            <div className="card resumen-card">
+              <div className="list-header">
+                <h2 className="section-title">
+                  <Boxes size={20} />
+                  <span>Resumen por producto</span>
+                </h2>
+              </div>
+              {resumen.length === 0 ? (
+                <div className="escaneo-empty">No hay escaneos</div>
+              ) : (
+                <div className="table-responsive-container">
+                  <table className="data-table resumen-table">
+                    <thead>
+                      <tr>
+                        <th>SKU</th>
+                        <th>Descripción</th>
+                        <th>Cantidad</th>
+                        <th>Etiquetas</th>
+                        <th>Acciones</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {resumen.slice(0, 15).map((item, index) => (
+                        <tr key={`${item.sku || 'sku'}-${index}`}>
+                          <td data-label="SKU"><strong>{item.sku}</strong></td>
+                          <td data-label="Descripción">{item.descripcionSnapshot || 'Sin descripción'}</td>
+                          <td data-label="Cantidad" className="text-center">{item.cantidadTotal}</td>
+                          <td data-label="Etiquetas">
+                            {item.etiquetas?.length > 0 ? (
+                              <div style={{ display: 'flex', flexWrap: 'wrap' }}>
+                                {item.etiquetas.map((etiqueta) => (
+                                  <SkuEtiquetaBadge key={etiqueta.id} etiqueta={etiqueta} />
+                                ))}
+                              </div>
+                            ) : (
+                              <span className="text-muted">Sin etiqueta</span>
+                            )}
+                          </td>
 
-      {resumen.length > 0 && (
-        <span className="badge">
-          {resumen.length} producto{resumen.length === 1 ? '' : 's'}
-        </span>
-      )}
-    </div>
+                          <td data-label="Acciones" className="text-center">
+                            <div style={{ display: 'flex', gap: '8px', justifyContent: 'center' }}>
+                              <button
+                                className="icon-btn"
+                                onClick={() => handleEditarProducto(item)}
+                                title={isAdmin ? 'Editar cantidad / etiqueta' : 'Etiquetar SKU'}
+                                style={{ color: 'var(--primary)' }}
+                              >
+                                <Edit2 size={16} />
+                              </button>
 
-    {resumen.length === 0 ? (
-      <div className="escaneo-empty">No hay escaneos</div>
-    ) : (
-      <div className="table-responsive-container resumen-productos-scroll">
-        <table className="data-table resumen-table">
-          <thead>
-            <tr>
-              <th>SKU</th>
-              <th>Descripción</th>
-              <th>Cantidad</th>
-              <th>Etiquetas</th>
-              <th>Acciones</th>
-            </tr>
-          </thead>
-
-          <tbody>
-            {resumen.map((item, index) => (
-              <tr key={`${item.sku || 'sku'}-${index}`}>
-                <td data-label="SKU">
-                  <strong>{item.sku}</strong>
-                </td>
-
-                <td data-label="Descripción">
-                  {item.descripcionSnapshot || 'Sin descripción'}
-                </td>
-
-                <td data-label="Cantidad" className="text-center">
-                  <span className="cantidad-pill">
-                    {item.cantidadTotal}
-                  </span>
-                </td>
-
-                <td data-label="Etiquetas">
-                  {item.etiquetas?.length > 0 ? (
-                    <div className="resumen-etiquetas-wrap">
-                      {item.etiquetas.map((etiqueta) => (
-                        <SkuEtiquetaBadge key={etiqueta.id} etiqueta={etiqueta} />
+                              {isAdmin && (
+                                <button
+                                  className="icon-btn danger"
+                                  onClick={() => handleEliminarProducto(item.sku)}
+                                  title="Eliminar producto"
+                                  style={{ color: 'var(--danger)' }}
+                                >
+                                  <Trash2 size={16} />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
                       ))}
-                    </div>
-                  ) : (
-                    <span className="text-muted">Sin etiqueta</span>
-                  )}
-                </td>
 
-                <td data-label="Acciones" className="text-center">
-                  <div className="resumen-actions">
-                    <button
-                      className="icon-btn"
-                      onClick={() => handleEditarProducto(item)}
-                      title={isAdmin ? 'Editar cantidad / etiqueta' : 'Etiquetar SKU'}
-                      style={{ color: 'var(--primary)' }}
-                    >
-                      <Edit2 size={16} />
-                    </button>
-
-                    {isAdmin && (
-                      <button
-                        className="icon-btn danger"
-                        onClick={() => handleEliminarProducto(item.sku)}
-                        title="Eliminar producto"
-                        style={{ color: 'var(--danger)' }}
-                      >
-                        <Trash2 size={16} />
-                      </button>
-                    )}
-                  </div>
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    )}
-  </div>
-
-  <div className="card historial-card">
-    <div className="list-header">
-      <h2 className="section-title">
-        <History size={20} />
-        <span>Historial reciente</span>
-      </h2>
-    </div>
-
-    {history.length === 0 ? (
-      <div className="escaneo-empty">No hay lecturas</div>
-    ) : (
-      <div className="history-list">
-        {history.slice(0, 15).map((lectura) => (
-          <div
-            key={lectura.id}
-            className={`history-item ${lectura.estado === 'anulada' ? 'anulada' : ''}`}
-          >
-            <div className="history-main">
-              <strong>{lectura.codigoLeido}</strong>
-              <p>{lectura.sku || 'No reconocido'}</p>
+                      {resumen.length > 15 && (
+                        <tr className="more-items">
+                          <td colSpan={5} className="text-center">
+                            +{resumen.length - 15} productos más
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
 
-            <div className="history-meta">
-              <span className="tag-muted">
-                {formatOnlyTime(lectura.fechaHora)}
-              </span>
-
-              <span className={`status-chip mini ${lectura.estado}`}>
-                {lectura.estado === 'valida' ? 'OK' : 'NO'}
-              </span>
-
-              {lectura.estado !== 'anulada' && (
-                <button
-                  className="icon-btn"
-                  onClick={() => handleAnularLectura(lectura.id)}
-                  title="Anular"
-                >
-                  <Trash2 size={14} />
-                </button>
+            <div className="card historial-card">
+              <div className="list-header">
+                <h2 className="section-title"><History size={20} /><span>Historial reciente</span></h2>
+              </div>
+              {history.length === 0 ? (
+                <div className="escaneo-empty">No hay lecturas</div>
+              ) : (
+                <div className="history-list">
+                  {history.slice(0, 15).map((lectura) => (
+                    <div key={lectura.id} className={`history-item ${lectura.estado === 'anulada' ? 'anulada' : ''}`}>
+                      <div className="history-main">
+                        <strong>{lectura.codigoLeido}</strong>
+                        <p>{lectura.sku || 'No reconocido'}</p>
+                      </div>
+                      <div className="history-meta">
+                        <span className="tag-muted">{formatOnlyTime(lectura.fechaHora)}</span>
+                        <span className={`status-chip mini ${lectura.estado}`}>{lectura.estado === 'valida' ? 'OK' : 'NO'}</span>
+                        {lectura.estado !== 'anulada' && (
+                          <button className="icon-btn" onClick={() => handleAnularLectura(lectura.id)} title="Anular"><Trash2 size={14} /></button>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
               )}
             </div>
           </div>
-        ))}
-      </div>
-    )}
-  </div>
-</div>
         </>
       ) : (
         <div className="card">
@@ -2208,14 +2194,14 @@ export default function EscaneoPage() {
                 <p className="destino-grupo">Grupo: <strong>{zoneWarningInfo.grupo?.nombre || 'N/A'}</strong></p>
               </div>
               <p className="warning-text">
-                Este código no se sumó todavía a la ronda actual. Si esta zona funciona como bodega,
-                puedes contarlo aquí una sola vez para este SKU.
+                Este código no se sumó todavía a la ronda actual. Si físicamente este producto también está en la zona actual,
+                puedes autorizarlo y contarlo aquí. El aviso saldrá solo una vez por este SKU en esta zona.
               </p>
             </div>
             <div className="modal-actions">
               <button className="btn btn-outline" onClick={cerrarZoneWarning}>Entendido</button>
-              <button className="btn btn-primary" onClick={handleContarComoBodega}>
-                Contar aquí como bodega
+              <button className="btn btn-primary" onClick={handleAutorizarCruceZona}>
+                Contar aquí de todos modos
               </button>
             </div>
           </div>
